@@ -1,0 +1,43 @@
+import SwiftUI
+
+struct HeroEmptyState: View {
+    let projectName: String
+    var projectPath: String? = nil
+    var currentProjectID: String = ""
+    @Binding var prompt: String
+    var onSend: (String) -> Void = { _ in }
+    var onSelectProject: (String) -> Void = { _ in }
+    var onNewProject: () -> Void = {}
+    @State private var builtInCommands: [SlashCommand] = []
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            Text("What should we build in \(projectName)?")
+                .font(SoulFont.hero(28))
+                .foregroundStyle(SoulColor.fg)
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 4)
+
+            ComposerView(
+                prompt: $prompt,
+                projectName: projectName,
+                projectPath: projectPath,
+                commands: builtInCommands,
+                onSend: onSend,
+                currentProjectID: currentProjectID,
+                onSelectProject: onSelectProject,
+                onNewProject: onNewProject
+            )
+            .frame(maxWidth: 720)
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task {
+            builtInCommands = SkillsRegistry.builtInCommands()
+        }
+    }
+}

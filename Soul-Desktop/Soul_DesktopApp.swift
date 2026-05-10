@@ -1,32 +1,19 @@
-//
-//  Soul_DesktopApp.swift
-//  Soul-Desktop
-//
-//  Created by ilteris kaplan on 5/9/26.
-//
-
 import SwiftUI
-import SwiftData
+import Darwin
 
 @main
 struct Soul_DesktopApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    init() {
+        // Writing to a closed agent stdin would otherwise SIGPIPE the whole app.
+        signal(SIGPIPE, SIG_IGN)
+    }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppShell()
+                .frame(minWidth: 1000, minHeight: 700)
         }
-        .modelContainer(sharedModelContainer)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact)
     }
 }

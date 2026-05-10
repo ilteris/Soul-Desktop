@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A2B2B98E2FB0D080004C6EEC /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A2B2B98D2FB0D080004C6EEC /* SwiftTerm */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A2B2B69D2FB0145B004C6EEC /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2B2B98E2FB0D080004C6EEC /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 				A2B2B68F2FB0145A004C6EEC /* Soul-Desktop */,
 				A2B2B69F2FB0145B004C6EEC /* Soul-DesktopTests */,
 				A2B2B6A92FB0145B004C6EEC /* Soul-DesktopUITests */,
+				A2B2B98C2FB0D080004C6EEC /* Frameworks */,
 				A2B2B68E2FB0145A004C6EEC /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,6 +96,13 @@
 				A2B2B6A62FB0145B004C6EEC /* Soul-DesktopUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A2B2B98C2FB0D080004C6EEC /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,6 +125,7 @@
 			);
 			name = "Soul-Desktop";
 			packageProductDependencies = (
+				A2B2B98D2FB0D080004C6EEC /* SwiftTerm */,
 			);
 			productName = "Soul-Desktop";
 			productReference = A2B2B68D2FB0145A004C6EEC /* Soul-Desktop.app */;
@@ -195,6 +209,9 @@
 			);
 			mainGroup = A2B2B6842FB0145A004C6EEC;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A2B2B68E2FB0145A004C6EEC /* Products */;
 			projectDirPath = "";
@@ -398,7 +415,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TLES4YRYFC;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -414,7 +431,7 @@
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -430,7 +447,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TLES4YRYFC;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -446,7 +463,7 @@
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -573,6 +590,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.5.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A2B2B98D2FB0D080004C6EEC /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A2B2B6852FB0145A004C6EEC /* Project object */;
 }
