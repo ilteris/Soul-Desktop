@@ -33,8 +33,11 @@ enum ClaudeTranscriptReader {
                 flush(&items, pending: &pendingAgentText)
 
                 let msg = rec["message"] as? [String: Any]
-                if let content = msg?["content"] as? String, !content.isEmpty {
-                    items.append(.userMessage(id: UUID(), text: content, timestamp: ts))
+                if let raw = msg?["content"] as? String, !raw.isEmpty {
+                    let content = sanitizeUserContent(raw)
+                    if !content.isEmpty {
+                        items.append(.userMessage(id: UUID(), text: content, timestamp: ts))
+                    }
                 }
                 // user records with list content are tool_results — skip; they're already
                 // implied by the preceding tool_use card and the agent's follow-up text.
@@ -94,6 +97,34 @@ enum ClaudeTranscriptReader {
         guard let p = pending else { return }
         items.append(.agentMessage(id: p.id, text: p.text, complete: true, timestamp: p.ts))
         pending = nil
+    }
+
+    /// Slash-command invocations land in the transcript as scaffolded XML:
+    ///   <command-message>args</command-message><command-name>/cmd</command-name>
+    /// We strip the tags and surface just `/cmd args` so the bubble reads as
+    /// what the user actually typed.
+    private static func sanitizeUserContent(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let name = extractTag(s, "command-name") {
+            let args = extractTag(s, "command-message")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Claude duplicates the command name into <command-message> when
+            // the user invokes the command without arguments, so drop it.
+            let bareName = name.hasPrefix("/") ? String(name.dropFirst()) : name
+            if args.isEmpty || args == bareName || args == name {
+                return name
+            }
+            return "\(name) \(args)"
+        }
+        return raw
+    }
+
+    private static func extractTag(_ s: String, _ tag: String) -> String? {
+        let open = "<\(tag)>"
+        let close = "</\(tag)>"
+        guard let o = s.range(of: open),
+              let c = s.range(of: close, range: o.upperBound..<s.endIndex)
+        else { return nil }
+        return String(s[o.upperBound..<c.lowerBound])
     }
 
     private static func encodeCwd(_ cwd: String) -> String {

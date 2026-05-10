@@ -4,6 +4,7 @@ import AppKit
 struct AppShell: View {
     @State private var selectedProject: String? = nil
     @State private var thread: ThreadController? = nil
+    @State private var replay: ReplayController? = nil
     @State private var prompt: String = ""
     @State private var showSmoke = false
     @State private var showSettings = false
@@ -20,6 +21,21 @@ struct AppShell: View {
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
+
+    private var replayFraction: Double {
+        guard let replay, replay.total > 0 else { return 0 }
+        return Double(replay.index) / Double(replay.total)
+    }
+
+    private var contextUsage: ContextUsage? {
+        if let replay {
+            return ContextUsage.compute(forSession: replay.sessionId, cwd: replay.project.path)
+        }
+        if let thread, let sid = thread.sessionId, thread.provider == .claude {
+            return ContextUsage.compute(forSession: sid, cwd: thread.project.path)
+        }
+        return nil
+    }
 
     private func currentProject() -> SoulProject? {
         guard let key = selectedProject else { return nil }
@@ -57,8 +73,25 @@ struct AppShell: View {
         Task {
             await thread?.teardown()
             thread = nil
+            replay?.stop()
+            replay = nil
             prompt = ""
         }
+    }
+
+    private func startReplay(_ session: SoulSession) {
+        guard let project = currentProject() else { return }
+        Task {
+            await thread?.teardown()
+            thread = nil
+            replay?.stop()
+            replay = ReplayController(sessionId: session.id, project: project)
+        }
+    }
+
+    private func exitReplay() {
+        replay?.stop()
+        replay = nil
     }
 
     private func cancelTurn() {
@@ -161,8 +194,15 @@ struct AppShell: View {
             SidebarView(
                 selectedProject: $selectedProject,
                 onSelectSession: loadSession,
+                onReplaySession: startReplay,
                 onNewChat: newChat,
-                onOpenSettings: { showSettings = true }
+                onOpenSettings: { showSettings = true },
+                activeReplaySessionId: replay?.sessionId,
+                replayProgress: replayFraction,
+                replayIndex: replay?.index ?? 0,
+                replayTotal: replay?.total ?? 0,
+                replayPrompts: replay?.promptCount ?? 0,
+                replayReplies: replay?.replyCount ?? 0
             )
                 .navigationSplitViewColumnWidth(min: 220, ideal: SoulMetric.sidebarWidth, max: 320)
                 .toolbar(removing: .sidebarToggle)
@@ -180,14 +220,17 @@ struct AppShell: View {
                         onToggleSidebar: toggleSidebar,
                         onToggleTerminal: toggleTerminal,
                         onToggleReview: toggleReview,
-                        threadActive: thread != nil,
+                        threadActive: thread != nil || replay != nil,
                         sidebarActive: showSidebar,
                         terminalActive: showTerminal,
-                        reviewActive: showReview
+                        reviewActive: showReview,
+                        contextUsage: contextUsage
                     )
                     ZStack {
                         SoulColor.bg.ignoresSafeArea()
-                        if let thread {
+                        if let replay {
+                            ReplayView(controller: replay, onExit: exitReplay)
+                        } else if let thread {
                             ThreadView(
                                 controller: thread,
                                 prompt: $prompt,
@@ -279,6 +322,7 @@ private struct CanvasToolbar: View {
     var sidebarActive: Bool = true
     var terminalActive: Bool = false
     var reviewActive: Bool = false
+    var contextUsage: ContextUsage? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -298,6 +342,10 @@ private struct CanvasToolbar: View {
                     .background(SoulColor.surface, in: Capsule())
                 }
                 .buttonStyle(.plain)
+                if let usage = contextUsage {
+                    ContextUsageChip(usage: usage)
+                        .padding(.leading, 6)
+                }
             }
 
             Spacer()
@@ -381,6 +429,44 @@ private struct ToolbarIcon: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ContextUsageChip: View {
+    let usage: ContextUsage
+
+    private var tone: Color {
+        if usage.fraction >= 0.9 { return .red }
+        if usage.fraction >= 0.7 { return .orange }
+        return SoulColor.fgMuted
+    }
+
+    private var maxLabel: String {
+        if usage.max >= 1_000_000 { return "\(usage.max / 1_000_000)M" }
+        return "\(usage.max / 1_000)k"
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "circle.bottomhalf.filled")
+                .font(.system(size: 10))
+                .foregroundStyle(tone)
+            Text("\(usage.shortLabel)")
+                .font(SoulFont.code(11, weight: .medium))
+                .foregroundStyle(SoulColor.fg)
+            Text("/ \(maxLabel)")
+                .font(SoulFont.code(11))
+                .foregroundStyle(SoulColor.fgSubtle)
+            Text("·")
+                .foregroundStyle(SoulColor.fgSubtle)
+            Text("\(Int(usage.fraction * 100))%")
+                .font(SoulFont.code(11))
+                .foregroundStyle(tone)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(SoulColor.surface, in: Capsule())
+        .help("Last-turn prompt size, sampled from the Claude transcript.")
     }
 }
 

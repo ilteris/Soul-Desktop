@@ -3,8 +3,15 @@ import SwiftUI
 struct SidebarView: View {
     @Binding var selectedProject: String?
     var onSelectSession: (SoulSession) -> Void = { _ in }
+    var onReplaySession: (SoulSession) -> Void = { _ in }
     var onNewChat: () -> Void = {}
     var onOpenSettings: () -> Void = {}
+    var activeReplaySessionId: String? = nil
+    var replayProgress: Double = 0
+    var replayIndex: Int = 0
+    var replayTotal: Int = 0
+    var replayPrompts: Int = 0
+    var replayReplies: Int = 0
     @State private var projects: [SoulProject] = []
     @State private var sessions: [SoulSession] = []
     @State private var showingAllProjects = false
@@ -164,9 +171,22 @@ struct SidebarView: View {
                                     .padding(.horizontal, 16)
                             } else {
                                 ForEach(filteredSessions) { session in
-                                    ChatRow(session: session)
+                                    ChatRow(
+                                        session: session,
+                                        onReplay: { onReplaySession(session) },
+                                        isActiveReplay: session.id == activeReplaySessionId,
+                                        replayProgress: replayProgress,
+                                        replayIndex: replayIndex,
+                                        replayTotal: replayTotal,
+                                        replayPrompts: replayPrompts,
+                                        replayReplies: replayReplies
+                                    )
                                         .contentShape(Rectangle())
                                         .onTapGesture { onSelectSession(session) }
+                                        .contextMenu {
+                                            Button("Open chat") { onSelectSession(session) }
+                                            Button("Replay…") { onReplaySession(session) }
+                                        }
                                 }
                             }
                         }
@@ -298,6 +318,14 @@ private struct AllProjectsPopover: View {
 
 struct ChatRow: View {
     let session: SoulSession
+    var onReplay: (() -> Void)? = nil
+    var isActiveReplay: Bool = false
+    var replayProgress: Double = 0
+    var replayIndex: Int = 0
+    var replayTotal: Int = 0
+    var replayPrompts: Int = 0
+    var replayReplies: Int = 0
+    @State private var hovering: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -316,10 +344,36 @@ struct ChatRow: View {
                     .foregroundStyle(SoulColor.fgSubtle)
             }
             Spacer(minLength: 0)
+            if isActiveReplay {
+                ReplayProgressChip(
+                    progress: replayProgress,
+                    index: replayIndex,
+                    total: replayTotal,
+                    prompts: replayPrompts,
+                    replies: replayReplies
+                )
+            } else if hovering, let onReplay {
+                Button(action: onReplay) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(SoulColor.accent)
+                        Text("Replay")
+                            .font(SoulFont.ui(10, weight: .medium))
+                            .foregroundStyle(SoulColor.fg)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(SoulColor.accentMuted, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Replay this session")
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 
     private var sourceIcon: String {
@@ -385,5 +439,55 @@ struct SidebarRow: View {
             in: RoundedRectangle(cornerRadius: SoulMetric.radiusS)
         )
         .contentShape(Rectangle())
+    }
+}
+
+private struct ReplayProgressChip: View {
+    let progress: Double
+    let index: Int
+    let total: Int
+    let prompts: Int
+    let replies: Int
+
+    var body: some View {
+        HStack(spacing: 0) {
+            label
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(SoulColor.surface)
+                    Capsule()
+                        .fill(SoulColor.accent.opacity(0.35))
+                        .frame(width: max(0, min(geo.size.width, geo.size.width * clampedProgress)))
+                }
+            }
+        }
+        .clipShape(Capsule())
+        .help("\(index) of \(total) · \(prompts) prompts · \(replies) replies")
+    }
+
+    private var clampedProgress: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, progress))
+    }
+
+    private var label: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "play.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(SoulColor.accent)
+            Text("\(index)/\(total)")
+                .font(SoulFont.code(10, weight: .medium))
+                .foregroundStyle(SoulColor.fg)
+            Text("·")
+                .font(SoulFont.ui(9))
+                .foregroundStyle(SoulColor.fgSubtle)
+            Text("\(prompts)p \(replies)r")
+                .font(SoulFont.code(10))
+                .foregroundStyle(SoulColor.fgMuted)
+        }
     }
 }

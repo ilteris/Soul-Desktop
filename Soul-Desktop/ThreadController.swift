@@ -130,7 +130,7 @@ final class ThreadController {
     }
 
     private var client: ACPClient?
-    private var sessionId: String?
+    private(set) var sessionId: String?
     private var hasInitialized = false
     private var supportsLoadSession = false
     private var openAgentMessageId: UUID?
@@ -332,9 +332,27 @@ final class ThreadController {
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
         let toolId = payload["toolCallId"]?.stringValue ?? UUID().uuidString
         let kind = payload["kind"]?.stringValue ?? "tool"
-        let title = payload["title"]?.stringValue ?? ""
+        let rawTitle = payload["title"]?.stringValue ?? ""
         let status = payload["status"]?.stringValue ?? "pending"
-        let location = firstLocation(payload)
+
+        // Claude (and most ACP agents) attach a human-readable description to
+        // every tool call's rawInput — "Search for X", "List dotfiles". For
+        // Bash calls especially, the title field is the raw command, which is
+        // useless as a chip headline. Prefer description when present, and
+        // surface the command underneath as location.
+        let rawInput = payload["rawInput"]
+        let description = rawInput?["description"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let command = rawInput?["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let title: String = {
+            if !description.isEmpty { return description }
+            return rawTitle
+        }()
+
+        let location: String? = {
+            if kind == "execute", !command.isEmpty { return command }
+            return firstLocation(payload)
+        }()
 
         if status == "failed" {
             ToolFailureLog.dump(payload: payload, provider: provider, sessionId: sessionId)

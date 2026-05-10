@@ -22,14 +22,15 @@ struct ThreadView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 18) {
                         Color.clear.frame(height: 8)
-                        ForEach(controller.items) { item in
+                        ForEach(Array(controller.items.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 item: item,
                                 isHistorical: controller.historicalIDs.contains(item.id)
                             )
                                 .id(item.id)
+                                .padding(.top, isTurnStart(item: item, index: i, items: controller.items) ? 10 : 0)
                         }
                         if controller.isWorking {
                             WorkingIndicator()
@@ -71,6 +72,15 @@ struct ThreadView: View {
             Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// A user message coming after non-user content opens a new turn — give it
+    /// extra top padding so the conversation reads as discrete exchanges.
+    private func isTurnStart(item: ThreadItem, index: Int, items: [ThreadItem]) -> Bool {
+        guard index > 0 else { return false }
+        guard case .userMessage = item else { return false }
+        if case .userMessage = items[index - 1] { return false }
+        return true
     }
 
     private func startRename() {
@@ -311,7 +321,11 @@ private struct UserMessageRow: View {
     @ViewBuilder
     private func bubble(_ p: (commandName: String?, rest: String)) -> some View {
         let mutedFg = SoulColor.fg.opacity(0.62)
-        let mutedSurface = SoulColor.surface.opacity(0.62)
+        // Neutral elevated fill — independent of the user's accent choice so
+        // the bubble never picks up a hot color. Slightly stronger than the
+        // sidebar surface so prompts still read as a distinct turn-start.
+        let bubbleFill = isHistorical ? SoulColor.bgElevated.opacity(0.7) : SoulColor.bgElevated
+        let bubbleStroke = SoulColor.border.opacity(isHistorical ? 0.4 : 0.7)
         HStack(alignment: .top, spacing: 6) {
             Spacer(minLength: 32)
             if let cmd = p.commandName {
@@ -336,9 +350,10 @@ private struct UserMessageRow: View {
                         .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(
-                            (isHistorical ? mutedSurface : SoulColor.surface),
-                            in: RoundedRectangle(cornerRadius: 10)
+                        .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(bubbleStroke, lineWidth: 0.5)
                         )
                         .textSelection(.enabled)
                 }
@@ -348,9 +363,10 @@ private struct UserMessageRow: View {
                     .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(
-                        (isHistorical ? mutedSurface : SoulColor.surface),
-                        in: RoundedRectangle(cornerRadius: 10)
+                    .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(bubbleStroke, lineWidth: 0.5)
                     )
                     .textSelection(.enabled)
             }
@@ -439,7 +455,7 @@ private struct FileChipRow: View {
 
     private func openFile() {
         let expanded = (path as NSString).expandingTildeInPath
-        NSWorkspace.shared.open(URL(fileURLWithPath: expanded))
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
     }
 
     private var cardContent: some View {
