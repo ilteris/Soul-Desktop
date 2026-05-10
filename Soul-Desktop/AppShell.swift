@@ -13,6 +13,7 @@ struct AppShell: View {
 
     @StateObject private var terminalModel = TerminalPanelModel()
     @State private var showTerminal: Bool = false
+    @AppStorage("soul.review.visible") private var showReview: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
 
@@ -62,6 +63,14 @@ struct AppShell: View {
 
     private func openNewProjectWizard() {
         showNewProject = true
+    }
+
+    private func toggleReview() {
+        if showReview {
+            withAnimation(.easeInOut(duration: 0.22)) { showReview = false }
+        } else {
+            withAnimation(.easeOut(duration: 0.26)) { showReview = true }
+        }
     }
 
     private func toggleTerminal() {
@@ -116,42 +125,59 @@ struct AppShell: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: SoulMetric.sidebarWidth, max: 320)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
-            VStack(spacing: 0) {
-                CanvasToolbar(
-                    harness: harness,
-                    onPickHarness: { picked in
-                        if thread != nil { newChat() }
-                        harness = picked
-                    },
-                    onSmokeTest: { showSmoke = true },
-                    onNewChat: newChat,
-                    onToggleTerminal: toggleTerminal,
-                    threadActive: thread != nil,
-                    terminalActive: showTerminal
-                )
-                ZStack {
-                    SoulColor.bg.ignoresSafeArea()
-                    if let thread {
-                        ThreadView(
-                            controller: thread,
-                            prompt: $prompt,
-                            onCancel: cancelTurn
-                        )
-                    } else {
-                        HeroEmptyState(
-                            projectName: currentProject()?.name ?? "your project",
-                            projectPath: currentProject()?.path,
-                            currentProjectID: selectedProject ?? "",
-                            prompt: $prompt,
-                            onSend: { text in startThread(with: text) },
-                            onSelectProject: { selectedProject = $0 },
-                            onNewProject: openNewProjectWizard
-                        )
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    CanvasToolbar(
+                        harness: harness,
+                        onPickHarness: { picked in
+                            if thread != nil { newChat() }
+                            harness = picked
+                        },
+                        onSmokeTest: { showSmoke = true },
+                        onNewChat: newChat,
+                        onToggleTerminal: toggleTerminal,
+                        onToggleReview: toggleReview,
+                        threadActive: thread != nil,
+                        terminalActive: showTerminal,
+                        reviewActive: showReview
+                    )
+                    ZStack {
+                        SoulColor.bg.ignoresSafeArea()
+                        if let thread {
+                            ThreadView(
+                                controller: thread,
+                                prompt: $prompt,
+                                onCancel: cancelTurn
+                            )
+                        } else {
+                            HeroEmptyState(
+                                projectName: currentProject()?.name ?? "your project",
+                                projectPath: currentProject()?.path,
+                                currentProjectID: selectedProject ?? "",
+                                prompt: $prompt,
+                                onSend: { text in startThread(with: text) },
+                                onSelectProject: { selectedProject = $0 },
+                                onNewProject: openNewProjectWizard
+                            )
+                        }
+                    }
+                    if showTerminal {
+                        terminalSection
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
-                if showTerminal {
-                    terminalSection
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                if showReview {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(SoulColor.border.opacity(0.5))
+                            .frame(width: 1)
+                        ReviewPanel(
+                            projectPath: currentProject()?.path,
+                            onClose: { withAnimation(.easeInOut(duration: 0.22)) { showReview = false } }
+                        )
+                        .frame(minWidth: 380, idealWidth: 460, maxWidth: 720)
+                    }
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .toolbar(.hidden)
@@ -188,8 +214,10 @@ private struct CanvasToolbar: View {
     var onSmokeTest: () -> Void = {}
     var onNewChat: () -> Void = {}
     var onToggleTerminal: () -> Void = {}
+    var onToggleReview: () -> Void = {}
     var threadActive: Bool = false
     var terminalActive: Bool = false
+    var reviewActive: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -222,7 +250,7 @@ private struct CanvasToolbar: View {
                 }.buttonStyle(.plain)
                 ToolbarIcon(name: "chevron.down.square")
                 ToolbarIcon(name: "terminal", isActive: terminalActive, action: onToggleTerminal)
-                ToolbarIcon(name: "sidebar.right")
+                ToolbarIcon(name: "sidebar.right", isActive: reviewActive, action: onToggleReview)
             }
         }
         .padding(.horizontal, 14)
