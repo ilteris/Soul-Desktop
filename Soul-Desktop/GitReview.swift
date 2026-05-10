@@ -57,6 +57,13 @@ final class GitReviewModel: ObservableObject {
         Task { await refresh() }
     }
 
+    var ignoreWhitespace: Bool = false {
+        didSet {
+            guard oldValue != ignoreWhitespace else { return }
+            Task { await refresh() }
+        }
+    }
+
     func refresh() async {
         guard let path = projectPath, !path.isEmpty else {
             snapshot = .empty
@@ -64,7 +71,8 @@ final class GitReviewModel: ObservableObject {
         }
         isLoading = true
         defer { isLoading = false }
-        let snap = await Task.detached(priority: .utility) { GitReviewModel.compute(at: path) }.value
+        let ignoreWS = ignoreWhitespace
+        let snap = await Task.detached(priority: .utility) { GitReviewModel.compute(at: path, ignoreWhitespace: ignoreWS) }.value
         switch snap {
         case .success(let s):
             snapshot = s
@@ -117,7 +125,7 @@ final class GitReviewModel: ObservableObject {
 
     // MARK: - Static workers (off-main)
 
-    nonisolated private static func compute(at path: String) -> Result<GitReviewSnapshot, GitError> {
+    nonisolated private static func compute(at path: String, ignoreWhitespace: Bool) -> Result<GitReviewSnapshot, GitError> {
         guard let _ = runCapture("git", ["-C", path, "rev-parse", "--is-inside-work-tree"]) else {
             return .failure(GitError(message: "not a git repository"))
         }
@@ -132,12 +140,12 @@ final class GitReviewModel: ObservableObject {
             return nil
         }()
 
-        let diffArgs: [String]
-        if let b = base {
-            diffArgs = ["-C", path, "diff", "--no-color", "--no-ext-diff", b]
-        } else {
-            diffArgs = ["-C", path, "diff", "--no-color", "--no-ext-diff", "HEAD"]
-        }
+        // -c core.quotepath=false → unicode + spaces in paths come through unquoted, so the
+        // unified-diff parser can read paths as the rest-of-line on `--- a/`, `+++ b/`, and
+        // rename-from/-to records.
+        var diffArgs = ["-c", "core.quotepath=false", "-C", path, "diff", "--no-color", "--no-ext-diff"]
+        if ignoreWhitespace { diffArgs.append("-w") }
+        diffArgs.append(base ?? "HEAD")
         guard let raw = runCapture("git", diffArgs, allowEmpty: true) else {
             return .success(GitReviewSnapshot(branch: branch, upstream: upstream, additions: 0, deletions: 0, files: []))
         }
@@ -190,8 +198,10 @@ final class GitReviewModel: ObservableObject {
             let line = lines[i]
             if !line.hasPrefix("diff --git ") { i += 1; continue }
 
-            // diff --git a/<old> b/<new>
-            var (oldPath, newPath) = parseDiffHeader(line)
+            // The `diff --git a/X b/Y` line is unreliable when paths contain spaces; rely on
+            // the unambiguous `--- a/`, `+++ b/`, `rename from`, `rename to` records below.
+            var oldPath: String? = nil
+            var newPath: String? = nil
             var isBinary = false
             var isNew = false
             var isDeleted = false
@@ -207,15 +217,21 @@ final class GitReviewModel: ObservableObject {
                 if l.hasPrefix("@@") { break }
                 if l.hasPrefix("new file mode") { isNew = true }
                 if l.hasPrefix("deleted file mode") { isDeleted = true }
-                if l.hasPrefix("rename from ") { isRenamed = true }
-                if l.hasPrefix("rename to ") { isRenamed = true }
+                if l.hasPrefix("rename from ") {
+                    isRenamed = true
+                    oldPath = String(l.dropFirst("rename from ".count))
+                }
+                if l.hasPrefix("rename to ") {
+                    isRenamed = true
+                    newPath = String(l.dropFirst("rename to ".count))
+                }
                 if l.hasPrefix("Binary files ") { isBinary = true }
                 if l.hasPrefix("--- ") {
-                    let p = String(l.dropFirst(4))
+                    let p = stripTrailingWS(String(l.dropFirst(4)))
                     if p != "/dev/null", p.hasPrefix("a/") { oldPath = String(p.dropFirst(2)) }
                 }
                 if l.hasPrefix("+++ ") {
-                    let p = String(l.dropFirst(4))
+                    let p = stripTrailingWS(String(l.dropFirst(4)))
                     if p != "/dev/null", p.hasPrefix("b/") { newPath = String(p.dropFirst(2)) }
                 }
                 i += 1
@@ -272,14 +288,14 @@ final class GitReviewModel: ObservableObject {
         return files
     }
 
-    nonisolated private static func parseDiffHeader(_ line: String) -> (String?, String?) {
-        // diff --git a/<old> b/<new> — paths may contain spaces; assume no for MVP
-        let parts = line.split(separator: " ").map(String.init)
-        guard parts.count >= 4 else { return (nil, nil) }
-        let a = parts[2], b = parts[3]
-        let old = a.hasPrefix("a/") ? String(a.dropFirst(2)) : a
-        let new = b.hasPrefix("b/") ? String(b.dropFirst(2)) : b
-        return (old, new)
+    nonisolated private static func stripTrailingWS(_ s: String) -> String {
+        var end = s.endIndex
+        while end > s.startIndex {
+            let prev = s.index(before: end)
+            let c = s[prev]
+            if c == " " || c == "\t" { end = prev } else { break }
+        }
+        return String(s[..<end])
     }
 
     nonisolated private static func parseHunkHeader(_ line: String) -> (Int, Int, String) {

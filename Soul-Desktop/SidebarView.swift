@@ -150,7 +150,7 @@ struct SidebarView: View {
                         .buttonStyle(.plain)
                         .help("New chat")
                     }
-                    .padding(.top, 12)
+                    .padding(.top, 24)
                     .padding(.bottom, 4)
                     .padding(.horizontal, 16)
 

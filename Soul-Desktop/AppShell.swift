@@ -14,6 +14,8 @@ struct AppShell: View {
     @StateObject private var terminalModel = TerminalPanelModel()
     @State private var showTerminal: Bool = false
     @AppStorage("soul.review.visible") private var showReview: Bool = false
+    @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
+    @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
 
@@ -63,6 +65,20 @@ struct AppShell: View {
 
     private func openNewProjectWizard() {
         showNewProject = true
+    }
+
+    private func toggleSidebar() {
+        if showSidebar {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                showSidebar = false
+                splitVisibility = .detailOnly
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.26)) {
+                showSidebar = true
+                splitVisibility = .all
+            }
+        }
     }
 
     private func toggleReview() {
@@ -115,7 +131,7 @@ struct AppShell: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $splitVisibility) {
             SidebarView(
                 selectedProject: $selectedProject,
                 onSelectSession: loadSession,
@@ -135,9 +151,11 @@ struct AppShell: View {
                         },
                         onSmokeTest: { showSmoke = true },
                         onNewChat: newChat,
+                        onToggleSidebar: toggleSidebar,
                         onToggleTerminal: toggleTerminal,
                         onToggleReview: toggleReview,
                         threadActive: thread != nil,
+                        sidebarActive: showSidebar,
                         terminalActive: showTerminal,
                         reviewActive: showReview
                     )
@@ -200,7 +218,12 @@ struct AppShell: View {
                 .keyboardShortcut(",", modifiers: .command)
                 .opacity(0)
                 .frame(width: 0, height: 0)
+            Button("") { toggleSidebar() }
+                .keyboardShortcut("\\", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
         }
+        .onAppear { splitVisibility = showSidebar ? .all : .detailOnly }
         .navigationSplitViewStyle(.balanced)
         .background(SoulColor.bg)
         .preferredColorScheme(.light)
@@ -213,14 +236,18 @@ private struct CanvasToolbar: View {
     var onPickHarness: (Provider) -> Void = { _ in }
     var onSmokeTest: () -> Void = {}
     var onNewChat: () -> Void = {}
+    var onToggleSidebar: () -> Void = {}
     var onToggleTerminal: () -> Void = {}
     var onToggleReview: () -> Void = {}
     var threadActive: Bool = false
+    var sidebarActive: Bool = true
     var terminalActive: Bool = false
     var reviewActive: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
+            ToolbarIcon(name: "sidebar.left", isActive: sidebarActive, action: onToggleSidebar)
+                .padding(.trailing, 6)
             if threadActive {
                 Button(action: onNewChat) {
                     HStack(spacing: 4) {

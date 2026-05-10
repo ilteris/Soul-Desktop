@@ -10,8 +10,27 @@ struct ReviewPanel: View {
     @State private var showCommit = false
     @State private var showCreateBranch = false
     @State private var actionMessage: String? = nil
+    @AppStorage("soul.review.wordWrap") private var wordWrap: Bool = false
+    @AppStorage("soul.review.hideWhitespace") private var hideWhitespace: Bool = false
 
     var body: some View {
+        panelStack
+            .frame(minWidth: 380, idealWidth: 460)
+            .background(SoulColor.bg)
+            .task(id: projectPath ?? "") {
+                model.ignoreWhitespace = hideWhitespace
+                model.bind(projectPath: projectPath)
+            }
+            .onChange(of: hideWhitespace) { _, new in model.ignoreWhitespace = new }
+            .onChange(of: model.snapshot.files.map(\.id)) { _, ids in
+                collapsed = Set(ids)
+            }
+            .sheet(isPresented: $showCommit) { commitSheet }
+            .sheet(isPresented: $showCreateBranch) { createBranchSheet }
+            .overlay(alignment: .bottom) { actionToast }
+    }
+
+    private var panelStack: some View {
         VStack(spacing: 0) {
             header
             Divider().background(SoulColor.border.opacity(0.5))
@@ -19,40 +38,41 @@ struct ReviewPanel: View {
             Divider().background(SoulColor.border.opacity(0.5))
             content
         }
-        .frame(minWidth: 380, idealWidth: 460)
-        .background(SoulColor.bg)
-        .task(id: projectPath ?? "") { model.bind(projectPath: projectPath) }
-        .sheet(isPresented: $showCommit) {
-            CommitSheet { msg in
-                showCommit = false
-                Task {
-                    let r = await model.commit(message: msg)
-                    handle(r, ok: "Committed.")
-                    await model.refresh()
-                }
-            } onCancel: { showCommit = false }
-        }
-        .sheet(isPresented: $showCreateBranch) {
-            CreateBranchSheet { name in
-                showCreateBranch = false
-                Task {
-                    let r = await model.createBranch(name: name)
-                    handle(r, ok: "Branch created.")
-                    await model.refresh()
-                }
-            } onCancel: { showCreateBranch = false }
-        }
-        .overlay(alignment: .bottom) {
-            if let msg = actionMessage {
-                Text(msg)
-                    .font(SoulFont.ui(11))
-                    .foregroundStyle(SoulColor.fg)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(SoulColor.border, lineWidth: 0.5))
-                    .padding(8)
-                    .transition(.opacity)
+    }
+
+    private var commitSheet: some View {
+        CommitSheet { msg in
+            showCommit = false
+            Task {
+                let r = await model.commit(message: msg)
+                handle(r, ok: "Committed.")
+                await model.refresh()
             }
+        } onCancel: { showCommit = false }
+    }
+
+    private var createBranchSheet: some View {
+        CreateBranchSheet { name in
+            showCreateBranch = false
+            Task {
+                let r = await model.createBranch(name: name)
+                handle(r, ok: "Branch created.")
+                await model.refresh()
+            }
+        } onCancel: { showCreateBranch = false }
+    }
+
+    @ViewBuilder
+    private var actionToast: some View {
+        if let msg = actionMessage {
+            Text(msg)
+                .font(SoulFont.ui(11))
+                .foregroundStyle(SoulColor.fg)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(SoulColor.border, lineWidth: 0.5))
+                .padding(8)
+                .transition(.opacity)
         }
     }
 
@@ -130,6 +150,9 @@ struct ReviewPanel: View {
         Menu {
             Button("Refresh") { Task { await model.refresh() } }
             Button(collapseAll ? "Expand all diffs" : "Collapse all diffs") { toggleCollapseAll() }
+            Divider()
+            Toggle("Word wrap", isOn: $wordWrap)
+            Toggle("Hide whitespace", isOn: $hideWhitespace)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 11))
@@ -185,10 +208,14 @@ struct ReviewPanel: View {
             placeholder(model.isLoading ? "Loading…" : "No changes.")
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     ForEach(model.snapshot.files) { file in
-                        fileBlock(file)
-                        Divider().background(SoulColor.border.opacity(0.4))
+                        Section {
+                            fileBody(file)
+                            Divider().background(SoulColor.border.opacity(0.4))
+                        } header: {
+                            fileHeader(file)
+                        }
                     }
                 }
             }
@@ -205,46 +232,61 @@ struct ReviewPanel: View {
     }
 
     @ViewBuilder
-    private func fileBlock(_ file: GitDiffFile) -> some View {
+    private func fileHeader(_ file: GitDiffFile) -> some View {
         let isCollapsed = collapsed.contains(file.id)
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                if isCollapsed { collapsed.remove(file.id) } else { collapsed.insert(file.id) }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(file.path)
-                        .font(SoulFont.code(11, weight: .medium))
-                        .foregroundStyle(SoulColor.fg)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if file.additions > 0 {
-                        Text("+\(file.additions)").font(SoulFont.code(10)).foregroundStyle(diffAddColor)
-                    }
-                    if file.deletions > 0 {
-                        Text("-\(file.deletions)").font(SoulFont.code(10)).foregroundStyle(diffDelColor)
-                    }
-                    if file.isNew { tag("new") }
-                    if file.isDeleted { tag("del") }
-                    if file.isRenamed { tag("ren") }
-                    if file.isBinary { tag("binary") }
-                    Spacer()
-                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 9))
-                        .foregroundStyle(SoulColor.fgSubtle)
+        Button {
+            if isCollapsed { collapsed.remove(file.id) } else { collapsed.insert(file.id) }
+        } label: {
+            HStack(spacing: 6) {
+                Text(headerLabel(for: file))
+                    .font(SoulFont.code(11, weight: .medium))
+                    .foregroundStyle(SoulColor.fg)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if file.additions > 0 {
+                    Text("+\(file.additions)").font(SoulFont.code(10)).foregroundStyle(diffAddColor)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
+                if file.deletions > 0 {
+                    Text("-\(file.deletions)").font(SoulFont.code(10)).foregroundStyle(diffDelColor)
+                }
+                if file.isNew { tag("new") }
+                if file.isDeleted { tag("del") }
+                if file.isRenamed { tag("ren") }
+                if file.isBinary { tag("binary") }
+                Spacer()
+                Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 9))
+                    .foregroundStyle(SoulColor.fgSubtle)
             }
-            .buttonStyle(.plain)
-            .background(SoulColor.bg)
-
-            if !isCollapsed && !file.isBinary {
-                ForEach(file.hunks) { hunk in
-                    hunkView(hunk)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            SoulColor.bg
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(SoulColor.border.opacity(0.4)).frame(height: 0.5)
                 }
+        )
+    }
+
+    @ViewBuilder
+    private func fileBody(_ file: GitDiffFile) -> some View {
+        let isCollapsed = collapsed.contains(file.id)
+        if !isCollapsed && !file.isBinary {
+            ForEach(file.hunks) { hunk in
+                hunkView(hunk)
             }
         }
+    }
+
+    private func headerLabel(for file: GitDiffFile) -> String {
+        if file.isRenamed, let old = file.oldPath, old != file.path {
+            return "\(old) → \(file.path)"
+        }
+        return file.path
     }
 
     private func tag(_ s: String) -> some View {
@@ -271,8 +313,9 @@ struct ReviewPanel: View {
                     Text(prefix(for: line.kind) + line.text)
                         .font(SoulFont.code(11))
                         .foregroundStyle(textColor(for: line.kind))
-                        .lineLimit(1)
+                        .lineLimit(wordWrap ? nil : 1)
                         .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: wordWrap)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, 1)
