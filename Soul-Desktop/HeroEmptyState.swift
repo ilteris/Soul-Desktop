@@ -8,6 +8,10 @@ struct HeroEmptyState: View {
     var onSend: (String) -> Void = { _ in }
     var onSelectProject: (String) -> Void = { _ in }
     var onNewProject: () -> Void = {}
+    var devCommand: String? = nil
+    var devURL: String? = nil
+    var devRunning: Bool = false
+    var onRunLocal: (String, String?) -> Void = { _, _ in }
     @State private var builtInCommands: [SlashCommand] = []
 
     var body: some View {
@@ -27,7 +31,11 @@ struct HeroEmptyState: View {
                 onSend: onSend,
                 currentProjectID: currentProjectID,
                 onSelectProject: onSelectProject,
-                onNewProject: onNewProject
+                onNewProject: onNewProject,
+                devCommand: devCommand,
+                devURL: devURL,
+                devRunning: devRunning,
+                onRunLocal: onRunLocal
             )
             .frame(maxWidth: 720)
 

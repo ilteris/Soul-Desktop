@@ -12,6 +12,10 @@ struct ComposerView: View {
     var currentProjectID: String = ""
     var onSelectProject: (String) -> Void = { _ in }
     var onNewProject: () -> Void = {}
+    var devCommand: String? = nil
+    var devURL: String? = nil
+    var devRunning: Bool = false
+    var onRunLocal: (String, String?) -> Void = { _, _ in }
 
     @State private var showingCommandPalette = false
     @State private var activeCommand: SlashCommand? = nil
@@ -132,7 +136,16 @@ struct ComposerView: View {
                     onCreate: onNewProject
                 )
                 if let branch = branchName {
-                    ContextChip(icon: "arrow.triangle.branch", label: branch)
+                    BranchChip(
+                        currentBranch: branch,
+                        projectPath: projectPath,
+                        onSwitched: { branchName = $0 }
+                    )
+                }
+                if let cmd = devCommand {
+                    RunLocalChip(isRunning: devRunning) {
+                        onRunLocal(cmd, devURL)
+                    }
                 }
             }
             .padding(.horizontal, 4)
@@ -158,6 +171,40 @@ enum GitInfo {
             let s = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return s.isEmpty || s == "HEAD" ? nil : s
+        }.value
+    }
+
+    static func localBranches(at path: String?) async -> [String] {
+        guard let path, !path.isEmpty else { return [] }
+        return await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["git", "-C", path, "for-each-ref", "--format=%(refname:short)", "refs/heads/"]
+            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+            do { try p.run() } catch { return [] }
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { return [] }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            return raw.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }.value
+    }
+
+    /// Returns nil on success, or stderr message on failure.
+    static func checkout(branch: String, at path: String?) async -> String? {
+        guard let path, !path.isEmpty else { return "no project path" }
+        return await Task.detached(priority: .utility) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["git", "-C", path, "checkout", branch]
+            let err = Pipe(); p.standardError = err; p.standardOutput = Pipe()
+            do { try p.run() } catch { return error.localizedDescription }
+            p.waitUntilExit()
+            if p.terminationStatus == 0 { return nil }
+            let data = err.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? "exit \(p.terminationStatus)"
         }.value
     }
 }
@@ -373,6 +420,91 @@ private struct SlashCommandPalette: View {
         }
         .padding(6)
         .frame(width: 420)
+    }
+}
+
+private struct RunLocalChip: View {
+    let isRunning: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                SoulIcon(
+                    name: isRunning ? "stop.fill" : "play.fill",
+                    size: 10,
+                    color: isRunning ? .red : SoulColor.accent
+                )
+                Text(isRunning ? "Stop" : "Run locally")
+                    .font(SoulFont.ui(12))
+                    .foregroundStyle(SoulColor.fg)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                (isRunning ? Color.red.opacity(0.12) : SoulColor.accentMuted),
+                in: Capsule()
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct BranchChip: View {
+    let currentBranch: String
+    let projectPath: String?
+    var onSwitched: (String) -> Void
+    @State private var branches: [String] = []
+    @State private var checkoutError: String? = nil
+
+    var body: some View {
+        Menu {
+            if branches.isEmpty {
+                Text("Loading…")
+            } else {
+                ForEach(branches, id: \.self) { b in
+                    Button {
+                        switchTo(b)
+                    } label: {
+                        HStack {
+                            if b == currentBranch { Image(systemName: "checkmark") }
+                            Text(b)
+                        }
+                    }
+                    .disabled(b == currentBranch)
+                }
+            }
+            if let err = checkoutError {
+                Divider()
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                SoulIcon(name: "arrow.triangle.branch", size: 11, color: SoulColor.fgMuted)
+                Text(currentBranch).font(SoulFont.ui(12)).foregroundStyle(SoulColor.fgMuted)
+                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .task(id: projectPath ?? "") {
+            branches = await GitInfo.localBranches(at: projectPath)
+        }
+    }
+
+    private func switchTo(_ b: String) {
+        Task {
+            checkoutError = nil
+            if let err = await GitInfo.checkout(branch: b, at: projectPath) {
+                checkoutError = err.split(separator: "\n").first.map(String.init) ?? err
+                return
+            }
+            onSwitched(b)
+            branches = await GitInfo.localBranches(at: projectPath)
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct AppShell: View {
     @State private var selectedProject: String? = nil
@@ -16,6 +17,7 @@ struct AppShell: View {
     @AppStorage("soul.review.visible") private var showReview: Bool = false
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
+    @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
 
@@ -65,6 +67,30 @@ struct AppShell: View {
 
     private func openNewProjectWizard() {
         showNewProject = true
+    }
+
+    private func runLocal(_ command: String, _ url: String?) {
+        if devServerRunning {
+            // Ctrl-C interrupts the foreground process in the panel's shell.
+            terminalModel.requestSend("\u{03}")
+            devServerRunning = false
+            return
+        }
+        let cwd = currentProject()?.path ?? FileManager.default.homeDirectoryForCurrentUser.path
+        terminalModel.ensureSeeded(with: cwd)
+        if !showTerminal {
+            withAnimation(.easeOut(duration: 0.26)) { showTerminal = true }
+        }
+        // Give the freshly-seeded shell a beat to be ready for input before piping the command.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            terminalModel.requestSend(command + "\n")
+        }
+        if let url, let nsURL = URL(string: url) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                NSWorkspace.shared.open(nsURL)
+            }
+        }
+        devServerRunning = true
     }
 
     private func toggleSidebar() {
@@ -175,7 +201,11 @@ struct AppShell: View {
                                 prompt: $prompt,
                                 onSend: { text in startThread(with: text) },
                                 onSelectProject: { selectedProject = $0 },
-                                onNewProject: openNewProjectWizard
+                                onNewProject: openNewProjectWizard,
+                                devCommand: currentProject()?.devCommand,
+                                devURL: currentProject()?.devURL,
+                                devRunning: devServerRunning,
+                                onRunLocal: runLocal
                             )
                         }
                     }
@@ -227,7 +257,13 @@ struct AppShell: View {
         .navigationSplitViewStyle(.balanced)
         .background(SoulColor.bg)
         .preferredColorScheme(.light)
-        .onChange(of: selectedProject) { _, _ in newChat() }
+        .onChange(of: selectedProject) { _, _ in
+            newChat()
+            devServerRunning = false
+        }
+        .onChange(of: showTerminal) { _, isOpen in
+            if !isOpen { devServerRunning = false }
+        }
     }
 }
 

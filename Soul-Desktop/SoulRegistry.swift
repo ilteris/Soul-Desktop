@@ -8,6 +8,8 @@ struct SoulProject: Identifiable, Hashable {
     var tier: Int?
     var status: String?
     var primaryHost: String?
+    var devCommand: String?        // optional shell command, e.g. "npm run dev"
+    var devURL: String?            // optional URL to open after dev server starts, e.g. "http://localhost:3002"
 }
 
 struct SoulSession: Identifiable, Hashable {
@@ -41,7 +43,9 @@ enum SoulRegistry {
                 pillar: val["pillar"] as? String,
                 tier: val["tier"] as? Int,
                 status: val["status"] as? String,
-                primaryHost: val["primary_host"] as? String
+                primaryHost: val["primary_host"] as? String,
+                devCommand: val["dev_command"] as? String,
+                devURL: val["dev_url"] as? String
             )
         }
 

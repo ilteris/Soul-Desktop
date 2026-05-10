@@ -145,29 +145,29 @@ struct ThreadItemRow: View {
     var isHistorical: Bool = false
 
     var body: some View {
-        Group {
-            switch item {
-            case .userMessage(_, let text, let ts):
-                UserMessageRow(text: text, timestamp: ts)
-            case .agentMessage(_, let text, _, let ts):
-                AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
-            case .toolCall(_, let kind, let title, let status, let loc):
-                ToolCallRow(kind: kind, title: title, status: status, location: loc)
-            case .plan(_, let entries):
-                PlanCard(entries: entries)
-            case .status(_, let text):
-                Text(text)
-                    .font(SoulFont.ui(11))
-                    .foregroundStyle(SoulColor.fgSubtle)
-            case .error(_, let text):
-                Text(text)
-                    .font(SoulFont.code(11))
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-            }
+        // Note: historical dimming is pushed into per-component foreground colors so the row layer
+        // stays opaque — Core Animation disables subpixel text AA on translucent layers, which
+        // shows up as slightly blurry / shimmering text during fractional-offset trackpad scroll.
+        switch item {
+        case .userMessage(_, let text, let ts):
+            UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+        case .agentMessage(_, let text, _, let ts):
+            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+        case .toolCall(_, let kind, let title, let status, let loc):
+            ToolCallRow(kind: kind, title: title, status: status, location: loc)
+        case .plan(_, let entries):
+            PlanCard(entries: entries)
+        case .status(_, let text):
+            Text(text)
+                .font(SoulFont.ui(11))
+                .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.62 : 1.0))
+        case .error(_, let text):
+            Text(text)
+                .font(SoulFont.code(11))
+                .foregroundStyle(Color.red.opacity(isHistorical ? 0.62 : 1.0))
+                .padding(8)
+                .background(Color.red.opacity(isHistorical ? 0.05 : 0.08), in: RoundedRectangle(cornerRadius: 6))
         }
-        .opacity(isHistorical ? 0.62 : 1.0)
     }
 }
 
@@ -183,8 +183,14 @@ private struct AgentMessageRow: View {
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
 
     var body: some View {
+        let mutedFg = SoulColor.fg.opacity(0.62)
         VStack(alignment: .leading, spacing: 4) {
-            MarkdownView(text: split.visible)
+            MarkdownView(
+                text: split.visible,
+                headerColor: isHistorical ? mutedFg : SoulColor.fg,
+                bodyColor: isHistorical ? mutedFg : SoulColor.fg,
+                codeColor: isHistorical ? mutedFg : SoulColor.fg
+            )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
 
@@ -195,7 +201,7 @@ private struct AgentMessageRow: View {
             if isHistorical {
                 Text(MessageTimestamp.format(timestamp))
                     .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
+                    .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
                     .help(MessageTimestamp.absolute(timestamp))
             } else {
             HStack(spacing: 4) {
@@ -272,6 +278,7 @@ private struct FooterButton: View {
 private struct UserMessageRow: View {
     let text: String
     let timestamp: Date
+    var isHistorical: Bool = false
 
     private var parsed: (commandName: String?, rest: String) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
@@ -295,7 +302,7 @@ private struct UserMessageRow: View {
             bubble(p)
             Text(MessageTimestamp.format(timestamp))
                 .font(SoulFont.ui(10))
-                .foregroundStyle(SoulColor.fgSubtle)
+                .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
                 .help(MessageTimestamp.absolute(timestamp))
                 .padding(.trailing, 4)
         }
@@ -303,34 +310,48 @@ private struct UserMessageRow: View {
 
     @ViewBuilder
     private func bubble(_ p: (commandName: String?, rest: String)) -> some View {
+        let mutedFg = SoulColor.fg.opacity(0.62)
+        let mutedSurface = SoulColor.surface.opacity(0.62)
         HStack(alignment: .top, spacing: 6) {
             Spacer(minLength: 32)
             if let cmd = p.commandName {
                 Text("/\(cmd)")
                     .font(SoulFont.code(12, weight: .medium))
-                    .foregroundStyle(SoulColor.accent)
+                    .foregroundStyle(isHistorical ? SoulColor.accent.opacity(0.62) : SoulColor.accent)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(SoulColor.accentMuted, in: Capsule())
+                    .background(
+                        (isHistorical ? SoulColor.accentMuted.opacity(0.62) : SoulColor.accentMuted),
+                        in: Capsule()
+                    )
                     .overlay(
-                        Capsule().strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 0.5)
+                        Capsule().strokeBorder(
+                            SoulColor.accent.opacity(isHistorical ? 0.18 : 0.3),
+                            lineWidth: 0.5
+                        )
                     )
                 if !p.rest.isEmpty {
                     Text(p.rest)
                         .font(SoulFont.ui(13))
-                        .foregroundStyle(SoulColor.fg)
+                        .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 10))
+                        .background(
+                            (isHistorical ? mutedSurface : SoulColor.surface),
+                            in: RoundedRectangle(cornerRadius: 10)
+                        )
                         .textSelection(.enabled)
                 }
             } else {
                 Text(text)
                     .font(SoulFont.ui(13))
-                    .foregroundStyle(SoulColor.fg)
+                    .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 10))
+                    .background(
+                        (isHistorical ? mutedSurface : SoulColor.surface),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
                     .textSelection(.enabled)
             }
         }
