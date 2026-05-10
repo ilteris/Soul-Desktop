@@ -21,14 +21,19 @@ struct ReplayView: View {
                                 .id(item.id)
                                 .padding(.top, ReplayView.isTurnStart(item: item, index: i, items: controller.visible) ? 10 : 0)
                         }
-                        if controller.visible.isEmpty {
+                        // Empty-state only when there is truly no transcript on disk.
+                        // visible.isEmpty during the first tick is normal — don't
+                        // confuse the user with a "not found" message in that window.
+                        if controller.total == 0 {
                             VStack(spacing: 6) {
-                                Text("Nothing to replay")
+                                Text("No transcript")
                                     .font(SoulFont.ui(13, weight: .medium))
                                     .foregroundStyle(SoulColor.fgMuted)
-                                Text("No transcript found for session \(controller.sessionId.prefix(8))…")
+                                Text("Session \(controller.sessionId.prefix(8))… has no Claude transcript under this project's cwd.")
                                     .font(SoulFont.ui(11))
                                     .foregroundStyle(SoulColor.fgSubtle)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: 320)
                             }
                             .padding(.top, 32)
                         }

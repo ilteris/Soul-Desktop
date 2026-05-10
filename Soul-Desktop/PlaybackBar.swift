@@ -65,6 +65,8 @@ struct PlaybackBar: View {
 
             Spacer(minLength: 8)
 
+            SpeedSlider(speed: controller.speed) { controller.setSpeed($0) }
+
             Button(action: onExit) {
                 Text("Exit replay")
                     .font(SoulFont.ui(11, weight: .medium))
@@ -81,6 +83,44 @@ struct PlaybackBar: View {
         .background(SoulColor.bgElevated.opacity(0.85))
         .overlay(alignment: .bottom) {
             Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
+        }
+    }
+}
+
+/// Log-scale speed slider: 0.25× → 4× spaced as powers of 2 so 1× sits dead
+/// center. Display label shows the current speed; cmd-click snaps to 1×.
+private struct SpeedSlider: View {
+    let speed: Double
+    var onChange: (Double) -> Void
+
+    // We treat the slider value as log2(speed): -2 (0.25×) ... 2 (4×).
+    private var sliderBinding: Binding<Double> {
+        Binding(
+            get: { log2(speed) },
+            set: { onChange(pow(2.0, $0)) }
+        )
+    }
+
+    private var label: String {
+        if abs(speed - 1.0) < 0.05 { return "1×" }
+        if speed < 1 { return String(format: "%.2f×", speed) }
+        return String(format: "%.1f×", speed)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(SoulFont.code(10, weight: .medium))
+                .foregroundStyle(SoulColor.fgMuted)
+                .frame(width: 36, alignment: .trailing)
+                .contentShape(Rectangle())
+                .onTapGesture { onChange(1.0) }
+                .help("Click to reset to 1×")
+
+            Slider(value: sliderBinding, in: -2.0...2.0)
+                .controlSize(.mini)
+                .tint(SoulColor.accent)
+                .frame(width: 110)
         }
     }
 }
