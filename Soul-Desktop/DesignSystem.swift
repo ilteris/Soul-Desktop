@@ -4,14 +4,31 @@ import AppKit
 enum SoulFont {
     static let family = "JetBrainsMono Nerd Font"
 
-    static func ui(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-        .custom(family, size: size).weight(weight)
+    /// SwiftUI's `.weight()` modifier on custom (non-system) font families is
+    /// unreliable — it often silently no-ops on Nerd Font builds because the
+    /// face axis isn't exposed the way system fonts expose it. Select the
+    /// explicit PostScript face name instead.
+    private static func face(for weight: Font.Weight) -> String {
+        switch weight {
+        case .ultraLight, .thin:        return "JetBrainsMonoNF-Thin"
+        case .light:                    return "JetBrainsMonoNF-Light"
+        case .regular:                  return "JetBrainsMonoNF-Regular"
+        case .medium:                   return "JetBrainsMonoNF-Medium"
+        case .semibold:                 return "JetBrainsMonoNF-SemiBold"
+        case .bold:                     return "JetBrainsMonoNF-Bold"
+        case .heavy, .black:            return "JetBrainsMonoNF-ExtraBold"
+        default:                        return "JetBrainsMonoNF-Medium"
+        }
     }
-    static func code(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-        .custom(family, size: size).weight(weight)
+
+    static func ui(_ size: CGFloat = 13, weight: Font.Weight = .medium) -> Font {
+        .custom(face(for: weight), size: size)
+    }
+    static func code(_ size: CGFloat = 13, weight: Font.Weight = .medium) -> Font {
+        .custom(face(for: weight), size: size)
     }
     static func hero(_ size: CGFloat = 28) -> Font {
-        .custom(family, size: size).weight(.medium)
+        .custom(face(for: .medium), size: size)
     }
 }
 
