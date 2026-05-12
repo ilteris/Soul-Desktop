@@ -290,12 +290,30 @@ final class ThreadController {
                     Task { await generateTitle() }
                 }
 
+                // Pop the next queued turn. Re-check on each iteration so
+                // sends that arrived during this loop's await get drained
+                // without needing a separate dispatcher.
                 current = queuedPrompts.isEmpty ? nil : queuedPrompts.removeFirst()
             }
         } catch {
             let msg = "\(error)"
             items.append(.error(id: UUID(), text: msg))
             lastError = msg
+        }
+
+        // Safety drain: in extremely rare cases (an ACP prompt RPC that
+        // streams text but never resolves end-of-turn, e.g. Claude
+        // occasionally hangs after a "waiting for your go-ahead" reply) the
+        // user's queued message ends up sitting in queuedPrompts while
+        // isWorking stays true forever. If we reach this point with a
+        // non-empty queue, re-enter via a fresh send() so the queue
+        // actually drains instead of the user seeing a permanent
+        // "Thinking…" indicator.
+        if !queuedPrompts.isEmpty {
+            let next = queuedPrompts.removeFirst()
+            Task { [weak self] in
+                await self?.send(display: next.display, agent: next.agent)
+            }
         }
     }
 
@@ -329,6 +347,33 @@ final class ThreadController {
             items.append(.status(id: UUID(), text: "■ cancel sent"))
         }
         isWorking = false
+    }
+
+    /// Cancel the current stalled turn and dispatch the next queued prompt.
+    /// Wired to the WorkingIndicator's "Skip ahead" button so the user can
+    /// recover from an ACP server that streamed all output but never
+    /// returned end-of-turn (Claude/Gemini both do this occasionally on
+    /// "I'll wait for your go-ahead"-style replies).
+    func skipStalledTurn() async {
+        guard let client, let sid = sessionId else { return }
+        guard !queuedPrompts.isEmpty else { return }
+        // Cancel the current turn — but DON'T wipe the queue like `cancel()`
+        // does. We want to advance, not abort.
+        try? await client.cancel(sessionId: sid)
+        items = items.map { item in
+            if case .toolCall(let id, let kind, let title, let status, let loc, let details) = item,
+               status == "in_progress" || status == "pending" {
+                return .toolCall(id: id, kind: kind, title: title, status: "stopped", locationHint: loc, details: details)
+            }
+            return item
+        }
+        items.append(.status(id: UUID(), text: "⏭ skipped stalled turn"))
+        // Force isWorking off so the safety-drain at the end of send() can
+        // pop the queue and re-enter; without this the next send() call
+        // would just re-queue.
+        isWorking = false
+        let next = queuedPrompts.removeFirst()
+        await send(display: next.display, agent: next.agent)
     }
 
     func loadSession(id sid: String) async {

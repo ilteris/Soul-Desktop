@@ -710,7 +710,7 @@ private struct LiveSessionRow: View {
 enum ProviderIcon {
     static func symbol(forSessionSource source: String?) -> String {
         switch source {
-        case "claude":    return "sparkles"
+        case "claude":    return "hexagon"
         case "gemini":    return "star"
         case "pi-native": return "wand.and.rays"
         default:          return "circle.dotted"
@@ -719,7 +719,7 @@ enum ProviderIcon {
 
     static func symbol(forLiveProvider liveProvider: String?) -> String {
         switch liveProvider {
-        case "claude":    return "sparkles"
+        case "claude":    return "hexagon"
         case "geminiCLI": return "star"
         case "pi":        return "wand.and.rays"
         default:          return "circle.dotted"

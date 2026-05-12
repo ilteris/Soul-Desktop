@@ -830,6 +830,28 @@ private struct WorkingIndicator: View {
                                 .foregroundStyle(Color.orange)
                             }
                             .buttonStyle(.plain)
+
+                            // Show a "Skip ahead" affordance only when there's
+                            // something queued and waiting on this stall. The
+                            // action cancels the current (hung) turn and the
+                            // safety-drain in send() picks up the queue.
+                            if !controller.queuedPrompts.isEmpty {
+                                Button {
+                                    Task { await controller.skipStalledTurn() }
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "forward.fill")
+                                        Text("Skip ahead")
+                                    }
+                                    .font(SoulFont.ui(10, weight: .bold))
+                                    .foregroundStyle(Color.orange)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.orange.opacity(0.12), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Cancel the stalled turn and dispatch the next queued message")
+                            }
                         }
                     }
                 }
@@ -887,16 +909,21 @@ private struct DiffView: View {
     let details: ToolCallDetails
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        HStack(alignment: .top, spacing: 1) {
             switch details.kind {
             case .edit(let oldString, let newString):
-                diffBlock(text: oldString, sign: "-", tint: .red,
-                          start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
-                diffBlock(text: newString, sign: "+", tint: .green,
-                          start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                column(text: oldString, sign: "-", tint: .red,
+                       start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                column(text: newString, sign: "+", tint: .green,
+                       start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
             case .write(let content):
-                diffBlock(text: content, sign: "+", tint: .green,
-                          start: details.startLine ?? 1, gutterWidth: gutterWidth(content, content))
+                // Write has no "before" — render an empty placeholder column
+                // so the layout stays symmetrical and the eye doesn't have
+                // to re-scan when switching between edits and writes.
+                column(text: "", sign: " ", tint: SoulColor.fgSubtle,
+                       start: nil, gutterWidth: gutterWidth("", content))
+                column(text: content, sign: "+", tint: .green,
+                       start: details.startLine ?? 1, gutterWidth: gutterWidth("", content))
             }
         }
         .padding(.vertical, 6)
@@ -919,9 +946,9 @@ private struct DiffView: View {
         return CGFloat(chars) * 7 + 4
     }
 
-    private func diffBlock(text: String, sign: String, tint: Color,
-                           start: Int?, gutterWidth: CGFloat) -> some View {
-        let lines = text.isEmpty ? [""] : text.components(separatedBy: "\n")
+    private func column(text: String, sign: String, tint: Color,
+                        start: Int?, gutterWidth: CGFloat) -> some View {
+        let lines = text.isEmpty ? [" "] : text.components(separatedBy: "\n")
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                 HStack(alignment: .top, spacing: 6) {
@@ -944,5 +971,6 @@ private struct DiffView: View {
                 .background(tint.opacity(0.08))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
