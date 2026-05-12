@@ -21,14 +21,23 @@ enum SoulFont {
         }
     }
 
-    static func ui(_ size: CGFloat = 13, weight: Font.Weight = .medium) -> Font {
+    static func ui(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
         .custom(face(for: weight), size: size)
     }
-    static func code(_ size: CGFloat = 13, weight: Font.Weight = .medium) -> Font {
+    static func code(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
         .custom(face(for: weight), size: size)
     }
     static func hero(_ size: CGFloat = 28) -> Font {
-        .custom(face(for: .medium), size: size)
+        .custom(face(for: .regular), size: size)
+    }
+
+    /// AppKit equivalent of `ui(_:weight:)`. Use this for any NSFont consumer
+    /// (NSTextView, SwiftTerm) so the rendered weight matches SwiftUI views.
+    /// Falls back to the system monospaced face if the PostScript name fails
+    /// to load (e.g. font not installed).
+    static func nsFont(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> NSFont {
+        NSFont(name: face(for: weight), size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }
 
@@ -38,8 +47,8 @@ enum SoulColor {
     static let sidebar       = Color(hex: 0xE6E9EF).opacity(0.6)
     static let surface       = Color(hex: 0xE6E9EF)
     static let border        = Color(hex: 0xCCD0DA)
-    static let fg            = Color(hex: 0x4C4F69)
-    static let fgMuted       = Color(hex: 0x6C6F85)
+    static let fg            = Color(hex: 0x1E1E2E)
+    static let fgMuted       = Color(hex: 0x5C5F77)
     static let fgSubtle      = Color(hex: 0x8C8FA1)
 
     /// Default Catppuccin purple — used when the user hasn't picked one.
@@ -73,6 +82,37 @@ enum SoulMetric {
     static let radiusL: CGFloat = 14
     static let pad: CGFloat = 12
     static let padTight: CGFloat = 8
+}
+
+/// Named typography roles. Tune sizes here, not in views. New code should
+/// reference these tokens; old call sites still using `SoulFont.ui(N)`
+/// directly will be migrated incrementally. Sizes intentionally cluster
+/// around the 15pt body to keep vertical rhythm coherent.
+enum SoulType {
+    // Body — chat messages, sidebar rows, paragraph text.
+    static let body          = SoulFont.ui(15, weight: .regular)
+    static let bodyBold      = SoulFont.ui(15, weight: .bold)
+    static let bodyItalic    = SoulFont.ui(15, weight: .regular).italic()
+    static let bodyBoldItalic = SoulFont.ui(15, weight: .bold).italic()
+
+    // Inline code spans — slightly smaller than body so the mono face
+    // doesn't overpower; same face though (composer/sidebar are all mono).
+    static let code          = SoulFont.code(14, weight: .regular)
+
+    // Headings — semibold, descending.
+    static let h1            = SoulFont.ui(24, weight: .semibold)
+    static let h2            = SoulFont.ui(19, weight: .semibold)
+    static let h3            = SoulFont.ui(16, weight: .semibold)
+    static let h4            = SoulFont.ui(14, weight: .semibold)
+
+    // Meta — timestamps, footers, badges, sub-headers.
+    static let caption       = SoulFont.ui(12, weight: .regular)
+    static let micro         = SoulFont.ui(10, weight: .regular)
+
+    // Composer text field. AppKit-side so we expose NSFont too.
+    static let composerSize: CGFloat = 14
+    static let composer      = SoulFont.ui(composerSize, weight: .regular)
+    static var composerNS: NSFont { SoulFont.nsFont(composerSize, weight: .regular) }
 }
 
 extension Color {

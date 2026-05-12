@@ -28,6 +28,9 @@ actor ACPClient {
     let events: AsyncStream<Event>
     private var eventCont: AsyncStream<Event>.Continuation?
     var autoAllowPermissions: Bool = false
+    /// Per-thread permission policy. Overrides `autoAllowPermissions` when set.
+    /// See `PermissionMode` for what each mode does.
+    var permissionMode: PermissionMode = .fullAccess
 
     init(spawn: ACPProviderSpawn) throws {
         let url = URL(fileURLWithPath: spawn.executablePath)
@@ -55,6 +58,7 @@ actor ACPClient {
     }
 
     func setAutoAllow(_ on: Bool) { autoAllowPermissions = on }
+    func setPermissionMode(_ mode: PermissionMode) { permissionMode = mode }
 
     // MARK: high-level methods
 
@@ -218,23 +222,50 @@ actor ACPClient {
         guard case .array(let opts)? = params?["options"], !opts.isEmpty else {
             sendError(id: id, code: -32602, message: "missing options"); return
         }
-        if !autoAllowPermissions {
+
+        // Pull the tool name hint from the request so .autoReview can decide
+        // whether this is read-only vs state-mutating.
+        let toolName: String = {
+            if case .string(let n)? = params?["toolCall"]?["kind"] { return n }
+            if case .string(let n)? = params?["toolCall"]?["title"] { return n }
+            return ""
+        }()
+
+        func cancel() {
             try? sendResponse(id: id, result: ["outcome": ["outcome": "cancelled"]])
-            return
         }
-        var pick: JSONValue? = nil
-        for opt in opts {
-            if case .string(let kind)? = opt["kind"], kind.hasPrefix("allow") {
-                pick = opt; break
+
+        func allowFirstMatching() {
+            var pick: JSONValue? = nil
+            for opt in opts {
+                if case .string(let kind)? = opt["kind"], kind.hasPrefix("allow") {
+                    pick = opt; break
+                }
             }
+            let chosen = pick ?? opts.first!
+            guard case .string(let optionId)? = chosen["optionId"] ?? chosen["id"] else {
+                sendError(id: id, code: -32603, message: "no optionId on permission option"); return
+            }
+            try? sendResponse(id: id, result: [
+                "outcome": ["outcome": "selected", "optionId": optionId]
+            ])
         }
-        let chosen = pick ?? opts.first!
-        guard case .string(let optionId)? = chosen["optionId"] ?? chosen["id"] else {
-            sendError(id: id, code: -32603, message: "no optionId on permission option"); return
+
+        switch permissionMode {
+        case .fullAccess:
+            allowFirstMatching()
+        case .autoReview:
+            if PermissionMode.isReadOnlyTool(toolName) {
+                allowFirstMatching()
+            } else {
+                // State-mutating tool: deny until an interactive sheet exists.
+                // Agent will surface the rejection as an error in its own log.
+                cancel()
+            }
+        case .defaultAsk:
+            // No sheet yet — fall back to cancelled. Lands proper UI in a follow-up.
+            cancel()
         }
-        try? sendResponse(id: id, result: [
-            "outcome": ["outcome": "selected", "optionId": optionId]
-        ])
     }
 
     private func handleFsRead(id: JSONRPCID, params: JSONValue?) {

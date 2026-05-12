@@ -3,8 +3,22 @@ import AppKit
 
 struct AppShell: View {
     @State private var selectedProject: String? = nil
-    @State private var thread: ThreadController? = nil
+    /// Multiplex: every opened conversation gets its own ThreadController and
+    /// stays alive in `threads` until explicitly closed. Switching sessions
+    /// is a pointer swap (`activeThreadKey`), not a teardown — agent
+    /// processes keep streaming in the background, no re-spawn, no
+    /// re-hydration. Keyed by `ThreadController.id` because fresh new chats
+    /// don't have a sessionId until the first send resolves.
+    @State private var threads: [String: ThreadController] = [:]
+    @State private var activeThreadKey: String? = nil
     @State private var replay: ReplayController? = nil
+    /// Optimistic selection: the live-row ID the user just tapped, used for
+    /// sidebar highlight before the spawn completes and `thread.sessionId`
+    /// is real. Cleared once the thread's own session ID catches up.
+    @State private var pendingActiveId: String? = nil
+    /// Per-thread composer drafts. The thread that's active reads/writes
+    /// `prompt`; switching threads swaps drafts in and out.
+    @State private var draftsByThread: [String: String] = [:]
     @State private var prompt: String = ""
     @State private var showSmoke = false
     @State private var showSettings = false
@@ -21,6 +35,10 @@ struct AppShell: View {
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
+    @State private var sidebarWasOpenBeforeReplay: Bool = true
+    /// Mode chosen before any thread exists — persists across new chats so
+    /// the hero composer remembers the user's safety preference.
+    @State private var pendingPermissionMode: PermissionMode = .fullAccess
 
     private var replayFraction: Double {
         guard let replay, replay.total > 0 else { return 0 }
@@ -29,10 +47,14 @@ struct AppShell: View {
 
     private var contextUsage: ContextUsage? {
         if let replay {
-            return ContextUsage.compute(forSession: replay.sessionId, cwd: replay.project.path)
+            // Replay rows don't carry a provider — try claude first (precise
+            // usage), fall back to hooks-byte estimate so the chip still
+            // shows something for gemini/pi replays.
+            return ContextUsage.compute(provider: .claude, sessionId: replay.sessionId, cwd: replay.project.path)
+                ?? ContextUsage.compute(provider: .pi, sessionId: replay.sessionId, cwd: replay.project.path)
         }
-        if let thread, let sid = thread.sessionId, thread.provider == .claude {
-            return ContextUsage.compute(forSession: sid, cwd: thread.project.path)
+        if let thread, let sid = thread.sessionId {
+            return ContextUsage.compute(provider: thread.provider, sessionId: sid, cwd: thread.project.path)
         }
         return nil
     }
@@ -42,56 +64,150 @@ struct AppShell: View {
         return SoulRegistry.projects().first { $0.id == key }
     }
 
-    private func startThread(with text: String) {
+    /// The thread the canvas is currently showing. Computed from the active
+    /// key — multiple threads coexist in `threads`; only one paints at a time.
+    private var thread: ThreadController? {
+        guard let key = activeThreadKey else { return nil }
+        return threads[key]
+    }
+
+    /// Switch the active thread, stashing the outgoing draft and loading the
+    /// incoming one. No teardown, no re-spawn — the previous thread keeps its
+    /// agent process and continues streaming in the background.
+    private func setActiveThread(_ key: String?) {
+        if let oldKey = activeThreadKey {
+            draftsByThread[oldKey] = prompt
+        }
+        activeThreadKey = key
+        prompt = key.flatMap { draftsByThread[$0] } ?? ""
+    }
+
+    private func startThread(display: String, agent: String) {
         guard let project = currentProject() else { return }
         let controller = ThreadController(provider: harness, project: project)
-        thread = controller
-        Task { await controller.send(text) }
+        controller.permissionMode = pendingPermissionMode
+        threads[controller.id] = controller
+        setActiveThread(controller.id)
+        Task { await controller.send(display: display, agent: agent) }
     }
 
     private func loadSession(_ session: SoulSession) {
         guard let project = currentProject() else { return }
         let provider: Provider = {
+            // Finalized rows carry `source` (set by the kernel at /finalize).
             switch session.source {
             case "claude":    return .claude
             case "gemini":    return .geminiCLI
             case "pi-native": return .pi
+            default: break
+            }
+            // Live rows don't have `source` — derive from where the agent's
+            // persistence file actually lives so a Claude session clicked
+            // under the Gemini harness auto-switches instead of dead-ending.
+            switch session.liveProvider {
+            case "claude":    return .claude
+            case "geminiCLI": return .geminiCLI
             default:          return harness
             }
         }()
-        Task {
-            await thread?.teardown()
-            thread = nil
-            harness = provider
-            let controller = ThreadController(provider: provider, project: project)
-            thread = controller
-            await controller.loadSession(id: session.id)
+        pendingActiveId = session.id
+
+        // If this session is already open in a live ThreadController, just
+        // surface it. No teardown, no re-load, no agent re-spawn. This is the
+        // entire point of the multiplexer.
+        if let existing = threads.values.first(where: { $0.sessionId == session.id }) {
+            harness = existing.provider
+            setActiveThread(existing.id)
+            return
         }
+
+        harness = provider
+        // SOUL-SOUL_DESKTOP-021: if the session was started inside a git
+        // worktree, spawn the agent in that worktree, not the main project
+        // checkout. The project key (registry partitioning) stays the same;
+        // only `path` (cwd) is overlaid. Without this, a worktree-tagged
+        // session loads in the wrong directory and the agent sees a
+        // different file tree than the session was authored against.
+        var routedProject = project
+        if let wt = session.worktreePath,
+           !wt.isEmpty,
+           FileManager.default.fileExists(atPath: wt) {
+            routedProject.path = wt
+        }
+        let controller = ThreadController(provider: provider, project: routedProject)
+        // Anchor the session-length chip to the original session start —
+        // prefer the first hooks.jsonl event, fall back to the SoulSession's
+        // own timestamp so we never show "0s" for a loaded session.
+        if let origin = SoulRegistry.firstHookTimestamp(projectKey: routedProject.id, sessionId: session.id) {
+            controller.startedAt = origin
+        } else {
+            controller.startedAt = session.timestamp
+        }
+        threads[controller.id] = controller
+        setActiveThread(controller.id)
+        Task { await controller.loadSession(id: session.id) }
     }
 
     private func newChat() {
-        Task {
-            await thread?.teardown()
-            thread = nil
-            replay?.stop()
-            replay = nil
-            prompt = ""
+        pendingActiveId = nil
+        replay?.stop()
+        replay = nil
+        // New chat = open a fresh empty thread; existing threads stay alive
+        // in the background. Composer clears for the new draft.
+        if let oldKey = activeThreadKey {
+            draftsByThread[oldKey] = prompt
         }
+        activeThreadKey = nil
+        prompt = ""
+    }
+
+    /// Explicit close — only path that actually tears an agent down. Wired
+    /// into a close affordance on threads (sidebar row context menu, future
+    /// tab close). Without an explicit close, threads live for the app's
+    /// lifetime.
+    private func closeThread(_ key: String) {
+        guard let controller = threads[key] else { return }
+        threads.removeValue(forKey: key)
+        draftsByThread.removeValue(forKey: key)
+        if activeThreadKey == key { activeThreadKey = nil; prompt = "" }
+        Task { await controller.teardown() }
     }
 
     private func startReplay(_ session: SoulSession) {
         guard let project = currentProject() else { return }
-        Task {
-            await thread?.teardown()
-            thread = nil
-            replay?.stop()
-            replay = ReplayController(sessionId: session.id, project: project)
+        sidebarWasOpenBeforeReplay = showSidebar
+        if showSidebar {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                showSidebar = false
+                splitVisibility = .detailOnly
+            }
         }
+        // Replay is a separate view — it doesn't replace the active thread.
+        // The thread keeps running; switching back via exitReplay reveals it.
+        replay?.stop()
+        replay = ReplayController(sessionId: session.id, project: project)
     }
 
     private func exitReplay() {
+        // Cancel playback synchronously so no driver Task touches the
+        // controller while it's being torn down.
         replay?.stop()
-        replay = nil
+        // Move the deallocation off the main thread. For a 33h Claude
+        // session `allEvents`/`visible` hold hundreds of ThreadItems with
+        // megabyte text payloads; releasing those refs on main beach-balls
+        // the click. Detached task drops the last strong ref off-main.
+        if let outgoing = replay {
+            replay = nil
+            Task.detached(priority: .utility) {
+                _ = outgoing  // hold then drop off-main
+            }
+        }
+        if sidebarWasOpenBeforeReplay && !showSidebar {
+            withAnimation(.easeOut(duration: 0.26)) {
+                showSidebar = true
+                splitVisibility = .all
+            }
+        }
     }
 
     private func cancelTurn() {
@@ -202,7 +318,9 @@ struct AppShell: View {
                 replayIndex: replay?.index ?? 0,
                 replayTotal: replay?.total ?? 0,
                 replayPrompts: replay?.promptCount ?? 0,
-                replayReplies: replay?.replyCount ?? 0
+                replayReplies: replay?.replyCount ?? 0,
+                activeSessionId: thread?.sessionId ?? pendingActiveId,
+                currentProvider: harness
             )
                 .navigationSplitViewColumnWidth(min: 220, ideal: SoulMetric.sidebarWidth, max: 320)
                 .toolbar(removing: .sidebarToggle)
@@ -224,7 +342,9 @@ struct AppShell: View {
                         sidebarActive: showSidebar,
                         terminalActive: showTerminal,
                         reviewActive: showReview,
-                        contextUsage: contextUsage
+                        replayActive: replay != nil,
+                        contextUsage: contextUsage,
+                        thread: thread
                     )
                     ZStack {
                         SoulColor.bg.ignoresSafeArea()
@@ -236,19 +356,29 @@ struct AppShell: View {
                                 prompt: $prompt,
                                 onCancel: cancelTurn
                             )
+                                // Force a fresh view identity per thread so
+                                // SwiftUI tears down the ScrollView on switch
+                                // and our `.onAppear` restore actually fires.
+                                // Without this, SwiftUI reuses the same view
+                                // structure across thread swaps and the
+                                // ScrollView retains the previous thread's
+                                // internal NSScrollView offset.
+                                .id(thread.id)
                         } else {
                             HeroEmptyState(
                                 projectName: currentProject()?.name ?? "your project",
                                 projectPath: currentProject()?.path,
                                 currentProjectID: selectedProject ?? "",
                                 prompt: $prompt,
-                                onSend: { text in startThread(with: text) },
+                                onSend: { display, agent in startThread(display: display, agent: agent) },
                                 onSelectProject: { selectedProject = $0 },
                                 onNewProject: openNewProjectWizard,
                                 devCommand: currentProject()?.devCommand,
                                 devURL: currentProject()?.devURL,
                                 devRunning: devServerRunning,
-                                onRunLocal: runLocal
+                                onRunLocal: runLocal,
+                                pendingPermissionMode: $pendingPermissionMode,
+                                provider: harness
                             )
                         }
                     }
@@ -301,7 +431,9 @@ struct AppShell: View {
         .background(SoulColor.bg)
         .preferredColorScheme(.light)
         .onChange(of: selectedProject) { _, _ in
-            newChat()
+            // Project switch is purely a sidebar filter now — active threads
+            // belong to their own project (carried on the ThreadController),
+            // so clicking around in the sidebar doesn't tear them down.
             devServerRunning = false
         }
         .onChange(of: showTerminal) { _, isOpen in
@@ -322,19 +454,23 @@ private struct CanvasToolbar: View {
     var sidebarActive: Bool = true
     var terminalActive: Bool = false
     var reviewActive: Bool = false
+    var replayActive: Bool = false
     var contextUsage: ContextUsage? = nil
+    var thread: ThreadController? = nil
 
     var body: some View {
         HStack(spacing: 0) {
             ToolbarIcon(name: "sidebar.left", isActive: sidebarActive, action: onToggleSidebar)
                 .padding(.trailing, 6)
+                .disabled(replayActive)
+                .opacity(replayActive ? 0.35 : 1)
             if threadActive {
                 Button(action: onNewChat) {
                     HStack(spacing: 4) {
                         Image(systemName: "square.and.pencil")
                             .font(.system(size: 11))
                         Text("New chat")
-                            .font(SoulFont.ui(12, weight: .medium))
+                            .font(SoulFont.ui(12, weight: .regular))
                     }
                     .foregroundStyle(SoulColor.fgMuted)
                     .padding(.horizontal, 8)
@@ -342,8 +478,16 @@ private struct CanvasToolbar: View {
                     .background(SoulColor.surface, in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(replayActive)
+                .opacity(replayActive ? 0.35 : 1)
                 if let usage = contextUsage {
                     ContextUsageChip(usage: usage)
+                        .padding(.leading, 6)
+                }
+                if let thread {
+                    SessionStatsChip(controller: thread)
+                        .padding(.leading, 6)
+                    AgentLogChip(controller: thread)
                         .padding(.leading, 6)
                 }
             }
@@ -352,17 +496,24 @@ private struct CanvasToolbar: View {
 
             HStack(spacing: 14) {
                 HarnessPicker(selection: harness, onSelect: onPickHarness)
+                    .disabled(replayActive)
                 Button(action: onSmokeTest) {
                     Image(systemName: "ladybug")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(SoulColor.fgMuted)
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .disabled(replayActive)
                 ToolbarIcon(name: "chevron.down.square")
+                    .disabled(replayActive)
                 ToolbarIcon(name: "terminal", isActive: terminalActive, action: onToggleTerminal)
+                    .disabled(replayActive)
                 ToolbarIcon(name: "sidebar.right", isActive: reviewActive, action: onToggleReview)
+                    .disabled(replayActive)
             }
+            .opacity(replayActive ? 0.35 : 1)
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -398,7 +549,7 @@ private struct HarnessPicker: View {
                     .font(.system(size: 11))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
-                    .font(SoulFont.ui(12, weight: .medium))
+                    .font(SoulFont.ui(12, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                 SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgMuted)
             }
@@ -432,6 +583,37 @@ private struct ToolbarIcon: View {
     }
 }
 
+/// Always-on log surface tied to the active thread's agent log. Tap to open
+/// the same popover the stall badge uses — useful when you want to peek at
+/// what the agent is doing without waiting 30s for the stall threshold.
+private struct AgentLogChip: View {
+    @Bindable var controller: ThreadController
+    @State private var showing = false
+
+    var body: some View {
+        Button {
+            showing.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "scroll")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgMuted)
+                Text("\(controller.agentLog.count)")
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(controller.agentLog.isEmpty ? SoulColor.fgSubtle : SoulColor.fg)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(SoulColor.surface, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Agent stderr log (\(controller.agentLog.count) lines)")
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            AgentLogPanel(lines: controller.agentLog)
+        }
+    }
+}
+
 private struct ContextUsageChip: View {
     let usage: ContextUsage
 
@@ -452,7 +634,7 @@ private struct ContextUsageChip: View {
                 .font(.system(size: 10))
                 .foregroundStyle(tone)
             Text("\(usage.shortLabel)")
-                .font(SoulFont.code(11, weight: .medium))
+                .font(SoulFont.code(11, weight: .regular))
                 .foregroundStyle(SoulColor.fg)
             Text("/ \(maxLabel)")
                 .font(SoulFont.code(11))
@@ -466,7 +648,72 @@ private struct ContextUsageChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(SoulColor.surface, in: Capsule())
-        .help("Last-turn prompt size, sampled from the Claude transcript.")
+        .help(usage.isEstimate
+              ? "≈\(usage.tokens) tokens (estimated from transcript bytes — provider doesn't expose precise usage)"
+              : "\(usage.tokens) tokens (precise — last-turn prompt size from the Claude transcript)")
+    }
+}
+
+/// Compact chip showing how "fat" the active thread has gotten: tool calls so
+/// far, user-prompt chapters, and elapsed wall-clock since the thread was
+/// instantiated. Elapsed time refreshes once per second via TimelineView so
+/// we never schedule our own Timer / re-render the whole toolbar.
+private struct SessionStatsChip: View {
+    @Bindable var controller: ThreadController
+
+    private var toolCount: Int {
+        controller.items.reduce(into: 0) { acc, item in
+            if case .toolCall = item { acc += 1 }
+        }
+    }
+
+    private var chapterCount: Int {
+        controller.items.reduce(into: 0) { acc, item in
+            if case .userMessage = item { acc += 1 }
+        }
+    }
+
+    private func elapsedLabel(now: Date) -> String {
+        let seconds = Int(max(0, now.timeIntervalSince(controller.startedAt)))
+        if seconds < 60 { return "\(seconds)s" }
+        let m = seconds / 60
+        if m < 60 { return "\(m)m" }
+        let h = m / 60
+        let rem = m % 60
+        return rem == 0 ? "\(h)h" : "\(h)h\(rem)m"
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.adjustable")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgMuted)
+                Text("\(toolCount)")
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(SoulColor.fg)
+                Text("·")
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgMuted)
+                Text("\(chapterCount)")
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(SoulColor.fg)
+                Text("·")
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Image(systemName: "clock")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgMuted)
+                Text(elapsedLabel(now: ctx.date))
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(SoulColor.fg)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(SoulColor.surface, in: Capsule())
+            .help("\(toolCount) tool calls · \(chapterCount) prompts · running \(elapsedLabel(now: ctx.date))")
+        }
     }
 }
 

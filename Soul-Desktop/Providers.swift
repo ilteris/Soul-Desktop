@@ -31,14 +31,16 @@ enum Provider: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Today, before Phase 0d hydration ships.
+    /// Hydration status as of the unified-generator cutover (2026-05-11).
+    /// All three harnesses now boot into a Soul-aware session; only the
+    /// delivery shape differs (native markdown file vs. mid-session XML).
     var soulContextStatus: String {
         switch self {
-        case .geminiCLI: return "raw — no Soul context yet"
-        case .claude:    return "stale CLAUDE.md if any"
+        case .geminiCLI: return "hydrated via GEMINI.md (soul_gemini_harness.py)"
+        case .claude:    return "hydrated via CLAUDE.md (soul_claude_harness.py)"
         case .pi:        return "hydrated via soul-orchestrator extension"
         }
     }
 
-    var isHydratedToday: Bool { self == .pi }
+    var isHydratedToday: Bool { true }
 }

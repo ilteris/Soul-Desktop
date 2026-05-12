@@ -69,7 +69,7 @@ struct SettingsView: View {
             Button(action: onDismiss) {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.left")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 11, weight: .regular))
                     Text("Back to app")
                         .font(SoulFont.ui(12))
                 }
@@ -419,7 +419,7 @@ private struct MCPServersPane: View {
                             SoulIcon(name: "shippingbox", size: 12)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(s.name)
-                                    .font(SoulFont.ui(13, weight: .medium))
+                                    .font(SoulFont.ui(13, weight: .regular))
                                     .foregroundStyle(SoulColor.fg)
                                 Text(s.command)
                                     .font(SoulFont.code(11))
@@ -493,7 +493,7 @@ private struct HooksPane: View {
                     HStack(spacing: 10) {
                         SoulIcon(name: "link", size: 12)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(k.name).font(SoulFont.ui(13, weight: .medium)).foregroundStyle(SoulColor.fg)
+                            Text(k.name).font(SoulFont.ui(13, weight: .regular)).foregroundStyle(SoulColor.fg)
                             Text(k.detail).font(SoulFont.ui(11)).foregroundStyle(SoulColor.fgSubtle)
                         }
                         Spacer()
@@ -586,7 +586,7 @@ private struct SectionHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(SoulFont.ui(13, weight: .medium))
+                .font(SoulFont.ui(13, weight: .regular))
                 .foregroundStyle(SoulColor.fg)
             if let subtitle {
                 Text(subtitle)
@@ -611,7 +611,7 @@ private struct WorkModeCard: View {
                 SoulIcon(name: icon, size: 14)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(SoulFont.ui(13, weight: .medium))
+                        .font(SoulFont.ui(13, weight: .regular))
                         .foregroundStyle(SoulColor.fg)
                     Text(subtitle)
                         .font(SoulFont.ui(11))
@@ -646,7 +646,7 @@ private struct SettingRow<Trailing: View>: View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(SoulFont.ui(13, weight: .medium))
+                    .font(SoulFont.ui(13, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                 if let description {
                     Text(description)
@@ -711,7 +711,7 @@ private struct SegmentedRow: View {
                 ForEach(options, id: \.0) { (key, label) in
                     Button { selection = key } label: {
                         Text(label)
-                            .font(SoulFont.ui(11, weight: .medium))
+                            .font(SoulFont.ui(11, weight: .regular))
                             .foregroundStyle(selection == key ? SoulColor.fg : SoulColor.fgMuted)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)

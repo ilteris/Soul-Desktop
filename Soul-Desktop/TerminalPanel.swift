@@ -82,9 +82,7 @@ struct TerminalHost: NSViewRepresentable {
         // Theme — keep close to the rest of the app (light surface, dark text).
         view.nativeBackgroundColor = NSColor(SoulColor.bg)
         view.nativeForegroundColor = NSColor(SoulColor.fg)
-        if let mono = NSFont(name: SoulFont.family, size: 12) {
-            view.font = mono
-        }
+        view.font = SoulFont.nsFont(12, weight: .regular)
 
         // Login shell, full PATH via -l. Seed cwd; let prompt theming do its thing.
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
@@ -162,7 +160,7 @@ struct TerminalPanel: View {
                         model.addTab(cwd: cwd)
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(SoulColor.fgMuted)
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
@@ -176,7 +174,7 @@ struct TerminalPanel: View {
             Spacer(minLength: 0)
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 26, height: 22)
                     .contentShape(Rectangle())
@@ -221,14 +219,14 @@ private struct TabChip: View {
                 .font(.system(size: 10))
                 .foregroundStyle(isActive ? SoulColor.fg : SoulColor.fgMuted)
             Text(tab.title)
-                .font(SoulFont.ui(11, weight: .medium))
+                .font(SoulFont.ui(11, weight: .regular))
                 .foregroundStyle(isActive ? SoulColor.fg : SoulColor.fgMuted)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 140, alignment: .leading)
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 9, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 14, height: 14)
                     .contentShape(Rectangle())

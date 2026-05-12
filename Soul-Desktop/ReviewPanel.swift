@@ -82,7 +82,7 @@ struct ReviewPanel: View {
                 .font(.system(size: 11))
                 .foregroundStyle(SoulColor.fgMuted)
             Text("Review")
-                .font(SoulFont.ui(12, weight: .medium))
+                .font(SoulFont.ui(12, weight: .regular))
                 .foregroundStyle(SoulColor.fg)
             Spacer()
             Button(action: { Task { await model.refresh() } }) {
@@ -118,15 +118,15 @@ struct ReviewPanel: View {
             }
             if model.snapshot.additions > 0 || model.snapshot.deletions > 0 {
                 Text("+\(model.snapshot.additions)")
-                    .font(SoulFont.code(11, weight: .medium))
+                    .font(SoulFont.code(11, weight: .regular))
                     .foregroundStyle(diffAddColor)
                 Text("-\(model.snapshot.deletions)")
-                    .font(SoulFont.code(11, weight: .medium))
+                    .font(SoulFont.code(11, weight: .regular))
                     .foregroundStyle(diffDelColor)
             }
             HStack(spacing: 4) {
                 Text(model.snapshot.branch ?? "—")
-                    .font(SoulFont.code(11, weight: .medium))
+                    .font(SoulFont.code(11, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                 if let up = model.snapshot.upstream {
                     Image(systemName: "arrow.right")
@@ -239,7 +239,7 @@ struct ReviewPanel: View {
         } label: {
             HStack(spacing: 6) {
                 Text(headerLabel(for: file))
-                    .font(SoulFont.code(11, weight: .medium))
+                    .font(SoulFont.code(11, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -291,7 +291,7 @@ struct ReviewPanel: View {
 
     private func tag(_ s: String) -> some View {
         Text(s)
-            .font(SoulFont.ui(9, weight: .medium))
+            .font(SoulFont.ui(9, weight: .regular))
             .foregroundStyle(SoulColor.fgMuted)
             .padding(.horizontal, 4).padding(.vertical, 1)
             .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 3))

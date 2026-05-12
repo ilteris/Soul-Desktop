@@ -2,8 +2,8 @@ import SwiftUI
 
 struct MarkdownView: View {
     let text: String
-    var codeFont: Font = .custom(SoulFont.family, size: 12)
-    var bodyFont: Font = .custom(SoulFont.family, size: 13)
+    var codeFont: Font = SoulType.code
+    var bodyFont: Font = SoulType.body
     var headerColor: Color = SoulColor.fg
     var bodyColor: Color = SoulColor.fg
     var codeColor: Color = SoulColor.fg
@@ -37,11 +37,15 @@ struct MarkdownView: View {
             .padding(.top, level == 1 ? 14 : level == 2 ? 10 : 6)
             .padding(.bottom, level == 1 ? 2 : 0)
         case .paragraph(let line):
-            inline(line)
-                .font(bodyFont)
-                .foregroundStyle(bodyColor)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
+            if let code = MarkdownView.bareInlineCode(line) {
+                CopyableInlineCodeRow(code: code, font: codeFont)
+            } else {
+                inline(line)
+                    .font(bodyFont)
+                    .foregroundStyle(bodyColor)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case .bullet(let lines):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, item in
@@ -49,11 +53,15 @@ struct MarkdownView: View {
                         Text("•")
                             .font(bodyFont)
                             .foregroundStyle(SoulColor.fgSubtle)
-                        inline(item)
-                            .font(bodyFont)
-                            .foregroundStyle(bodyColor)
-                            .lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if let code = MarkdownView.bareInlineCode(item) {
+                            CopyableInlineCodeRow(code: code, font: codeFont)
+                        } else {
+                            inline(item)
+                                .font(bodyFont)
+                                .foregroundStyle(bodyColor)
+                                .lineSpacing(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -66,25 +74,66 @@ struct MarkdownView: View {
         }
     }
 
-    private func inline(_ s: String) -> Text {
-        if let attr = try? AttributedString(
+    private func inline(_ s: String) -> Text { MarkdownView.inline(s) }
+
+    /// Public so children (TableView cells, anyone else rendering markdown
+    /// chunks) can produce the same bold/italic/code styling that paragraph
+    /// rows get. Without this, `**bold**` and `` `code` `` leak through as
+    /// raw asterisks/backticks in table cells.
+    static func inline(_ s: String) -> Text {
+        guard var attr = try? AttributedString(
             markdown: s,
             options: AttributedString.MarkdownParsingOptions(
                 allowsExtendedAttributes: true,
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
-        ) {
-            return Text(attr)
+        ) else {
+            return Text(s)
         }
-        return Text(s)
+        // Walk inlinePresentationIntent runs and apply the right PostScript
+        // face explicitly. `.weight(.bold)` on `.custom()` Nerd Font is a
+        // no-op — bold falls back to system-bold and breaks visual unity.
+        for run in attr.runs {
+            let intent = run.inlinePresentationIntent ?? []
+            let isBold = intent.contains(.stronglyEmphasized)
+            let isCode = intent.contains(.code)
+            let isItalic = intent.contains(.emphasized)
+            if isCode {
+                attr[run.range].font = SoulType.code
+            } else if isBold && isItalic {
+                attr[run.range].font = SoulType.bodyBoldItalic
+            } else if isBold {
+                attr[run.range].font = SoulType.bodyBold
+            } else if isItalic {
+                attr[run.range].font = SoulType.bodyItalic
+            }
+        }
+        return Text(attr)
+    }
+
+    /// If `s` (after trimming) is exactly one inline-code span — i.e.
+    /// `` `something` `` with no other prose — return the unwrapped content.
+    /// Used by paragraph and bullet rendering to swap a styled-Text for a
+    /// click-to-copy row, so one-liners like an `open …` command can be
+    /// copied with a single click instead of triple-clicking + cmd-C.
+    static func bareInlineCode(_ s: String) -> String? {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("`"), trimmed.hasSuffix("`"), trimmed.count >= 2 else { return nil }
+        let inner = String(trimmed.dropFirst().dropLast())
+        // Reject if the inner content itself contains a backtick — that means
+        // multiple spans or escaped tick, which our copy semantics would
+        // mangle. Better to fall through to the styled-text path.
+        guard !inner.contains("`") else { return nil }
+        let cleaned = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private func headingFont(_ level: Int) -> Font {
         switch level {
-        case 1: return .custom(SoulFont.family, size: 24).weight(.semibold)
-        case 2: return .custom(SoulFont.family, size: 19).weight(.semibold)
-        case 3: return .custom(SoulFont.family, size: 16).weight(.semibold)
-        default: return .custom(SoulFont.family, size: 14).weight(.semibold)
+        case 1: return SoulType.h1
+        case 2: return SoulType.h2
+        case 3: return SoulType.h3
+        default: return SoulType.h4
         }
     }
 }
@@ -117,9 +166,11 @@ private struct TableView: View {
     private func row(cells: [String], isHeader: Bool) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(cells.enumerated()), id: \.offset) { idx, cell in
-                Text(cell)
+                // Run cell text through the same markdown pass as paragraphs
+                // so **bold** and `code` render styled instead of literal.
+                MarkdownView.inline(cell)
                     .font(isHeader ? headerFont.weight(.semibold) : bodyFont)
-                    .foregroundStyle(isHeader ? SoulColor.fg : SoulColor.fg)
+                    .foregroundStyle(SoulColor.fg)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -146,7 +197,7 @@ private struct CodeBlockView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(lang ?? "text")
-                    .font(SoulFont.code(10, weight: .medium))
+                    .font(SoulFont.code(10, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
                 Spacer()
                 Button(action: copy) {
@@ -190,6 +241,75 @@ private struct CodeBlockView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             copied = false
+        }
+    }
+}
+
+/// One-line click-to-copy chip for paragraphs/bullets whose entire content is
+/// a single inline-code span. Less chrome than `CodeBlockView` (no header bar,
+/// no language tag), more affordance than a styled `Text` (cursor changes,
+/// hover reveals "copy", click writes the unwrapped content to the pasteboard).
+private struct CopyableInlineCodeRow: View {
+    let code: String
+    let font: Font
+    @State private var copied = false
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Disable text-selection on the label itself: an I-beam cursor
+            // and the row's "click anywhere to copy" intent fight each
+            // other. We let `onTapGesture` own the click; selection can
+            // happen via cmd-A in the chat or by dragging across multiple
+            // rows (still works at the canvas level).
+            Text(code)
+                .font(font)
+                .foregroundStyle(SoulColor.fg)
+            if hovering || copied {
+                HStack(spacing: 3) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 10, weight: .regular))
+                    if copied {
+                        Text("copied")
+                            .font(.system(size: 10, weight: .regular))
+                    }
+                }
+                .foregroundStyle(copied ? SoulColor.accent : SoulColor.fgMuted)
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(SoulColor.border.opacity(hovering ? 0.6 : 0.3), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: copy)
+        .onHover { h in
+            withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
+            // Pointing-hand cursor so the row reads as a clickable button,
+            // not a text input. AppKit's cursor stack needs push/pop —
+            // SwiftUI's `.pointerStyle(.link)` is macOS 15-only.
+            if h {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .help("Click to copy")
+    }
+
+    private func copy() {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(code, forType: .string)
+        #endif
+        withAnimation(.easeOut(duration: 0.12)) { copied = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            withAnimation(.easeIn(duration: 0.15)) { copied = false }
         }
     }
 }

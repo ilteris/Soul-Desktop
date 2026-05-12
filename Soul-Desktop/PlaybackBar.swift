@@ -4,6 +4,7 @@ import SwiftUI
 struct PlaybackBar: View {
     @Bindable var controller: ReplayController
     var onExit: () -> Void
+    @State private var showWorkingSet: Bool = false
 
     private var progress: Double {
         guard controller.total > 0 else { return 0 }
@@ -38,7 +39,7 @@ struct PlaybackBar: View {
             .disabled(controller.finished)
 
             Text(statusLabel)
-                .font(SoulFont.ui(11, weight: .medium))
+                .font(SoulFont.ui(11, weight: .regular))
                 .foregroundStyle(statusColor)
                 .frame(width: 56, alignment: .leading)
 
@@ -65,11 +66,13 @@ struct PlaybackBar: View {
 
             Spacer(minLength: 8)
 
+            workingSetTrigger
+
             SpeedSlider(speed: controller.speed) { controller.setSpeed($0) }
 
             Button(action: onExit) {
                 Text("Exit replay")
-                    .font(SoulFont.ui(11, weight: .medium))
+                    .font(SoulFont.ui(11, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -83,6 +86,34 @@ struct PlaybackBar: View {
         .background(SoulColor.bgElevated.opacity(0.85))
         .overlay(alignment: .bottom) {
             Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
+        }
+    }
+
+    private var workingSetTrigger: some View {
+        Button {
+            showWorkingSet.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgMuted)
+                Text("\(controller.workingSet.count)")
+                    .font(SoulFont.code(11, weight: .regular))
+                    .foregroundStyle(SoulColor.fg)
+                Text(controller.workingSet.count == 1 ? "file" : "files")
+                    .font(SoulFont.ui(11))
+                    .foregroundStyle(SoulColor.fgMuted)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(SoulColor.surface, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(controller.workingSet.isEmpty)
+        .opacity(controller.workingSet.isEmpty ? 0.5 : 1)
+        .help("Files touched in this session")
+        .popover(isPresented: $showWorkingSet, arrowEdge: .top) {
+            WorkingSetPanel(entries: controller.workingSet)
         }
     }
 }
@@ -110,7 +141,7 @@ private struct SpeedSlider: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(SoulFont.code(10, weight: .medium))
+                .font(SoulFont.code(10, weight: .regular))
                 .foregroundStyle(SoulColor.fgMuted)
                 .frame(width: 36, alignment: .trailing)
                 .contentShape(Rectangle())

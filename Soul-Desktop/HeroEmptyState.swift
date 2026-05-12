@@ -5,13 +5,15 @@ struct HeroEmptyState: View {
     var projectPath: String? = nil
     var currentProjectID: String = ""
     @Binding var prompt: String
-    var onSend: (String) -> Void = { _ in }
+    var onSend: (_ display: String, _ agent: String) -> Void = { _, _ in }
     var onSelectProject: (String) -> Void = { _ in }
     var onNewProject: () -> Void = {}
     var devCommand: String? = nil
     var devURL: String? = nil
     var devRunning: Bool = false
     var onRunLocal: (String, String?) -> Void = { _, _ in }
+    @Binding var pendingPermissionMode: PermissionMode
+    var provider: Provider = .geminiCLI
     @State private var builtInCommands: [SlashCommand] = []
 
     var body: some View {
@@ -35,7 +37,9 @@ struct HeroEmptyState: View {
                 devCommand: devCommand,
                 devURL: devURL,
                 devRunning: devRunning,
-                onRunLocal: onRunLocal
+                onRunLocal: onRunLocal,
+                permissionMode: $pendingPermissionMode,
+                provider: provider
             )
             .frame(maxWidth: 720)
 

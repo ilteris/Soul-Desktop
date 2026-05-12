@@ -9,7 +9,16 @@ struct ThreadView: View {
 
     @State private var renaming = false
     @State private var renameDraft = ""
+    /// Suppress row `.onAppear` anchor writes during the brief window after
+    /// the ScrollView re-mounts. Without this, rows appearing top-down on
+    /// re-mount clobber the saved anchor (and flip `scrollAnchorAtBottom`
+    /// false) before the restore call runs.
+    @State private var suppressAnchorWrites = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
+
+    /// Track which items are currently in the viewport so we can anchor to the
+    /// top-most visible one when the user scrolls.
+    @State private var visibleIds: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,26 +31,80 @@ struct ThreadView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    LazyVStack(alignment: .leading, spacing: 18) {
                         Color.clear.frame(height: 8)
                         ForEach(Array(controller.items.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 item: item,
-                                isHistorical: controller.historicalIDs.contains(item.id)
+                                isHistorical: controller.historicalIDs.contains(item.id),
+                                isQueued: controller.queuedItemIDs.contains(item.id)
                             )
                                 .id(item.id)
                                 .padding(.top, isTurnStart(item: item, index: i, items: controller.items) ? 10 : 0)
+                                .onAppear {
+                                    visibleIds.insert(item.id)
+                                    updateAnchor()
+                                }
+                                .onDisappear {
+                                    visibleIds.remove(item.id)
+                                    updateAnchor()
+                                }
                         }
                         if controller.isWorking {
-                            WorkingIndicator()
+                            WorkingIndicator(controller: controller)
                         }
-                        Color.clear.frame(height: 44).id("__bottom__")
+                        Color.clear
+                            .frame(height: 44)
+                            .id("__bottom__")
+                            .onAppear {
+                                guard !suppressAnchorWrites else { return }
+                                controller.scrollAnchorAtBottom = true
+                            }
+                            .onDisappear {
+                                guard !suppressAnchorWrites else { return }
+                                controller.scrollAnchorAtBottom = false
+                            }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 24)
                 }
+                .onAppear {
+                    // Restore the saved anchor when switching back to this
+                    // thread. Suppress row `.onAppear` anchor writes during
+                    // the restore window so top-down row instantiation
+                    // doesn't clobber the saved position before we restore.
+                    suppressAnchorWrites = true
+                    let atBottom = controller.scrollAnchorAtBottom
+                    let anchorId = controller.scrollAnchorItemId
+                    DispatchQueue.main.async {
+                        if atBottom {
+                            proxy.scrollTo("__bottom__", anchor: .bottom)
+                        } else if let id = anchorId {
+                            proxy.scrollTo(id, anchor: .top)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            suppressAnchorWrites = false
+                            // Sync the anchor once the dust has settled on the restore.
+                            updateAnchor()
+                        }
+                    }
+                }
                 .onChange(of: controller.items.count) { _, _ in
+                    // Follow the stream while a turn is active — the user
+                    // just sent, they want to see the response land. Outside
+                    // of a working turn, only follow if they were already at
+                    // the bottom.
+                    guard controller.scrollAnchorAtBottom || controller.isWorking else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("__bottom__", anchor: .bottom)
+                    }
+                }
+                .onChange(of: controller.isWorking) { _, newValue in
+                    // Transitioning into a working turn: snap to bottom even
+                    // if the count didn't change (e.g., the first user row
+                    // already landed before this view observed the change).
+                    guard newValue else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
                     }
@@ -54,11 +117,18 @@ struct ThreadView: View {
                     projectName: controller.project.name,
                     projectPath: controller.project.path,
                     commands: controller.availableCommands,
-                    onSend: { text in
-                        Task { await controller.send(text) }
+                    onSend: { display, agent in
+                        Task { await controller.send(display: display, agent: agent) }
                     },
                     onCancel: onCancel,
-                    isWorking: controller.isWorking
+                    isWorking: controller.isWorking,
+                    queuedCount: controller.queuedPrompts.count,
+                    onClearQueue: { controller.clearQueue() },
+                    permissionMode: Binding(
+                        get: { controller.permissionMode },
+                        set: { controller.permissionMode = $0 }
+                    ),
+                    provider: controller.provider
                 )
                 .frame(maxWidth: 760)
             }
@@ -71,6 +141,17 @@ struct ThreadView: View {
             TextField("Title", text: $renameDraft)
             Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }
             Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func updateAnchor() {
+        guard !suppressAnchorWrites else { return }
+        // Find the visible item with the minimum index in the items array.
+        // This is our top-most visible item.
+        if let firstVisible = controller.items.first(where: { visibleIds.contains($0.id) }) {
+            controller.scrollAnchorItemId = firstVisible.id
+            // If the bottom sentinel isn't visible (handled by its own logic),
+            // ensure atBottom is false.
         }
     }
 
@@ -111,7 +192,7 @@ private struct ThreadHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(SoulFont.ui(13, weight: .medium))
+                .font(SoulFont.ui(13, weight: .regular))
                 .foregroundStyle(SoulColor.fg)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -130,7 +211,7 @@ private struct ThreadHeader: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 22, height: 18)
                     .contentShape(Rectangle())
@@ -153,6 +234,7 @@ private struct ThreadHeader: View {
 struct ThreadItemRow: View {
     let item: ThreadItem
     var isHistorical: Bool = false
+    var isQueued: Bool = false
 
     var body: some View {
         // Note: historical dimming is pushed into per-component foreground colors so the row layer
@@ -160,11 +242,11 @@ struct ThreadItemRow: View {
         // shows up as slightly blurry / shimmering text during fractional-offset trackpad scroll.
         switch item {
         case .userMessage(_, let text, let ts):
-            UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+            UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
         case .agentMessage(_, let text, _, let ts):
             AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
-        case .toolCall(_, let kind, let title, let status, let loc):
-            ToolCallRow(kind: kind, title: title, status: status, location: loc)
+        case .toolCall(_, let kind, let title, let status, let loc, let details):
+            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details)
         case .plan(_, let entries):
             PlanCard(entries: entries)
         case .status(_, let text):
@@ -215,9 +297,11 @@ private struct AgentMessageRow: View {
                     .help(MessageTimestamp.absolute(timestamp))
             } else {
             HStack(spacing: 4) {
-                FooterButton(systemName: "doc.on.doc", help: "Copy") {
+                FooterButton(systemName: "doc.on.doc", help: "Copy as Markdown") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
+                    // Drop the <soul_trace> envelope so the clipboard contains
+                    // just the rendered markdown the user actually saw.
+                    NSPasteboard.general.setString(split.visible, forType: .string)
                 }
                 FooterButton(
                     systemName: feedback == .up ? "hand.thumbsup.fill" : "hand.thumbsup",
@@ -289,6 +373,12 @@ private struct UserMessageRow: View {
     let text: String
     let timestamp: Date
     var isHistorical: Bool = false
+    /// True when this user message is sitting in the controller's queue —
+    /// appended to `items` but not yet shipped to the agent. We paint a
+    /// dashed, dimmer bubble so it visually reads as "waiting in line."
+    var isQueued: Bool = false
+    @State private var isHovering = false
+    @State private var copied = false
 
     private var parsed: (commandName: String?, rest: String) {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
@@ -310,27 +400,49 @@ private struct UserMessageRow: View {
         let p = parsed
         VStack(alignment: .trailing, spacing: 2) {
             bubble(p)
-            Text(MessageTimestamp.format(timestamp))
-                .font(SoulFont.ui(10))
-                .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
-                .help(MessageTimestamp.absolute(timestamp))
-                .padding(.trailing, 4)
+            HStack(spacing: 4) {
+                if isHovering && !isHistorical {
+                    FooterButton(
+                        systemName: copied ? "checkmark" : "doc.on.doc",
+                        help: "Copy as Markdown"
+                    ) {
+                        let payload = p.commandName.map { "/\($0)\(p.rest.isEmpty ? "" : " \(p.rest)")" } ?? text
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(payload, forType: .string)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                    }
+                }
+                Text(MessageTimestamp.format(timestamp))
+                    .font(SoulFont.ui(10))
+                    .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
+                    .help(MessageTimestamp.absolute(timestamp))
+            }
+            .padding(.trailing, 4)
+            .frame(minHeight: 18)
         }
+        .onHover { isHovering = $0 }
     }
 
     @ViewBuilder
     private func bubble(_ p: (commandName: String?, rest: String)) -> some View {
-        let mutedFg = SoulColor.fg.opacity(0.62)
+        let mutedFg = SoulColor.fg.opacity(isQueued ? 0.55 : 0.62)
         // Neutral elevated fill — independent of the user's accent choice so
-        // the bubble never picks up a hot color. Slightly stronger than the
-        // sidebar surface so prompts still read as a distinct turn-start.
-        let bubbleFill = isHistorical ? SoulColor.bgElevated.opacity(0.7) : SoulColor.bgElevated
-        let bubbleStroke = SoulColor.border.opacity(isHistorical ? 0.4 : 0.7)
+        // the bubble never picks up a hot color. Queued bubbles get a dimmer
+        // fill and stroke so the user can tell at a glance which prompt is
+        // actively being processed vs. parked behind it.
+        let bubbleFill: Color = {
+            if isQueued { return SoulColor.surface.opacity(0.5) }
+            return isHistorical ? SoulColor.bgElevated.opacity(0.7) : SoulColor.bgElevated
+        }()
+        let bubbleStroke = SoulColor.border.opacity(
+            isQueued ? 0.5 : (isHistorical ? 0.4 : 0.7)
+        )
         HStack(alignment: .top, spacing: 6) {
             Spacer(minLength: 32)
             if let cmd = p.commandName {
                 Text("/\(cmd)")
-                    .font(SoulFont.code(12, weight: .medium))
+                    .font(SoulFont.code(12, weight: .regular))
                     .foregroundStyle(isHistorical ? SoulColor.accent.opacity(0.62) : SoulColor.accent)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -345,9 +457,12 @@ private struct UserMessageRow: View {
                         )
                     )
                 if !p.rest.isEmpty {
-                    Text(p.rest)
-                        .font(SoulFont.ui(13))
-                        .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
+                    MarkdownView(
+                        text: p.rest,
+                        headerColor: isHistorical ? mutedFg : SoulColor.fg,
+                        bodyColor: isHistorical ? mutedFg : SoulColor.fg,
+                        codeColor: isHistorical ? mutedFg : SoulColor.fg
+                    )
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -358,9 +473,12 @@ private struct UserMessageRow: View {
                         .textSelection(.enabled)
                 }
             } else {
-                Text(text)
-                    .font(SoulFont.ui(13))
-                    .foregroundStyle(isHistorical ? mutedFg : SoulColor.fg)
+                MarkdownView(
+                    text: text,
+                    headerColor: isHistorical ? mutedFg : SoulColor.fg,
+                    bodyColor: isHistorical ? mutedFg : SoulColor.fg,
+                    codeColor: isHistorical ? mutedFg : SoulColor.fg
+                )
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -379,6 +497,9 @@ private struct ToolCallRow: View {
     let title: String
     let status: String
     let location: String?
+    let details: ToolCallDetails?
+
+    @State private var diffExpanded: Bool = false
 
     private var filePath: String? {
         if let loc = location, looksLikePath(loc) { return loc }
@@ -387,10 +508,38 @@ private struct ToolCallRow: View {
     }
 
     var body: some View {
-        if let path = filePath {
-            FileChipRow(kind: kind, status: status, path: path, statusColor: statusColor, icon: icon)
-        } else {
-            DefaultToolRow(kind: kind, title: title, status: status, location: location, statusColor: statusColor, icon: icon)
+        VStack(alignment: .leading, spacing: 6) {
+            if let path = filePath {
+                FileChipRow(
+                    kind: kind, status: status, path: path,
+                    statusColor: statusColor, icon: icon,
+                    trailing: { chevron }
+                )
+            } else {
+                DefaultToolRow(
+                    kind: kind, title: title, status: status, location: location,
+                    statusColor: statusColor, icon: icon,
+                    trailing: { chevron }
+                )
+            }
+            if diffExpanded, let details {
+                DiffView(details: details)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chevron: some View {
+        if details != nil {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { diffExpanded.toggle() }
+            } label: {
+                Image(systemName: diffExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(6)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -401,287 +550,366 @@ private struct ToolCallRow: View {
         case "delete": return "🗑"
         case "move": return "→"
         case "search": return "🔎"
-        case "execute": return "▶"
+        case "execute": return ""
         case "think": return "💭"
         case "fetch": return "🌐"
-        default: return "⚙"
+        default: return "⚙️"
         }
     }
 
     private var statusColor: Color {
         switch status {
+        case "pending", "in_progress": return .orange
         case "completed": return .green
-        case "failed", "error": return .red
-        case "in_progress", "pending": return SoulColor.accent
-        default: return SoulColor.fgMuted
+        case "failed": return .red
+        case "stopped": return .gray
+        default: return SoulColor.fgSubtle
         }
+    }
+
+    private func looksLikePath(_ s: String) -> Bool {
+        s.contains("/") || s.contains(".")
     }
 }
 
-private func looksLikePath(_ s: String) -> Bool {
-    let t = s.trimmingCharacters(in: .whitespaces)
-    guard !t.isEmpty, !t.contains(" ") else { return false }
-    if t.hasPrefix("/") || t.hasPrefix("~/") || t.hasPrefix("./") { return true }
-    if t.contains("/") && t.contains(".") { return true }
-    return false
-}
-
-private struct FileChipRow: View {
+private struct FileChipRow<Trailing: View>: View {
     let kind: String
     let status: String
     let path: String
     let statusColor: Color
     let icon: String
+    @ViewBuilder var trailing: () -> Trailing
 
-    private var basename: String {
-        (path as NSString).lastPathComponent
-    }
-    private var ext: String {
-        let e = (basename as NSString).pathExtension
-        return e.isEmpty ? "file" : e.uppercased()
-    }
-    private var dir: String {
-        let parent = (path as NSString).deletingLastPathComponent
-        return parent.isEmpty ? "" : parent
+    init(kind: String, status: String, path: String, statusColor: Color, icon: String,
+         @ViewBuilder trailing: @escaping () -> Trailing) {
+        self.kind = kind
+        self.status = status
+        self.path = path
+        self.statusColor = statusColor
+        self.icon = icon
+        self.trailing = trailing
     }
 
     var body: some View {
-        Button(action: openFile) {
-            cardContent
-        }
-        .buttonStyle(.plain)
-        .help("Open \(path)")
-    }
-
-    private func openFile() {
-        let expanded = (path as NSString).expandingTildeInPath
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
-    }
-
-    private var cardContent: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(SoulColor.bgElevated)
-                    .frame(width: 32, height: 36)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(SoulColor.border, lineWidth: 1)
-                    )
-                Image(systemName: "doc.text")
-                    .font(.system(size: 13))
-                    .foregroundStyle(SoulColor.fgMuted)
-            }
-
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(spacing: 8) {
+            Button {
+                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                NSWorkspace.shared.open(url)
+            } label: {
                 HStack(spacing: 6) {
-                    Text(basename)
-                        .font(SoulFont.code(12, weight: .medium))
+                    Text(icon)
+                    Text(kind)
+                        .font(SoulFont.code(11, weight: .bold))
+                        .foregroundStyle(SoulColor.fg)
+                    Text((path as NSString).lastPathComponent)
+                        .font(SoulFont.code(11, weight: .regular))
                         .foregroundStyle(SoulColor.fg)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(kind)
-                        .font(SoulFont.ui(10, weight: .medium))
-                        .foregroundStyle(SoulColor.fgMuted)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(SoulColor.surface, in: Capsule())
-                }
-                HStack(spacing: 6) {
-                    Text(ext)
-                        .font(SoulFont.ui(10))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 8))
                         .foregroundStyle(SoulColor.fgSubtle)
-                    if !dir.isEmpty {
-                        Text("·")
-                            .foregroundStyle(SoulColor.fgSubtle)
-                        Text(dir)
-                            .font(SoulFont.code(10))
-                            .foregroundStyle(SoulColor.fgSubtle)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
+                )
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 8)
-
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
             Text(status)
-                .font(SoulFont.ui(10))
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(statusColor.opacity(0.12), in: Capsule())
+                .font(SoulFont.ui(10, weight: .regular))
+                .foregroundStyle(SoulColor.fgSubtle)
+
+            trailing()
+
+            Spacer()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SoulColor.bgElevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 1)
-        )
     }
 }
 
-private struct DefaultToolRow: View {
+private struct DefaultToolRow<Trailing: View>: View {
     let kind: String
     let title: String
     let status: String
     let location: String?
     let statusColor: Color
     let icon: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(kind: String, title: String, status: String, location: String?, statusColor: Color, icon: String,
+         @ViewBuilder trailing: @escaping () -> Trailing) {
+        self.kind = kind
+        self.title = title
+        self.status = status
+        self.location = location
+        self.statusColor = statusColor
+        self.icon = icon
+        self.trailing = trailing
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text(icon)
-                .font(SoulFont.ui(12))
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(kind)
-                        .font(SoulFont.ui(11, weight: .semibold))
-                        .foregroundStyle(SoulColor.fgMuted)
-                    Text(title)
-                        .font(SoulFont.code(12))
-                        .foregroundStyle(SoulColor.fg)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 6)
-                    Text(status)
-                        .font(SoulFont.ui(10))
-                        .foregroundStyle(statusColor)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(statusColor.opacity(0.12), in: Capsule())
-                }
-                if let location {
-                    Text(location)
-                        .font(SoulFont.code(10))
-                        .foregroundStyle(SoulColor.fgSubtle)
+        HStack(alignment: .center, spacing: 10) {
+            HStack(spacing: 6) {
+                if !icon.isEmpty { Text(icon) }
+                Text(kind)
+                    .font(SoulFont.code(11, weight: .bold))
+                    .foregroundStyle(SoulColor.fg)
+                Text(title)
+                    .font(SoulFont.code(11, weight: .regular))
+                    .foregroundStyle(SoulColor.fg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if kind == "execute" {
+                    Button {
+                        // TODO: Re-run the command in the terminal panel?
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(SoulColor.fgMuted)
+                            .frame(width: 16, height: 16)
+                            .background(SoulColor.bgElevated, in: Circle())
+                            .overlay(Circle().strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 2)
                 }
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
+            )
+
+            if let loc = location, !loc.isEmpty {
+                Text(loc)
+                    .font(SoulFont.code(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+            Text(status)
+                .font(SoulFont.ui(10, weight: .regular))
+                .foregroundStyle(SoulColor.fgSubtle)
+
+            trailing()
+
+            Spacer()
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SoulColor.surface.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
 private struct PlanCard: View {
     let entries: [PlanEntry]
-    @State private var expanded = true
 
-    private var summary: String {
-        let done = entries.filter { $0.status == "completed" }.count
-        return "\(done)/\(entries.count) complete"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist")
+                    .font(.system(size: 11))
+                Text("Plan")
+                    .font(SoulFont.ui(12, weight: .bold))
+            }
+            .foregroundStyle(SoulColor.fgSubtle)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(entries, id: \.self) { entry in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: entry.status == "completed" ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(entry.status == "completed" ? .green : SoulColor.fgSubtle)
+                            .padding(.top, 1)
+
+                        Text(entry.content)
+                            .font(SoulFont.ui(13))
+                            .foregroundStyle(entry.status == "completed" ? SoulColor.fgMuted : SoulColor.fg)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(SoulColor.bgElevated.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5)
+        )
     }
+}
+
+private struct WorkingIndicator: View {
+    @Bindable var controller: ThreadController
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
+            let secondsSinceActivity = Int(ctx.date.timeIntervalSince(controller.lastActivityAt))
+            let isStalled = secondsSinceActivity >= 30
+
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .stroke(SoulColor.border.opacity(0.3), lineWidth: 2)
+                        .frame(width: 14, height: 14)
+                    Circle()
+                        .trim(from: 0, to: 0.3)
+                        .stroke(isStalled ? Color.orange : SoulColor.accent, lineWidth: 2)
+                        .frame(width: 14, height: 14)
+                        .rotationEffect(.degrees(rotation))
+                        .onAppear {
+                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                                rotation = 360
+                            }
+                        }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isStalled ? "Thinking…" : "Agent working…")
+                        .font(SoulFont.ui(12, weight: .medium))
+                        .foregroundStyle(isStalled ? Color.orange : SoulColor.fg)
+
+                    if isStalled {
+                        HStack(spacing: 4) {
+                            Text("No activity for \(secondsSinceActivity)s")
+                                .font(SoulFont.ui(10))
+                                .foregroundStyle(Color.orange.opacity(0.8))
+
+                            Button {
+                                // Popover handled by the caller or a global state?
+                                // For now we just show the badge.
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text("View log")
+                                    Image(systemName: "chevron.right")
+                                }
+                                .font(SoulFont.ui(10, weight: .bold))
+                                .foregroundStyle(Color.orange)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+struct AgentLogPanel: View {
+    let lines: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(SoulColor.fgMuted)
-                Text("Plan")
-                    .font(SoulFont.ui(12, weight: .semibold))
-                    .foregroundStyle(SoulColor.fg)
-                Text(summary)
-                    .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
+            HStack {
+                Text("Agent stderr")
+                    .font(SoulFont.ui(12, weight: .bold))
                 Spacer()
-                Button { expanded.toggle() } label: {
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(SoulColor.fgMuted)
-                }
-                .buttonStyle(.plain)
+                Text("\(lines.count) lines")
+                    .font(SoulFont.code(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(SoulColor.surface.opacity(0.7))
-            .overlay(alignment: .bottom) {
-                if expanded {
-                    Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
-                }
-            }
+            .background(SoulColor.bgElevated)
 
-            if expanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                        PlanEntryRow(entry: entry)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(SoulFont.code(11))
+                            .foregroundStyle(SoulColor.fgMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .padding(12)
             }
         }
-        .background(SoulColor.bgElevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+        .frame(width: 500, height: 300)
+        .background(SoulColor.bg)
+    }
+}
+
+/// Unified-diff view for ToolCallDetails. Edit shows old (red `-`) above new
+/// (green `+`); Write shows the full content as additions. Kept intentionally
+/// simple: no LCS line alignment, just two stacked code blocks. For the
+/// common Edit shape (a small old_string / new_string pair) this is plenty
+/// readable; if a future need arises for line-level diffs we can swap the
+/// inner blocks for a real LCS pass without changing the call site.
+private struct DiffView: View {
+    let details: ToolCallDetails
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            switch details.kind {
+            case .edit(let oldString, let newString):
+                diffBlock(text: oldString, sign: "-", tint: .red,
+                          start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                diffBlock(text: newString, sign: "+", tint: .green,
+                          start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+            case .write(let content):
+                diffBlock(text: content, sign: "+", tint: .green,
+                          start: details.startLine ?? 1, gutterWidth: gutterWidth(content, content))
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(SoulColor.border, lineWidth: 1)
         )
     }
-}
 
-private struct PlanEntryRow: View {
-    let entry: PlanEntry
-
-    private var symbol: String {
-        switch entry.status {
-        case "completed": return "checkmark.circle.fill"
-        case "in_progress": return "circle.dotted"
-        default: return "circle"
-        }
-    }
-    private var symbolColor: Color {
-        switch entry.status {
-        case "completed": return .green
-        case "in_progress": return SoulColor.accent
-        default: return SoulColor.fgSubtle
-        }
+    /// Width of the line-number gutter sized to the longest line number we'll
+    /// display. Each character ~7pt in monospace at 11pt. Falls back to 3
+    /// chars (room for up to 999) when startLine is unknown.
+    private func gutterWidth(_ a: String, _ b: String) -> CGFloat {
+        let aLines = a.components(separatedBy: "\n").count
+        let bLines = b.components(separatedBy: "\n").count
+        let maxNum = (details.startLine ?? 1) + max(aLines, bLines)
+        let chars = max(3, String(maxNum).count)
+        return CGFloat(chars) * 7 + 4
     }
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 11))
-                .foregroundStyle(symbolColor)
-                .padding(.top, 2)
-            Text(entry.content)
-                .font(SoulFont.ui(12))
-                .foregroundStyle(SoulColor.fg)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            if let p = entry.priority, p != "medium" {
-                Text(p)
-                    .font(SoulFont.ui(9, weight: .medium))
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(SoulColor.surface, in: Capsule())
-            }
-        }
-    }
-}
-
-private struct WorkingIndicator: View {
-    @State private var phase: Int = 0
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(SoulColor.fgSubtle)
-                    .frame(width: 5, height: 5)
-                    .opacity(phase == i ? 1 : 0.35)
-            }
-        }
-        .onAppear {
-            Task { @MainActor in
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 350_000_000)
-                    phase = (phase + 1) % 3
+    private func diffBlock(text: String, sign: String, tint: Color,
+                           start: Int?, gutterWidth: CGFloat) -> some View {
+        let lines = text.isEmpty ? [""] : text.components(separatedBy: "\n")
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(start.map { "\($0 + i)" } ?? "")
+                        .font(SoulFont.code(11))
+                        .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
+                        .frame(width: gutterWidth, alignment: .trailing)
+                    Text(sign)
+                        .font(SoulFont.code(11, weight: .bold))
+                        .foregroundStyle(tint.opacity(0.7))
+                        .frame(width: 10, alignment: .leading)
+                    Text(line.isEmpty ? " " : line)
+                        .font(SoulFont.code(11))
+                        .foregroundStyle(SoulColor.fg)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(.vertical, 1)
+                .padding(.horizontal, 6)
+                .background(tint.opacity(0.08))
             }
         }
     }

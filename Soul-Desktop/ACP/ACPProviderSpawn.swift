@@ -7,15 +7,30 @@ struct ACPProviderSpawn {
     var scrubEnvKeys: [String] = []
     var cwd: String? = nil
 
-    static func resolve(_ provider: Provider) -> ACPProviderSpawn? {
+    /// Resolve a spawn for a provider. When `resumeSessionId` is non-nil, we
+    /// add provider-specific CLI flags so the agent comes up already loaded
+    /// on that session — bypassing ACP `loadSession`, which gemini-cli and
+    /// pi don't really support over RPC. Claude resumes via ACP, so its
+    /// spawn shape doesn't change.
+    static func resolve(_ provider: Provider, resumeSessionId: String? = nil) -> ACPProviderSpawn? {
         let env = enrichedEnvironment()
         switch provider {
         case .geminiCLI:
             guard let path = which("gemini") else { return nil }
+            // No `--resume` flag: gemini-cli fully supports ACP `session/load`
+            // (verified via `agentCapabilities.loadSession: true` in its
+            // initialize response). The CLI-flag resume path is redundant and
+            // skips the protocol's history replay through user/agent message
+            // chunks, so the canvas comes up empty. Route resume through
+            // session/load like Claude.
             return .init(executablePath: path, arguments: ["--acp"], environment: env)
         case .pi:
             guard let path = which("npx") else { return nil }
-            return .init(executablePath: path, arguments: ["-y", "pi-acp"], environment: env)
+            var args = ["-y", "pi-acp"]
+            if let sid = resumeSessionId {
+                args.append(contentsOf: ["--resume", sid])
+            }
+            return .init(executablePath: path, arguments: args, environment: env)
         case .claude:
             guard let path = which("npx") else { return nil }
             return .init(
@@ -51,7 +66,32 @@ private func enrichedEnvironment() -> [String: String] {
     return ["PATH": dirs.joined(separator: ":")]
 }
 
+/// Process-wide cache for resolved binary paths. The login-shell fallback
+/// (`/bin/zsh -l -c 'command -v <tool>'`) takes 200-500ms because of `-l`
+/// running .zshrc; clicking multiple sessions in quick succession used to
+/// stack those calls on the @MainActor and beachball. Binary paths don't
+/// change during a process lifetime, so cache the first result (positive
+/// AND negative) and short-circuit thereafter.
+private nonisolated(unsafe) var whichCache: [String: String?] = [:]
+private let whichCacheLock = NSLock()
+
 private func which(_ tool: String) -> String? {
+    whichCacheLock.lock()
+    if let cached = whichCache[tool] {
+        whichCacheLock.unlock()
+        return cached
+    }
+    whichCacheLock.unlock()
+
+    let resolved = whichUncached(tool)
+
+    whichCacheLock.lock()
+    whichCache[tool] = resolved
+    whichCacheLock.unlock()
+    return resolved
+}
+
+private func whichUncached(_ tool: String) -> String? {
     let home = NSHomeDirectory()
     let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? ""
     var dirs = pathEnv.split(separator: ":").map(String.init)

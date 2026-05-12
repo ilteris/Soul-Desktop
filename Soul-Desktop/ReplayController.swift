@@ -21,6 +21,13 @@ final class ReplayController {
     private(set) var index: Int = 0
     private(set) var isPaused: Bool = false
     private(set) var finished: Bool = false
+    /// True between `init` and the first off-main load finishing. The view
+    /// can use this to render a "loading replay…" placeholder so the click
+    /// returns immediately instead of beachballing on the file read.
+    private(set) var isLoading: Bool = true
+    /// Accumulated file touches, recency-sorted. Mirrors soul_view's working set.
+    private(set) var workingSet: [WorkingSetEntry] = []
+    private var workingSetIndex: [String: Int] = [:]   // path → index in workingSet
 
     /// Compression factor: real_gap / divisor → playback delay.
     /// speed=1.0 → divisor=4 (4× faster than real). speed=2.0 → divisor=8 (8×).
@@ -43,15 +50,56 @@ final class ReplayController {
     init(sessionId: String, project: SoulProject) {
         self.sessionId = sessionId
         self.project = project
-        load()
-        if !allEvents.isEmpty { start() }
+        // Off-main load: a 33h Claude session is megabytes of transcript JSONL
+        // and parsing on the main actor beach-balls the click. Spawn a
+        // detached task, parse there, hand results back to the main actor.
+        let sid = sessionId
+        let proj = project
+        Task { [weak self] in
+            let events = await Task.detached(priority: .userInitiated) {
+                HooksReader.events(forSession: sid, project: proj)
+            }.value
+            await MainActor.run { [weak self] in
+                self?.applyLoad(events)
+            }
+        }
     }
 
-    func load() {
-        allEvents = HooksReader.events(forSession: sessionId, project: project)
+    private func applyLoad(_ events: [ReplayEvent]) {
+        allEvents = events
         visible = []
         index = 0
-        finished = allEvents.isEmpty
+        workingSet = []
+        workingSetIndex = [:]
+        finished = events.isEmpty
+        isLoading = false
+        if !events.isEmpty { start() }
+    }
+
+    private func accumulateWorkingSet(_ event: ReplayEvent) {
+        guard let target = event.target, let tool = event.toolName else { return }
+        let path = target.hasPrefix("~")
+            ? (target as NSString).expandingTildeInPath
+            : target
+        if let i = workingSetIndex[path] {
+            var e = workingSet[i]
+            e.count += 1
+            e.lastTimestamp = event.timestamp
+            e.tools.insert(tool)
+            workingSet.remove(at: i)
+            workingSet.insert(e, at: 0)
+            // Rebuild index after the shuffle.
+            workingSetIndex = Dictionary(uniqueKeysWithValues: workingSet.enumerated().map { ($0.element.path, $0.offset) })
+        } else {
+            let entry = WorkingSetEntry(
+                path: path,
+                count: 1,
+                tools: [tool],
+                lastTimestamp: event.timestamp
+            )
+            workingSet.insert(entry, at: 0)
+            workingSetIndex = Dictionary(uniqueKeysWithValues: workingSet.enumerated().map { ($0.element.path, $0.offset) })
+        }
     }
 
     func start() {
@@ -81,6 +129,9 @@ final class ReplayController {
         let clamped = max(0, min(target, total))
         index = clamped
         visible = allEvents.prefix(clamped).map { $0.item }
+        workingSet = []
+        workingSetIndex = [:]
+        for e in allEvents.prefix(clamped) { accumulateWorkingSet(e) }
         finished = clamped >= total
     }
 
@@ -96,6 +147,7 @@ final class ReplayController {
             }
             let event = allEvents[index]
             visible.append(event.item)
+            accumulateWorkingSet(event)
             index += 1
             if index >= total { break }
             let delaySec = delaySeconds(from: event, to: allEvents[index])
@@ -122,4 +174,14 @@ final class ReplayController {
         }
         return min(2.5 / max(0.25, speed), max(0.3 / max(0.25, speed), scaled))
     }
+}
+
+/// One file in the session's working set: how many ops touched it, which
+/// tools, and when it was last touched. Mirrors soul_view's per-path entry.
+struct WorkingSetEntry: Identifiable, Hashable {
+    var path: String
+    var count: Int
+    var tools: Set<String>
+    var lastTimestamp: Date
+    var id: String { path }
 }

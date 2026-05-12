@@ -17,6 +17,7 @@ enum SoulHydration {
         case .geminiCLI:
             return await hydrateGemini(
                 projectKey: projectKey,
+                projectPath: projectPath,
                 sessionId: sessionId,
                 soulPath: soulPath
             )
@@ -35,32 +36,31 @@ enum SoulHydration {
     }
 
     private static func hydrateGemini(projectKey: String,
+                                      projectPath: String,
                                       sessionId: String,
                                       soulPath: String) async -> HydrationResult {
-        let outPath = "/tmp/soul_system_\(sessionId).md"
-        let script  = "\(soulPath)/kernel/soul_hydrate.py"
+        // Unified hydration path: same generator that produces CLAUDE.md
+        // (generate_harness in soul_claude_harness.py), thin wrapper writes
+        // GEMINI.md to the project root. gemini-cli auto-discovers GEMINI.md
+        // by walking from cwd to root — no env var needed.
+        let outPath = "\(projectPath)/GEMINI.md"
+        let script  = "\(soulPath)/kernel/soul_gemini_harness.py"
         guard FileManager.default.isReadableFile(atPath: script) else {
-            return HydrationResult(log: ["✗ soul_hydrate.py not found at \(script)"])
+            return HydrationResult(log: ["✗ soul_gemini_harness.py not found at \(script)"])
         }
-        let result = runPython(
+        let result = await runPythonAsync(
             script: script,
-            args: [projectKey,
-                   "--target", "gemini",
-                   "--out", outPath,
-                   "--session-id", sessionId],
-            extraEnv: ["SOUL_PROVIDER": "gemini"]
+            args: ["--project", projectKey, "--output", outPath],
+            extraEnv: [:]
         )
         if result.status != 0 {
             return HydrationResult(log: [
-                "✗ soul_hydrate.py exit=\(result.status)",
+                "✗ soul_gemini_harness.py exit=\(result.status)",
                 "  stderr: \(result.stderr.prefix(400))"
             ])
         }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outPath))?[.size] as? Int ?? 0
-        return HydrationResult(
-            env: ["GEMINI_SYSTEM_MD": outPath],
-            log: ["✓ Gemini: hydrated → \(outPath) (\(bytes)B)"]
-        )
+        return HydrationResult(log: ["✓ Gemini: regenerated \(outPath) (\(bytes)B)"])
     }
 
     private static func hydrateClaude(projectKey: String,
@@ -71,7 +71,7 @@ enum SoulHydration {
         guard FileManager.default.isReadableFile(atPath: script) else {
             return HydrationResult(log: ["✗ soul_claude_harness.py not found at \(script)"])
         }
-        let result = runPython(
+        let result = await runPythonAsync(
             script: script,
             args: ["--project", projectKey, "--output", outPath],
             extraEnv: [:]
@@ -84,6 +84,20 @@ enum SoulHydration {
         }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outPath))?[.size] as? Int ?? 0
         return HydrationResult(log: ["✓ Claude: regenerated \(outPath) (\(bytes)B)"])
+    }
+
+    /// Async wrapper that pushes the synchronous subprocess wait off whatever
+    /// actor called us. `runPython` calls `p.waitUntilExit()` which blocks the
+    /// current thread for the duration of the Python harness — multiple
+    /// seconds for soul_hydrate. Run it on a detached background task so the
+    /// click-to-thread path on @MainActor returns control to SwiftUI
+    /// immediately and the "▶ hydrating Soul context…" status row renders.
+    private static func runPythonAsync(script: String,
+                                       args: [String],
+                                       extraEnv: [String: String]) async -> RunResult {
+        await Task.detached(priority: .userInitiated) {
+            runPython(script: script, args: args, extraEnv: extraEnv)
+        }.value
     }
 
     // MARK: - subprocess helper

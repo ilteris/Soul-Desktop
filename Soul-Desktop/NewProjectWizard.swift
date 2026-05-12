@@ -10,8 +10,14 @@ struct NewProjectWizard: View {
     @State private var path: String = ""
     @State private var pillar: String = "Product"
     @State private var tier: Int = 2
+    @State private var managerBrief: String = ""
     @State private var initGit: Bool = true
     @State private var error: String? = nil
+
+    private static let defaultManagerBrief = "Standard architectural oversight."
+    private static let defaultHarness = "teddy-architect@v1"
+    private static let leadModel = "gemini-3.1-pro-preview"
+    private static let helperModel = "gemini-3-flash-preview"
 
     private let tierHints: [Int: String] = [
         1: "Actively shipping. Pinned at the top of the sidebar.",
@@ -39,7 +45,7 @@ struct NewProjectWizard: View {
                 Text("New project")
                     .font(SoulFont.hero(20))
                     .foregroundStyle(SoulColor.fg)
-                Text("Adds an entry to PROJECTS.json and creates the directory if missing.")
+                Text("Writes PROJECTS.json + soul_registry/teams/<key>/main.json and creates the directory if missing.")
                     .font(SoulFont.ui(11))
                     .foregroundStyle(SoulColor.fgMuted)
             }
@@ -86,7 +92,7 @@ struct NewProjectWizard: View {
             )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Tier").font(SoulFont.ui(12, weight: .medium)).foregroundStyle(SoulColor.fg)
+                Text("Tier").font(SoulFont.ui(12, weight: .regular)).foregroundStyle(SoulColor.fg)
                 Picker("", selection: $tier) {
                     Text("1").tag(1)
                     Text("2").tag(2)
@@ -98,9 +104,16 @@ struct NewProjectWizard: View {
                     .font(SoulFont.ui(10)).foregroundStyle(SoulColor.fgMuted)
             }
 
+            field(
+                label: "Manager brief",
+                hint: "One-line intent. Hydrated into <manager_brief> for every session. Leave blank for the default.",
+                content: TextField(NewProjectWizard.defaultManagerBrief, text: $managerBrief)
+                    .textFieldStyle(.roundedBorder)
+            )
+
             Toggle(isOn: $initGit) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Initialize git repo").font(SoulFont.ui(12, weight: .medium)).foregroundStyle(SoulColor.fg)
+                    Text("Initialize git repo").font(SoulFont.ui(12, weight: .regular)).foregroundStyle(SoulColor.fg)
                     Text("git init with default branch 'main'. Skipped silently if .git/ already exists.")
                         .font(SoulFont.ui(10)).foregroundStyle(SoulColor.fgMuted)
                 }
@@ -132,7 +145,7 @@ struct NewProjectWizard: View {
     @ViewBuilder
     private func field<Content: View>(label: String, hint: String, content: Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(SoulFont.ui(12, weight: .medium)).foregroundStyle(SoulColor.fg)
+            Text(label).font(SoulFont.ui(12, weight: .regular)).foregroundStyle(SoulColor.fg)
             content
             Text(hint).font(SoulFont.ui(10)).foregroundStyle(SoulColor.fgMuted)
         }
@@ -213,12 +226,35 @@ struct NewProjectWizard: View {
                 }
             }
 
+            let resolvedBrief = managerBrief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? NewProjectWizard.defaultManagerBrief
+                : managerBrief.trimmingCharacters(in: .whitespacesAndNewlines)
+
             let entry: [String: Any] = [
                 "name": displayName.isEmpty ? titled(key) : displayName,
                 "path": storedPath,
                 "pillar": pillar,
                 "tier": tier,
-                "status": "active"
+                "status": "active",
+                "harness_config": [
+                    "harness": NewProjectWizard.defaultHarness,
+                    "manager_brief": resolvedBrief,
+                    "team": [
+                        [
+                            "persona": "systems_architect",
+                            "model": NewProjectWizard.leadModel,
+                            "status": "active"
+                        ],
+                        [
+                            "persona": "registry_guardian",
+                            "model": NewProjectWizard.helperModel
+                        ],
+                        [
+                            "persona": "terrain_mapper",
+                            "model": NewProjectWizard.helperModel
+                        ]
+                    ]
+                ]
             ]
             projects[key] = entry
             json["projects"] = projects
@@ -228,9 +264,50 @@ struct NewProjectWizard: View {
                 options: [.prettyPrinted, .sortedKeys]
             )
             try out.write(to: projectsURL, options: .atomic)
+
+            try writeTeamsFile(homePath: homePath)
+
             onCreated(key)
         } catch let e {
             error = "Write failed: \(e.localizedDescription)"
         }
+    }
+
+    /// Write the canonical ~/soul_registry/teams/<key>/main.json so kernel readers
+    /// (get_lead_persona, get_active_persona, _active_specialists) resolve the
+    /// project to a real persona instead of the default fallback.
+    private func writeTeamsFile(homePath: String) throws {
+        let teamsDir = URL(fileURLWithPath: homePath)
+            .appendingPathComponent("soul_registry/teams")
+            .appendingPathComponent(key)
+        try FileManager.default.createDirectory(
+            at: teamsDir, withIntermediateDirectories: true
+        )
+        let main: [String: Any] = [
+            "project_key": key,
+            "name": displayName.isEmpty ? titled(key) : displayName,
+            "pillar": pillar,
+            "team": [
+                [
+                    "persona": "systems_architect",
+                    "model": NewProjectWizard.leadModel,
+                    "status": "active"
+                ],
+                [
+                    "persona": "registry_guardian",
+                    "model": NewProjectWizard.helperModel
+                ],
+                [
+                    "persona": "terrain_mapper",
+                    "model": NewProjectWizard.helperModel
+                ]
+            ],
+            "default_model": NewProjectWizard.helperModel
+        ]
+        let data = try JSONSerialization.data(
+            withJSONObject: main,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try data.write(to: teamsDir.appendingPathComponent("main.json"), options: .atomic)
     }
 }

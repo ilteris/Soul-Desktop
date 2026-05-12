@@ -11,6 +11,10 @@ struct ReplayEvent: Identifiable {
     let item: ThreadItem
     var rationale: String? = nil   // kernel-side annotation, future surfacing
     var reward: Double? = nil
+    /// Tool name + absolute-path target for working-set accumulation.
+    /// Both nil for non-file events (agent text, user prompt, status).
+    var toolName: String? = nil
+    var target: String? = nil
 }
 
 /// Merges the Soul kernel's `hooks.jsonl` (tool calls + agent metadata) with
@@ -51,12 +55,17 @@ enum HooksReader {
             switch event {
             case "AfterTool":
                 if let item = toolItem(from: obj) {
+                    let tool = (obj["tool"] as? String) ?? ""
+                    let target = (obj["target"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let isPath = target.hasPrefix("/") || target.hasPrefix("~")
                     out.append(ReplayEvent(
                         id: UUID(),
                         timestamp: ts,
                         item: item,
                         rationale: obj["rationale"] as? String,
-                        reward: obj["reward"] as? Double
+                        reward: obj["reward"] as? Double,
+                        toolName: tool.isEmpty ? nil : tool,
+                        target: isPath ? target : nil
                     ))
                 }
             case "AfterAgent":
@@ -101,7 +110,8 @@ enum HooksReader {
             kind: kind,
             title: title,
             status: "completed",
-            locationHint: target.isEmpty ? nil : target
+            locationHint: target.isEmpty ? nil : target,
+            details: nil
         )
     }
 

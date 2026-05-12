@@ -64,12 +64,23 @@ enum ClaudeTranscriptReader {
                         let name = (blk["name"] as? String) ?? "tool"
                         let input = (blk["input"] as? [String: Any]) ?? [:]
                         let (title, location) = describe(tool: name, input: input)
+                        let details: ToolCallDetails? = {
+                            if let oldS = input["old_string"] as? String,
+                               let newS = input["new_string"] as? String {
+                                return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS))
+                            }
+                            if let content = input["content"] as? String {
+                                return ToolCallDetails(kind: .write(content: content))
+                            }
+                            return nil
+                        }()
                         items.append(.toolCall(
                             id: UUID(),
                             kind: name,
                             title: title,
                             status: "completed",
-                            locationHint: location
+                            locationHint: location,
+                            details: details
                         ))
 
                     case "thinking":
