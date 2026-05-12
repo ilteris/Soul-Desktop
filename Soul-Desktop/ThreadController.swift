@@ -1136,8 +1136,17 @@ final class ThreadController {
             if let oldS, let newS {
                 return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS), startLine: startLine)
             }
-            if let content = rawInput["content"]?.stringValue ?? rawInput["new_str"]?.stringValue {
-                return ToolCallDetails(kind: .write(content: content), startLine: startLine)
+            // Write-body field name varies by provider: Claude uses `content`
+            // or `new_str`, Gemini-CLI's write_file uses `file_text`, and some
+            // ACP servers use plain `text`. Check all four so the diff card
+            // renders the actual file content instead of falling through to
+            // the JSON-envelope fallback (SOUL-SOUL_DESKTOP-032).
+            let writeBody = rawInput["content"]?.stringValue
+                ?? rawInput["new_str"]?.stringValue
+                ?? rawInput["file_text"]?.stringValue
+                ?? rawInput["text"]?.stringValue
+            if let writeBody {
+                return ToolCallDetails(kind: .write(content: writeBody), startLine: startLine)
             }
             return nil
         }()
@@ -1161,21 +1170,15 @@ final class ThreadController {
         openAgentMessageId = nil
 
         // First time we're seeing this toolCallId. Use structured details
-        // when we have them. Otherwise only fall back to the JSON-payload
-        // dump for tools that *should* carry diff-shaped input (edit /
-        // write). For Bash / Read / Grep / etc. there's nothing useful to
-        // expand into, so leave details nil and the chevron stays hidden.
-        let firstSeenDetails: ToolCallDetails? = {
-            if let s = structuredDetails { return s }
-            guard kind == "edit" || kind == "write" else { return nil }
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-            if let data = try? enc.encode(payload),
-               let s = String(data: data, encoding: .utf8) {
-                return ToolCallDetails(kind: .write(content: s))
-            }
-            return nil
-        }()
+        // when we have them; otherwise leave details = nil and the row
+        // renders without an expand chevron. The previous JSON-envelope
+        // fallback (SOUL-SOUL_DESKTOP-032) dumped the wrapper payload —
+        // toolCallId, sessionUpdate, locations, etc. — into the diff
+        // card's "new content" column, which was actively misleading on
+        // any write-tool whose rawInput field name we didn't recognize.
+        // The tool_call_update notifications that follow will supply the
+        // real rawInput once the agent finishes streaming the call.
+        let firstSeenDetails: ToolCallDetails? = structuredDetails
 
         let uuid = UUID()
         seenToolCallIds[toolId] = uuid
