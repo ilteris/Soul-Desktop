@@ -788,7 +788,14 @@ private struct WorkingIndicator: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
             let secondsSinceActivity = Int(ctx.date.timeIntervalSince(controller.lastActivityAt))
-            let isStalled = secondsSinceActivity >= 30
+            // SOUL-SOUL_DESKTOP-024: stall threshold is now provider-tuned
+            // (Gemini 90s default, Claude 60s, Pi 120s — see Provider
+            // .stallBudgetSeconds) instead of a hardcoded 30s. Settings →
+            // Advanced "Stall budgets" lets the user override per provider.
+            let budget = controller.provider.stallBudgetSeconds
+            let isStalled = secondsSinceActivity >= budget
+            let ceiling = StallPolicy.autoCancelCeilingSeconds
+            let secondsUntilAutoCancel = max(0, ceiling - secondsSinceActivity)
 
             HStack(spacing: 12) {
                 ZStack {
@@ -818,40 +825,40 @@ private struct WorkingIndicator: View {
                                 .font(SoulFont.ui(10))
                                 .foregroundStyle(Color.orange.opacity(0.8))
 
+                            // Auto-cancel countdown — only shows once we're
+                            // within 60s of the hard ceiling so it doesn't
+                            // distract during normal slow turns.
+                            if secondsUntilAutoCancel <= 60 && secondsUntilAutoCancel > 0 {
+                                Text("· auto-recover in \(secondsUntilAutoCancel)s")
+                                    .font(SoulFont.ui(10))
+                                    .foregroundStyle(Color.orange.opacity(0.6))
+                            }
+
+                            // Recover is always available once we've crossed
+                            // the budget — queue depth no longer gates it.
+                            // SOUL-SOUL_DESKTOP-024: prior Skip-ahead required
+                            // a non-empty queue, which left empty-queue stalls
+                            // (the common case) without any recovery
+                            // affordance besides force-quit.
                             Button {
-                                // Popover handled by the caller or a global state?
-                                // For now we just show the badge.
+                                Task { await controller.recoverStalledTurn(source: "manual") }
                             } label: {
                                 HStack(spacing: 3) {
-                                    Text("View log")
-                                    Image(systemName: "chevron.right")
+                                    Image(systemName: controller.queuedPrompts.isEmpty
+                                          ? "arrow.uturn.backward.circle"
+                                          : "forward.fill")
+                                    Text(controller.queuedPrompts.isEmpty ? "Recover" : "Skip ahead")
                                 }
                                 .font(SoulFont.ui(10, weight: .bold))
                                 .foregroundStyle(Color.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.12), in: Capsule())
                             }
                             .buttonStyle(.plain)
-
-                            // Show a "Skip ahead" affordance only when there's
-                            // something queued and waiting on this stall. The
-                            // action cancels the current (hung) turn and the
-                            // safety-drain in send() picks up the queue.
-                            if !controller.queuedPrompts.isEmpty {
-                                Button {
-                                    Task { await controller.skipStalledTurn() }
-                                } label: {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "forward.fill")
-                                        Text("Skip ahead")
-                                    }
-                                    .font(SoulFont.ui(10, weight: .bold))
-                                    .foregroundStyle(Color.orange)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.12), in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .help("Cancel the stalled turn and dispatch the next queued message")
-                            }
+                            .help(controller.queuedPrompts.isEmpty
+                                  ? "Cancel the stalled turn and unblock the thread"
+                                  : "Cancel the stalled turn and dispatch the next queued message")
                         }
                     }
                 }

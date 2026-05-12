@@ -218,6 +218,20 @@ final class ThreadController {
     private var seenToolCallIds: [String: UUID] = [:]
     private var eventTask: Task<Void, Never>?
 
+    /// SOUL-SOUL_DESKTOP-024: per-turn stall watchdog. While `isWorking` is
+    /// true, this task polls `lastActivityAt` and fires once at the provider's
+    /// stall budget (StallDetected hook + UI capsule wakes up via TimelineView)
+    /// and again at the hard auto-cancel ceiling (force-recovers the turn).
+    /// One task per `send()` invocation; cleared on completion or cancel.
+    private var stallWatchdog: Task<Void, Never>?
+    /// Single-fire guard so the StallDetected hook lands once per stall
+    /// episode even though the watchdog ticks every second.
+    private var stallHookEmittedAt: Date?
+    /// Most recent in_progress tool kind we observed when the stall fired,
+    /// captured for the hook payload so post-mortems can pattern-match
+    /// `swarm-status.py --oneshot` style hangs across sessions.
+    private var lastInProgressToolKind: String?
+
     init(provider: Provider, project: SoulProject) {
         self.provider = provider
         self.project = project
@@ -267,7 +281,11 @@ final class ThreadController {
         }
 
         isWorking = true
-        defer { isWorking = false }
+        startStallWatchdog()
+        defer {
+            isWorking = false
+            stopStallWatchdog()
+        }
 
         // First turn dispatches immediately; subsequent queued turns are
         // drained from `queuedPrompts` while we still hold `isWorking`.
@@ -349,17 +367,19 @@ final class ThreadController {
         isWorking = false
     }
 
-    /// Cancel the current stalled turn and dispatch the next queued prompt.
-    /// Wired to the WorkingIndicator's "Skip ahead" button so the user can
-    /// recover from an ACP server that streamed all output but never
-    /// returned end-of-turn (Claude/Gemini both do this occasionally on
-    /// "I'll wait for your go-ahead"-style replies).
-    func skipStalledTurn() async {
+    /// Cancel the current stalled turn. If the queue has more prompts, dispatch
+    /// the next one ("skip ahead"); otherwise just unblock the thread so the
+    /// user can type. Wired to the WorkingIndicator's "Recover" capsule and
+    /// also invoked by the watchdog when the hard auto-cancel ceiling is hit.
+    ///
+    /// SOUL-SOUL_DESKTOP-024: this used to require a non-empty queue. That
+    /// gate meant five-hour `swarm-status.py --oneshot` hangs had no in-UI
+    /// recovery affordance unless the user happened to type a follow-up first.
+    /// Now the only precondition is an active session.
+    func recoverStalledTurn(source: String = "manual") async {
         guard let client, let sid = sessionId else { return }
-        guard !queuedPrompts.isEmpty else { return }
-        // Cancel the current turn — but DON'T wipe the queue like `cancel()`
-        // does. We want to advance, not abort.
         try? await client.cancel(sessionId: sid)
+        let stalledSeconds = Int(Date().timeIntervalSince(lastActivityAt))
         items = items.map { item in
             if case .toolCall(let id, let kind, let title, let status, let loc, let details) = item,
                status == "in_progress" || status == "pending" {
@@ -367,13 +387,97 @@ final class ThreadController {
             }
             return item
         }
-        items.append(.status(id: UUID(), text: "⏭ skipped stalled turn"))
+        let label = source == "auto" ? "⏱ auto-recovered stalled turn (\(stalledSeconds)s)"
+                                     : "⏭ recovered stalled turn (\(stalledSeconds)s)"
+        items.append(.status(id: UUID(), text: label))
+        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+            "event": "StallRecovered",
+            "provider": provider.rawValue,
+            "tool_kind": lastInProgressToolKind ?? "",
+            "stalled_seconds": stalledSeconds,
+            "recovery_source": source,
+        ])
         // Force isWorking off so the safety-drain at the end of send() can
         // pop the queue and re-enter; without this the next send() call
         // would just re-queue.
         isWorking = false
-        let next = queuedPrompts.removeFirst()
-        await send(display: next.display, agent: next.agent)
+        stopStallWatchdog()
+        if !queuedPrompts.isEmpty {
+            let next = queuedPrompts.removeFirst()
+            await send(display: next.display, agent: next.agent)
+        }
+    }
+
+    /// Compat shim — older call sites still reference the previous name. The
+    /// behavior matches the legacy method (requires a queued prompt) so any
+    /// external caller keeps working; new UI uses `recoverStalledTurn`.
+    func skipStalledTurn() async {
+        guard !queuedPrompts.isEmpty else { return }
+        await recoverStalledTurn(source: "manual")
+    }
+
+    /// Start a per-turn watchdog. Polls `lastActivityAt` every second while
+    /// `isWorking` holds; fires a single StallDetected hook when quiet exceeds
+    /// the provider's stall budget, and auto-recovers when quiet exceeds the
+    /// hard ceiling. Cheap: one Task, one timer, no observers.
+    private func startStallWatchdog() {
+        stallWatchdog?.cancel()
+        stallHookEmittedAt = nil
+        lastInProgressToolKind = nil
+        let budget = provider.stallBudgetSeconds
+        let ceiling = StallPolicy.autoCancelCeilingSeconds
+        stallWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self else { return }
+                await self.tickStallWatchdog(budget: budget, ceiling: ceiling)
+            }
+        }
+    }
+
+    private func stopStallWatchdog() {
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
+        stallHookEmittedAt = nil
+        lastInProgressToolKind = nil
+    }
+
+    /// One watchdog tick. Runs on @MainActor so it can read `items` /
+    /// `isWorking` safely without locks.
+    private func tickStallWatchdog(budget: Int, ceiling: Int) async {
+        guard isWorking else { return }
+        let quiet = Int(Date().timeIntervalSince(lastActivityAt))
+
+        // Snapshot the most recent in_progress tool kind for the hook payload.
+        // Walking items.reversed() short-circuits on the first match.
+        if lastInProgressToolKind == nil {
+            for item in items.reversed() {
+                if case .toolCall(_, let kind, _, let status, _, _) = item,
+                   status == "in_progress" || status == "pending" {
+                    lastInProgressToolKind = kind
+                    break
+                }
+            }
+        }
+
+        if quiet >= budget && stallHookEmittedAt == nil {
+            stallHookEmittedAt = Date()
+            SoulRegistry.appendHook(
+                projectKey: project.id,
+                sessionId: sessionId ?? id,
+                event: [
+                    "event": "StallDetected",
+                    "provider": provider.rawValue,
+                    "tool_kind": lastInProgressToolKind ?? "",
+                    "stalled_seconds": quiet,
+                    "threshold": budget,
+                ]
+            )
+        }
+
+        if quiet >= ceiling {
+            await recoverStalledTurn(source: "auto")
+        }
     }
 
     func loadSession(id sid: String) async {
@@ -695,6 +799,10 @@ final class ThreadController {
 
     private func handle(_ event: ACPClient.Event) {
         lastActivityAt = Date()
+        // Activity arrived — clear the stall flag so the next stall episode
+        // gets its own StallDetected hook instead of being silently suppressed
+        // by the prior turn's debounce.
+        stallHookEmittedAt = nil
         switch event {
         case .sessionUpdate(let note):
             apply(note.update)

@@ -43,4 +43,39 @@ enum Provider: String, CaseIterable, Identifiable {
     }
 
     var isHydratedToday: Bool { true }
+
+    /// User-tunable stall threshold (seconds) after which the WorkingIndicator
+    /// surfaces a Recover capsule and ThreadController emits a `StallDetected`
+    /// hook. Defaults are tuned per-provider from observed end-of-turn-omission
+    /// rates: Gemini's session/load + tool-call streams run longer than
+    /// Claude's, and Pi's slower turns warrant more headroom before we cry
+    /// stall. Settings → Advanced "Stall budgets" pane writes these keys.
+    var stallBudgetKey: String { "soul.stall.budget.\(rawValue)" }
+
+    var stallBudgetDefault: Int {
+        switch self {
+        case .geminiCLI: return 90
+        case .claude:    return 60
+        case .pi:        return 120
+        }
+    }
+
+    var stallBudgetSeconds: Int {
+        let v = UserDefaults.standard.integer(forKey: stallBudgetKey)
+        return v > 0 ? v : stallBudgetDefault
+    }
+}
+
+/// Hard ceiling after which a stalled turn is auto-cancelled by the
+/// watchdog without user intervention. Independent of per-provider budgets:
+/// budgets gate when the *user-facing* capsule + hook appear; ceiling gates
+/// when we give up waiting and act. Defaults to 5 minutes.
+enum StallPolicy {
+    static let autoCancelCeilingKey = "soul.stall.autoCancelCeiling"
+    static let autoCancelCeilingDefault: Int = 300
+
+    static var autoCancelCeilingSeconds: Int {
+        let v = UserDefaults.standard.integer(forKey: autoCancelCeilingKey)
+        return v > 0 ? v : autoCancelCeilingDefault
+    }
 }

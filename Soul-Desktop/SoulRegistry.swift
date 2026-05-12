@@ -770,9 +770,12 @@ enum SoulRegistry {
             return (s, prompt)
         }
 
-        // .json: may be truncated by the 64 KB read. Try full parse first;
-        // if that fails the prompt is still likely early in the file — we
-        // accept losing the prompt in that case but salvage sid via regex.
+        // .json: try full parse first. Large transcripts (the truss-labs
+        // 11 MB chat is a real example) exceed the 64 KB read cap and the
+        // truncated JSON won't deserialize — fall back to a regex pull of
+        // `sessionId` so the candidate still counts. Prompt is best-effort:
+        // gemini writes it within the first ~1 KB so the head usually has
+        // it, and we regex it out of the head in the same pass.
         if let data = text.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let s = obj["sessionId"] as? String {
@@ -789,7 +792,29 @@ enum SoulRegistry {
             }
             return (s, prompt)
         }
-        return nil
+        // Truncated-JSON fallback: regex sessionId out of the head.
+        let sidPattern = #""sessionId"\s*:\s*"([0-9a-fA-F-]{36})""#
+        guard let sidRe = try? NSRegularExpression(pattern: sidPattern),
+              let m = sidRe.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let sidRange = Range(m.range(at: 1), in: text)
+        else { return nil }
+        let sid = String(text[sidRange])
+        // Best-effort prompt salvage from the same head bytes. Match the
+        // first `{"type":"user","content":[{"text":"…"}]}` shape; gemini
+        // writes the first user message within ~1 KB of the messages array
+        // start, so it's reliably inside our 64 KB window.
+        var prompt: String? = nil
+        let promptPattern = #""type"\s*:\s*"user"\s*,\s*"content"\s*:\s*\[\s*\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)""#
+        if let promptRe = try? NSRegularExpression(pattern: promptPattern),
+           let pm = promptRe.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let pRange = Range(pm.range(at: 1), in: text) {
+            let raw = String(text[pRange])
+            prompt = raw
+                .replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        return (sid, prompt)
     }
 
     /// Scan `~/.claude/projects/<encoded-cwd>/*.jsonl` for transcripts and

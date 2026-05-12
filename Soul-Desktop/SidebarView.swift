@@ -213,6 +213,12 @@ struct SidebarView: View {
                                         .contextMenu {
                                             Button("Open chat") { onSelectSession(session) }
                                             Button("Replay…") { onReplaySession(session) }
+                                            if repairableProvider(for: session) != nil {
+                                                Divider()
+                                                Button("Repair session link") {
+                                                    repairSessionLink(session)
+                                                }
+                                            }
                                         }
                                 }
                             }
@@ -341,6 +347,42 @@ struct SidebarView: View {
         await MainActor.run {
             self.sessions = result.sessions
             self.liveSessions[key] = result.live.isEmpty ? nil : result.live
+        }
+    }
+
+    /// Maps a row's recorded source to the provider key
+    /// `SoulRegistry.backfillNativeSessionID` understands. Returns nil for
+    /// pi-native (out of scope per -022) and for rows where neither the
+    /// session source nor the active harness can give us a content-match
+    /// target.
+    private func repairableProvider(for session: SoulSession) -> String? {
+        switch session.source {
+        case "gemini": return "geminiCLI"
+        case "claude": return "claude"
+        case "pi-native": return nil
+        default: break
+        }
+        switch currentProvider {
+        case .geminiCLI: return "geminiCLI"
+        case .claude:    return "claude"
+        case .pi:        return nil
+        }
+    }
+
+    private func repairSessionLink(_ session: SoulSession) {
+        guard let provider = repairableProvider(for: session),
+              let path = projects.first(where: { $0.id == session.project })?.path
+        else { return }
+        let projectKey = session.project
+        let sessionId = session.id
+        Task.detached(priority: .userInitiated) {
+            _ = SoulRegistry.backfillNativeSessionID(
+                projectKey: projectKey,
+                sessionId: sessionId,
+                provider: provider,
+                cwd: path
+            )
+            await reloadSessions()
         }
     }
 }
