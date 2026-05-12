@@ -58,7 +58,7 @@ struct SidebarView: View {
                         icon: action.icon,
                         label: action.label,
                         trailing: action.shortcut,
-                        isSelected: action.label == "New chat"
+                        isSelected: false
                     )
                 }
             }
@@ -420,12 +420,7 @@ struct ChatRow: View {
     }
 
     private var sourceIcon: String {
-        switch session.source {
-        case "claude":     return "circle.hexagongrid"
-        case "gemini":     return "sparkles"
-        case "pi-native":  return "terminal"
-        default:           return "circle"
-        }
+        ProviderIcon.symbol(forSessionSource: session.source)
     }
 
     private func relative(_ d: Date) -> String {
@@ -641,9 +636,16 @@ private struct LiveSessionRow: View {
     /// surprise: different icon, muted foreground, hover tooltip.
     private var isResumable: Bool { session.origin != .terminal }
 
+    /// Provider-distinguishing glyph for live rows. Falls back to terminal
+    /// when we can't resume (no agent file at all).
+    private var liveIcon: String {
+        guard isResumable else { return "terminal" }
+        return ProviderIcon.symbol(forLiveProvider: session.liveProvider)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: isResumable ? "circle.dotted" : "terminal")
+            Image(systemName: liveIcon)
                 .font(.system(size: 10))
                 .foregroundStyle(iconColor)
                 .padding(.leading, 14)
@@ -697,5 +699,30 @@ private struct LiveSessionRow: View {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+/// Central SF Symbol mapping so finalized chats and live rows render with
+/// the same provider-distinguishing glyph. Field shapes differ between the
+/// two: finalized rows carry `source` ("claude" / "gemini" / "pi-native");
+/// live rows carry `liveProvider` ("claude" / "geminiCLI" / nil) which is
+/// derived from where the agent's persistence file actually lives.
+enum ProviderIcon {
+    static func symbol(forSessionSource source: String?) -> String {
+        switch source {
+        case "claude":    return "sparkles"
+        case "gemini":    return "star"
+        case "pi-native": return "wand.and.rays"
+        default:          return "circle.dotted"
+        }
+    }
+
+    static func symbol(forLiveProvider liveProvider: String?) -> String {
+        switch liveProvider {
+        case "claude":    return "sparkles"
+        case "geminiCLI": return "star"
+        case "pi":        return "wand.and.rays"
+        default:          return "circle.dotted"
+        }
     }
 }

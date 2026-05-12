@@ -876,11 +876,13 @@ final class ThreadController {
         openAgentMessageId = nil
 
         // First time we're seeing this toolCallId. Use structured details
-        // if we got them; otherwise fall back to a JSON dump of the whole
-        // payload so the chevron always reveals *something* useful for
-        // tools we haven't taught structured extraction yet.
+        // when we have them. Otherwise only fall back to the JSON-payload
+        // dump for tools that *should* carry diff-shaped input (edit /
+        // write). For Bash / Read / Grep / etc. there's nothing useful to
+        // expand into, so leave details nil and the chevron stays hidden.
         let firstSeenDetails: ToolCallDetails? = {
             if let s = structuredDetails { return s }
+            guard kind == "edit" || kind == "write" else { return nil }
             let enc = JSONEncoder()
             enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
             if let data = try? enc.encode(payload),

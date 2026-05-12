@@ -33,14 +33,23 @@ struct ThreadView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         Color.clear.frame(height: 8)
-                        ForEach(Array(controller.items.enumerated()), id: \.element.id) { i, item in
+                        // Queued user bubbles render at the *bottom* of the
+                        // canvas (just above the working indicator) regardless
+                        // of insertion order — they're "next up to send," not
+                        // part of the agent's actual transcript yet. Filter
+                        // them out of the main timeline; they're re-added
+                        // below.
+                        let queuedIds = controller.queuedItemIDs
+                        let mainItems = controller.items.filter { !queuedIds.contains($0.id) }
+                        let queuedItems = controller.items.filter { queuedIds.contains($0.id) }
+                        ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 item: item,
                                 isHistorical: controller.historicalIDs.contains(item.id),
-                                isQueued: controller.queuedItemIDs.contains(item.id)
+                                isQueued: false
                             )
                                 .id(item.id)
-                                .padding(.top, isTurnStart(item: item, index: i, items: controller.items) ? 10 : 0)
+                                .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
                                 .onAppear {
                                     visibleIds.insert(item.id)
                                     updateAnchor()
@@ -52,6 +61,14 @@ struct ThreadView: View {
                         }
                         if controller.isWorking {
                             WorkingIndicator(controller: controller)
+                        }
+                        ForEach(queuedItems, id: \.id) { item in
+                            ThreadItemRow(
+                                item: item,
+                                isHistorical: false,
+                                isQueued: true
+                            )
+                                .id(item.id)
                         }
                         Color.clear
                             .frame(height: 44)
@@ -401,7 +418,16 @@ private struct UserMessageRow: View {
         VStack(alignment: .trailing, spacing: 2) {
             bubble(p)
             HStack(spacing: 4) {
-                if isHovering && !isHistorical {
+                if isQueued {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 9))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                    Text("queued")
+                        .font(SoulFont.ui(10, weight: .medium))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                        .padding(.trailing, 4)
+                }
+                if isHovering && !isHistorical && !isQueued {
                     FooterButton(
                         systemName: copied ? "checkmark" : "doc.on.doc",
                         help: "Copy as Markdown"
@@ -468,7 +494,13 @@ private struct UserMessageRow: View {
                         .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(bubbleStroke, lineWidth: 0.5)
+                                .stroke(
+                                    bubbleStroke,
+                                    style: StrokeStyle(
+                                        lineWidth: isQueued ? 1.0 : 0.5,
+                                        dash: isQueued ? [3, 3] : []
+                                    )
+                                )
                         )
                         .textSelection(.enabled)
                 }
