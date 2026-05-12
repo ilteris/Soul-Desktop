@@ -5,6 +5,12 @@ enum ACPClientError: Error {
     case spawnFailed(String)
     case decodeFailed(String)
     case rpcError(JSONRPCError)
+    /// The child agent process is gone (EOF, exit, or crash). Any in-flight
+    /// JSON-RPC call resumes with this so callers unblock instead of hanging.
+    case childTerminated(cause: String)
+    /// Write to the child's stdin failed (broken pipe). Same idea: surface
+    /// to the caller instead of swallowing.
+    case writeFailed(String)
 }
 
 actor ACPClient {
@@ -12,7 +18,12 @@ actor ACPClient {
         case sessionUpdate(SessionNotification)
         case stderr(String)
         case unknownNotification(method: String, params: JSONValue?)
+        /// Child agent has gone away. Emitted exactly once per client; the
+        /// client is no longer usable after this.
+        case terminated(cause: String)
     }
+
+    private var didTerminate = false
 
     private let transport: ACPTransport
     private let encoder: JSONEncoder = {
@@ -50,11 +61,48 @@ actor ACPClient {
         try await transport.start()
         Task { await self.readLoop() }
         Task { await self.stderrLoop() }
+        Task { await self.terminationLoop() }
     }
 
     func stop() async {
         await transport.terminate()
+        // The transport will yield .explicit through terminationEvents and
+        // terminationLoop will drain pending continuations; we don't need to
+        // duplicate that here. Belt-and-braces drain follows in case the loop
+        // hasn't run yet (e.g. stop() before the first await).
+        drainPending(cause: "client stopped")
         eventCont?.finish()
+    }
+
+    private func terminationLoop() async {
+        for await cause in transport.terminationEvents {
+            handleTransportTermination(cause)
+            break  // stream yields exactly once
+        }
+    }
+
+    private func handleTransportTermination(_ cause: ACPTransportTermination) {
+        guard !didTerminate else { return }
+        didTerminate = true
+        let description: String
+        switch cause {
+        case .eof:                 description = "child closed stdout (EOF)"
+        case .processExit(let s):  description = "child exited (status=\(s))"
+        case .explicit:            description = "explicit teardown"
+        }
+        drainPending(cause: description)
+        eventCont?.yield(.terminated(cause: description))
+    }
+
+    /// Resume every outstanding JSON-RPC continuation with childTerminated so
+    /// callers (loadSession, prompt, initialize, …) unblock instead of waiting
+    /// on a response that will never arrive.
+    private func drainPending(cause: String) {
+        let snapshot = pending
+        pending.removeAll()
+        for (_, cont) in snapshot {
+            cont.resume(throwing: ACPClientError.childTerminated(cause: cause))
+        }
     }
 
     func setAutoAllow(_ on: Bool) { autoAllowPermissions = on }
@@ -103,17 +151,36 @@ actor ACPClient {
     // MARK: low-level
 
     private func call<P: Encodable>(method: String, params: P) async throws -> JSONValue {
+        // Fail fast if the transport is already dead — otherwise we'd register
+        // a continuation that drainPending already missed.
+        if didTerminate {
+            throw ACPClientError.childTerminated(cause: "transport already terminated")
+        }
         let id = JSONRPCID.int(nextId); nextId += 1
         let envelope = try makeEnvelope(id: id, method: method, params: params)
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
-            Task { await transport.send(envelope) }
+            Task { await self.sendOrFail(id: id, envelope: envelope) }
+        }
+    }
+
+    /// Send the envelope; on write failure, pop the just-registered
+    /// continuation and resume it with writeFailed so the caller doesn't hang.
+    private func sendOrFail(id: JSONRPCID, envelope: Data) async {
+        do {
+            try await transport.send(envelope)
+        } catch {
+            pending.removeValue(forKey: id)?
+                .resume(throwing: ACPClientError.writeFailed("\(error)"))
         }
     }
 
     private func notify<P: Encodable>(method: String, params: P) async throws {
         let envelope = try makeEnvelope(id: nil, method: method, params: params)
-        await transport.send(envelope)
+        // Notification has no id and no continuation to resume; if the write
+        // fails the caller learns via the throw and the upcoming terminated
+        // event will tear everything down anyway.
+        try await transport.send(envelope)
     }
 
     private func sendResponse(id: JSONRPCID, result: Encodable) throws {
@@ -121,7 +188,9 @@ actor ACPClient {
         env.id = id
         env.result = try toJSONValue(result)
         let data = try encoder.encode(env)
-        Task { await transport.send(data) }
+        // Best-effort: if the child is gone, the upcoming terminated event
+        // tears everything down — losing this response notification is fine.
+        Task { try? await transport.send(data) }
     }
 
     private func sendError(id: JSONRPCID, code: Int, message: String) {
@@ -129,7 +198,7 @@ actor ACPClient {
         env.id = id
         env.error = JSONRPCError(code: code, message: message)
         if let data = try? encoder.encode(env) {
-            Task { await transport.send(data) }
+            Task { try? await transport.send(data) }
         }
     }
 

@@ -29,6 +29,20 @@ struct SidebarView: View {
     @State private var hideUntitled: Bool = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
     @State private var watcher: RegistryWatcher? = nil
+    @State private var repairToast: String? = nil
+    @State private var repairToastTaskId: UUID = UUID()
+    @State private var ambiguousRepair: AmbiguousRepairContext? = nil
+
+    /// Context bag for the ambiguous-result popover. Carries the candidate
+    /// list plus the session metadata we need to write the chosen mapping.
+    struct AmbiguousRepairContext: Identifiable {
+        let id = UUID()
+        let projectKey: String
+        let sessionId: String
+        let provider: String
+        let cwd: String
+        let candidates: [String]
+    }
 
     private var filterIsActive: Bool { chatSourceFilter != nil || hideUntitled }
 
@@ -247,6 +261,13 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.ultraThinMaterial)
         .background(SoulColor.sidebar)
+        .overlay(alignment: .top) {
+            repairToastBanner
+                .animation(.easeInOut(duration: 0.15), value: repairToast)
+        }
+        .sheet(item: $ambiguousRepair) { ctx in
+            ambiguousRepairSheet(ctx)
+        }
         .task { await reload() }
         .onChange(of: currentProvider) { _, _ in
             // Harness change → re-filter live rows. A row that's valid under
@@ -375,15 +396,107 @@ struct SidebarView: View {
         else { return }
         let projectKey = session.project
         let sessionId = session.id
-        Task.detached(priority: .userInitiated) {
-            _ = SoulRegistry.backfillNativeSessionID(
-                projectKey: projectKey,
-                sessionId: sessionId,
-                provider: provider,
-                cwd: path
-            )
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                SoulRegistry.backfillNativeSessionID(
+                    projectKey: projectKey,
+                    sessionId: sessionId,
+                    provider: provider,
+                    cwd: path
+                )
+            }.value
             await reloadSessions()
+            switch result {
+            case .hit(let uuid):
+                showRepairToast("Linked to \(uuid.prefix(8))…")
+            case .alreadyMapped(let uuid):
+                showRepairToast("Already linked to \(uuid.prefix(8))…")
+            case .miss:
+                showRepairToast("No matching agent transcript found")
+            case .ambiguous(let candidates):
+                ambiguousRepair = AmbiguousRepairContext(
+                    projectKey: projectKey,
+                    sessionId: sessionId,
+                    provider: provider,
+                    cwd: path,
+                    candidates: candidates
+                )
+            case .unsupported:
+                showRepairToast("Provider not supported for repair")
+            }
         }
+    }
+
+    private func showRepairToast(_ text: String) {
+        repairToast = text
+        // Cancel any prior auto-dismiss before scheduling the new one — a
+        // rapid second click would otherwise clear the new toast early.
+        let taskId = UUID()
+        repairToastTaskId = taskId
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if repairToastTaskId == taskId {
+                repairToast = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var repairToastBanner: some View {
+        if let toast = repairToast {
+            Text(toast)
+                .font(SoulFont.ui(12))
+                .foregroundStyle(SoulColor.fg)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func ambiguousRepairSheet(_ ctx: AmbiguousRepairContext) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Multiple matching transcripts")
+                .font(SoulFont.ui(14)).bold()
+            Text("Two or more agent transcripts have the same first prompt as this chat. Pick the one to link.")
+                .font(SoulFont.ui(12))
+                .foregroundStyle(SoulColor.fgMuted)
+            ForEach(ctx.candidates, id: \.self) { uuid in
+                Button {
+                    SoulRegistry.writeNativeSessionID(
+                        projectKey: ctx.projectKey,
+                        sessionId: ctx.sessionId,
+                        nativeId: uuid,
+                        provider: ctx.provider,
+                        cwd: ctx.cwd
+                    )
+                    ambiguousRepair = nil
+                    Task {
+                        await reloadSessions()
+                        showRepairToast("Linked to \(uuid.prefix(8))…")
+                    }
+                } label: {
+                    HStack {
+                        Text(uuid).font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Text("Use this").font(SoulFont.ui(11)).foregroundStyle(SoulColor.accent)
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(SoulColor.sidebar, in: RoundedRectangle(cornerRadius: 4))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { ambiguousRepair = nil }
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 420)
     }
 }
 struct ChatRow: View {

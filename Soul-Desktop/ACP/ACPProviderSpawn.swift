@@ -75,7 +75,7 @@ private func enrichedEnvironment() -> [String: String] {
 private nonisolated(unsafe) var whichCache: [String: String?] = [:]
 private let whichCacheLock = NSLock()
 
-private func which(_ tool: String) -> String? {
+func which(_ tool: String) -> String? {
     whichCacheLock.lock()
     if let cached = whichCache[tool] {
         whichCacheLock.unlock()

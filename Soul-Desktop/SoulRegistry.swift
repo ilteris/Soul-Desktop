@@ -560,8 +560,12 @@ enum SoulRegistry {
 
         var fullEvent = event
         if fullEvent["timestamp"] == nil {
+            // Emit with an explicit 'Z' suffix so downstream readers — notably
+            // HooksReader.parseTimestamp, which treats no-TZ strings as local —
+            // interpret the timestamp as UTC and don't shift desktop hooks by
+            // the local offset during replay merge-sort.
             let f = DateFormatter()
-            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
             f.locale = Locale(identifier: "en_US_POSIX")
             f.timeZone = TimeZone(identifier: "UTC")
             fullEvent["timestamp"] = f.string(from: Date())
@@ -601,6 +605,24 @@ enum SoulRegistry {
         return nil
     }
 
+    /// Outcome of a backfill attempt. Callers that only need a UUID for retry
+    /// can read `.uuid`; callers that surface state to the user (sidebar
+    /// Repair menu) switch on the cases.
+    enum BackfillResult {
+        case hit(String)                       // newly written mapping
+        case alreadyMapped(String)             // existing NativeSessionID on file
+        case miss                              // no needle or no matching candidate
+        case ambiguous(candidates: [String])   // multiple candidates with identical first prompt
+        case unsupported                       // provider not eligible (e.g. pi)
+
+        var uuid: String? {
+            switch self {
+            case .hit(let u), .alreadyMapped(let u): return u
+            default: return nil
+            }
+        }
+    }
+
     /// Content-match backfill of a missing `kernel_uuid → agent_uuid` mapping.
     /// SOUL-SOUL_DESKTOP-022: when `session/load` fails with `Invalid session
     /// identifier`, the kernel UUID we handed the agent is one it never minted.
@@ -609,43 +631,44 @@ enum SoulRegistry {
     /// a `NativeSessionID` event with `source: "backfill"`. After this the
     /// existing `findNativeSessionID` reader resolves cleanly on retry.
     ///
-    /// Returns the discovered native UUID on a unique match. Returns nil on
-    /// no-match, on ambiguity (writes a `BackfillAmbiguous` diagnostic hook
-    /// listing the candidates so the user can disambiguate manually), and on
-    /// unsupported providers (Pi already has a direct mapping via
-    /// `~/.pi/pi-acp/session-map.json`).
+    /// Returns a typed `BackfillResult` (SOUL-SOUL_DESKTOP-029) so callers can
+    /// surface miss / ambiguous outcomes to the user instead of swallowing nil.
     ///
     /// Safety: only appends to hooks.jsonl. Never writes to agent transcript
-    /// directories, never overwrites an existing non-identity NativeSessionID.
+    /// directories, never overwrites an existing NativeSessionID.
     /// Bounded: ≤ 500 candidates × 64 KB read per candidate.
     static func backfillNativeSessionID(
         projectKey: String,
         sessionId: String,
         provider: String,
         cwd: String
-    ) -> String? {
-        // Short-circuit: if a non-identity mapping is already on file, return
-        // it. Identity mapping (existing == sessionId) is what we wrote at
-        // spawn; if session/load failed anyway the agent must have minted a
-        // different UUID, so we proceed with the scan.
-        if let existing = findNativeSessionID(projectKey: projectKey, sessionId: sessionId),
-           existing != sessionId {
-            return existing
+    ) -> BackfillResult {
+        // Short-circuit: if any NativeSessionID hook is already on file,
+        // return it. The on-disk mapping wins — backfill never overwrites or
+        // duplicates an existing record. This applies equally to identity
+        // mappings (existing == sessionId, written at spawn): when session/load
+        // fails despite an identity record, the failure is something other
+        // than UUID-namespace divergence (parse error, capability bug, cwd
+        // mismatch) and a content-match rescan would just append an unrelated
+        // second mapping. Forced re-scan, if it's ever needed, belongs behind
+        // an explicit force/repair API surface — not this implicit fall-through.
+        if let existing = findNativeSessionID(projectKey: projectKey, sessionId: sessionId) {
+            return .alreadyMapped(existing)
         }
 
         let hooksPath = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
-        guard let ourPrompt = firstUserPromptFullFromHooks(path: hooksPath) else { return nil }
+        guard let ourPrompt = firstUserPromptFullFromHooks(path: hooksPath) else { return .miss }
         let needle = normalizeForMatch(ourPrompt)
         // Trivial first prompts ("hi", "ok", "/finalize") are too common to
         // disambiguate sessions. A 20-char floor avoids false-positive
         // backfills against unrelated chats that happen to start the same way.
-        guard needle.count >= 20 else { return nil }
+        guard needle.count >= 20 else { return .miss }
 
         let candidates: [(nativeId: String, firstPrompt: String?)]
         switch provider {
         case "geminiCLI": candidates = scanGeminiCandidates(cwd: cwd)
         case "claude":    candidates = scanClaudeCandidates(cwd: cwd)
-        default: return nil
+        default: return .unsupported
         }
 
         let hits = candidates.compactMap { c -> String? in
@@ -655,7 +678,7 @@ enum SoulRegistry {
 
         switch hits.count {
         case 0:
-            return nil
+            return .miss
         case 1:
             let nativeId = hits[0]
             appendHook(projectKey: projectKey, sessionId: sessionId, event: [
@@ -665,7 +688,7 @@ enum SoulRegistry {
                 "cwd": cwd,
                 "source": "backfill",
             ])
-            return nativeId
+            return .hit(nativeId)
         default:
             appendHook(projectKey: projectKey, sessionId: sessionId, event: [
                 "event": "BackfillAmbiguous",
@@ -673,8 +696,29 @@ enum SoulRegistry {
                 "cwd": cwd,
                 "candidates": hits,
             ])
-            return nil
+            return .ambiguous(candidates: hits)
         }
+    }
+
+    /// Write a chosen NativeSessionID mapping. Used by the sidebar's
+    /// ambiguous-result popover so the user can resolve a tie by picking
+    /// one of the candidate UUIDs. No content matching, no append guard
+    /// beyond the appendHook line-atomic write.
+    static func writeNativeSessionID(
+        projectKey: String,
+        sessionId: String,
+        nativeId: String,
+        provider: String,
+        cwd: String,
+        source: String = "manual"
+    ) {
+        appendHook(projectKey: projectKey, sessionId: sessionId, event: [
+            "event": "NativeSessionID",
+            "provider": provider,
+            "nativeId": nativeId,
+            "cwd": cwd,
+            "source": source,
+        ])
     }
 
     /// Whitespace-normalize a string for first-prompt content matching. The

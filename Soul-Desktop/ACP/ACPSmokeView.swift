@@ -122,6 +122,8 @@ final class ACPSmokeViewModel {
             log("[stderr] \(s)")
         case .unknownNotification(let m, _):
             log("? notification: \(m)")
+        case .terminated(let cause):
+            log("■ terminated: \(cause)")
         }
     }
 

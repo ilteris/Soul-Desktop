@@ -211,7 +211,22 @@ final class ThreadController {
     }
 
     private var client: ACPClient?
+    /// Kernel/registry session id. This is the UUID Soul writes hooks under
+    /// (~/soul_registry/sessions/<project>/<sessionId>/hooks.jsonl) and the
+    /// id AppShell / SidebarView use to identify the chat row. Stable for
+    /// the entire thread lifetime — never overwritten by a successful
+    /// session/load, even when the agent's native UUID differs.
     private(set) var sessionId: String?
+    /// Agent-native session id used for ACP calls (session/prompt,
+    /// session/cancel, session/load). For Soul-Desktop spawns this equals
+    /// `sessionId` (identity mapping written at session/new). For divergent
+    /// legacy sessions resumed via backfill, this is the agent's UUID while
+    /// `sessionId` stays the kernel id. nil until the first ACP id is known.
+    private(set) var nativeSessionId: String?
+    /// Convenience: native id when known, else the kernel id. Use this at
+    /// every ACPClient call site so we never accidentally ask the agent to
+    /// resume a UUID it didn't mint.
+    private var acpSessionId: String? { nativeSessionId ?? sessionId }
     private var hasInitialized = false
     private var supportsLoadSession = false
     private var openAgentMessageId: UUID?
@@ -293,13 +308,16 @@ final class ThreadController {
         do {
             try await ensureSession()
             guard let client, let sid = sessionId else { return }
+            // ACP id used for prompt/cancel — may differ from kernel sid
+            // when the session was resumed via backfill.
+            let nid = nativeSessionId ?? sid
 
             while let turn = current {
                 SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
                     "event": "UserPrompt",
                     "text": turn.display,
                 ])
-                _ = try await client.prompt(sessionId: sid, text: turn.agent)
+                _ = try await client.prompt(sessionId: nid, text: turn.agent)
 
                 // Post-turn title generation only on the very first user turn
                 // of a fresh chat. Skip when draining queued prompts.
@@ -343,10 +361,11 @@ final class ThreadController {
 
     func cancel() async {
         guard let client, let sid = sessionId else { return }
+        let nid = nativeSessionId ?? sid
         // Drop any queued prompts — cancelling means "stop, don't keep going."
         // Letting them dispatch after the cancel would surprise the user.
         queuedPrompts.removeAll()
-        try? await client.cancel(sessionId: sid)
+        try? await client.cancel(sessionId: nid)
         // Flip any still-running tool calls to a terminal "stopped" status so
         // the row stops claiming work is happening. Without this the orange
         // "in_progress" pill lingers indefinitely after the agent acks cancel.
@@ -378,7 +397,8 @@ final class ThreadController {
     /// Now the only precondition is an active session.
     func recoverStalledTurn(source: String = "manual") async {
         guard let client, let sid = sessionId else { return }
-        try? await client.cancel(sessionId: sid)
+        let nid = nativeSessionId ?? sid
+        try? await client.cancel(sessionId: nid)
         let stalledSeconds = Int(Date().timeIntervalSince(lastActivityAt))
         items = items.map { item in
             if case .toolCall(let id, let kind, let title, let status, let loc, let details) = item,
@@ -488,6 +508,10 @@ final class ThreadController {
             items.append(.error(id: UUID(), text: "session id is not a UUID; cannot resume"))
             return
         }
+        // Establish kernel identity before any ACP work. Every appendHook
+        // from here on persists under the original kernel UUID, even if the
+        // agent's native UUID diverges and gets stored in nativeSessionId.
+        sessionId = sid
 
         // Soul kernel UUIDs and native agent session IDs (gemini-cli / Pi)
         // occupy different namespaces. We store the native ID in hooks.jsonl
@@ -526,7 +550,11 @@ final class ThreadController {
                     isReplayingLoad = true
                     try await client.loadSession(sessionId: resumeId, cwd: project.path)
                     isReplayingLoad = false
-                    sessionId = resumeId
+                    // Keep sessionId == sid (kernel id). resumeId is the
+                    // agent-native id we hand to ACP; record it separately
+                    // so future prompts/cancels go to the agent's UUID
+                    // while hook writes stay under the kernel directory.
+                    nativeSessionId = resumeId
                     hasInitialized = true
                     items.append(.status(id: UUID(), text: "✓ session/load: \(resumeId.prefix(8))…"))
                 } catch ACPClientError.rpcError(let rpc) {
@@ -535,27 +563,49 @@ final class ThreadController {
                     // content-match backfill. If our hooks ledger's first
                     // prompt matches one of the agent's native transcripts,
                     // we record the mapping and retry session/load once.
-                    if let backfilled = SoulRegistry.backfillNativeSessionID(
-                        projectKey: project.id,
-                        sessionId: sid,
-                        provider: provider.rawValue,
-                        cwd: project.path
-                    ), backfilled != resumeId {
-                        items.append(.status(
-                            id: UUID(),
-                            text: "↻ backfilled native session id \(backfilled.prefix(8))… — retrying"
-                        ))
-                        do {
-                            isReplayingLoad = true
-                            try await client.loadSession(sessionId: backfilled, cwd: project.path)
-                            isReplayingLoad = false
-                            sessionId = backfilled
-                            hasInitialized = true
-                            items.append(.status(id: UUID(), text: "✓ session/load: \(backfilled.prefix(8))…"))
-                            return
-                        } catch {
-                            isReplayingLoad = false
-                            // Fall through to the original error reporting.
+                    //
+                    // SOUL-SOUL_DESKTOP-028: gate on the specific
+                    // invalid-session-id signal. JSON-RPC -32602 is the
+                    // canonical "invalid params" code both providers raise
+                    // for an unknown session UUID; we also accept message-
+                    // level signals because gemini-cli has been observed to
+                    // raise -32603 with the same surface text. Any other
+                    // rpcError (parse error, capability bug, cwd mismatch,
+                    // transient provider failure) falls straight through to
+                    // the existing error-reporting path instead of triggering
+                    // an unrelated content-match write.
+                    let lowerMsg = rpc.message.lowercased()
+                    let isInvalidSession = rpc.code == -32602
+                        || lowerMsg.contains("invalid session")
+                        || lowerMsg.contains("session id")
+                    if isInvalidSession {
+                        let result = SoulRegistry.backfillNativeSessionID(
+                            projectKey: project.id,
+                            sessionId: sid,
+                            provider: provider.rawValue,
+                            cwd: project.path
+                        )
+                        if let backfilled = result.uuid, backfilled != resumeId {
+                            items.append(.status(
+                                id: UUID(),
+                                text: "↻ backfilled native session id \(backfilled.prefix(8))… — retrying"
+                            ))
+                            do {
+                                isReplayingLoad = true
+                                try await client.loadSession(sessionId: backfilled, cwd: project.path)
+                                isReplayingLoad = false
+                                // Kernel sessionId stays sid; backfilled is
+                                // the agent's UUID for ACP calls. Without
+                                // this split, follow-up prompts would
+                                // append hooks under the wrong directory.
+                                nativeSessionId = backfilled
+                                hasInitialized = true
+                                items.append(.status(id: UUID(), text: "✓ session/load: \(backfilled.prefix(8))…"))
+                                return
+                            } catch {
+                                isReplayingLoad = false
+                                // Fall through to the original error reporting.
+                            }
                         }
                     }
                     // Surface the full JSON-RPC error so we can diagnose
@@ -590,8 +640,14 @@ final class ThreadController {
                     // different path and isn't touched by session/new).
                     renderHistoryIfAvailable(sid: sid)
                     items.append(.status(id: UUID(), text: "ℹ session could not be resumed — starting fresh"))
+                    // Couldn't resume — start a fresh session. Discard
+                    // the kernel id of the failed resume attempt; the new
+                    // session lives under newSid for both kernel + native
+                    // (identity mapping, written by ensureSession on
+                    // subsequent paths or implicit here).
                     let newSid = try await client.newSession(cwd: project.path)
                     sessionId = newSid
+                    nativeSessionId = newSid
                     hasInitialized = true
                     items.append(.status(id: UUID(), text: "✓ session/new: \(newSid.prefix(8))…"))
                 }
@@ -603,7 +659,9 @@ final class ThreadController {
                 if let nativeId {
                     try await spawnAndInitialize(skipNewSession: true, resumeSessionId: nativeId)
                     guard client != nil else { return }
-                    sessionId = nativeId
+                    // sessionId stays the kernel id (set at the top of
+                    // loadSession). nativeId is the Pi-CLI's --resume id.
+                    nativeSessionId = nativeId
                     hasInitialized = true
                     items.append(.status(id: UUID(), text: "✓ resumed: \(nativeId.prefix(8))… (\(provider.label) --resume)"))
                 } else {
@@ -699,7 +757,11 @@ final class ThreadController {
         try await spawnAndInitialize(skipNewSession: false)
         guard let client else { return }
         let sid = try await client.newSession(cwd: project.path)
+        // Fresh session: kernel and native ids coincide. The explicit
+        // NativeSessionID hook below records the mapping so a later
+        // findNativeSessionID never has to fall back to the bare sid.
         sessionId = sid
+        nativeSessionId = sid
         hasInitialized = true
         
         // Persist the provider's native sessionId alongside the kernel ledger
@@ -763,10 +825,11 @@ final class ThreadController {
     /// gated by `silentCapture` over in `apply(_:)`.
     private func sendSilent(_ text: String) async -> String? {
         guard let client, let sid = sessionId else { return nil }
+        let nid = nativeSessionId ?? sid
         silentCapture = ""
         defer { silentCapture = nil }
         do {
-            _ = try await client.prompt(sessionId: sid, text: text)
+            _ = try await client.prompt(sessionId: nid, text: text)
         } catch {
             print("[silent-prompt] failed: \(error)")
             return nil
@@ -778,10 +841,38 @@ final class ThreadController {
 
     private func generateTitle() async {
         guard let sid = sessionId else { return }
-        let raw = await sendSilent(
-            "Summarize our conversation so far into a concise 3-5 word title. Respond with ONLY the title, no quotes, no prefix, no trailing punctuation."
-        )
-        guard var title = raw, !title.isEmpty else { return }
+
+        // Snapshot the first user + first agent turn from items. Reading
+        // @MainActor state from inside an actor-isolated method is free; the
+        // detached subprocess work below uses only the captured strings.
+        var firstUser: String?
+        var firstAgent: String?
+        for item in items {
+            switch item {
+            case .userMessage(_, let text, _) where firstUser == nil:
+                firstUser = text
+            case .agentMessage(_, let text, _, _) where firstAgent == nil:
+                firstAgent = text
+            default: break
+            }
+            if firstUser != nil && firstAgent != nil { break }
+        }
+        guard let user = firstUser, !user.isEmpty else { return }
+
+        let raw: String?
+        if let claude = which("claude") {
+            raw = await Self.runClaudePrint(executable: claude, user: user, agent: firstAgent)
+        } else {
+            // Fallback: no `claude` on PATH. Use the active ACP session so the
+            // feature still works, at the cost of polluting context with one
+            // meta-turn. Same prompt shape as the subprocess path.
+            raw = await sendSilent(
+                "Summarize our conversation so far into a concise 3-5 word title. Respond with ONLY the title, no quotes, no prefix, no trailing punctuation."
+            )
+        }
+
+        guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return }
         // Strip the quotes / trailing punctuation the agent sometimes adds
         // despite the instruction. Cap length so the sidebar row doesn't
         // truncate mid-word.
@@ -791,10 +882,40 @@ final class ThreadController {
         await MainActor.run { self.customTitle = title }
         // Persist so the disk-driven sidebar surfaces it on the next scan,
         // and so finalize/replay anchor on the same title the canvas shows.
+        // `source: "llm"` so a future user-rename path can win on precedence.
         SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
             "event": "Title",
             "text": title,
+            "source": "llm",
         ])
+    }
+
+    /// Run `claude -p` with a title-generation prompt that embeds the first
+    /// user turn (and, when present, the first agent reply) as context.
+    /// Returns trimmed stdout on success, nil on spawn/exit failure.
+    private static func runClaudePrint(executable: String, user: String, agent: String?) async -> String? {
+        await Task.detached(priority: .userInitiated) { () -> String? in
+            var prompt = "Produce a concise 3-5 word title for the following chat. Respond with ONLY the title — no quotes, no prefix, no trailing punctuation.\n\nUser: \(user)"
+            if let agent, !agent.isEmpty {
+                prompt += "\n\nAssistant: \(agent)"
+            }
+
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: executable)
+            p.arguments = ["-p", prompt]
+            let out = Pipe(); let err = Pipe()
+            p.standardOutput = out
+            p.standardError = err
+            do {
+                try p.run()
+                p.waitUntilExit()
+            } catch {
+                return nil
+            }
+            guard p.terminationStatus == 0 else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)
+        }.value
     }
 
     private func handle(_ event: ACPClient.Event) {
@@ -810,6 +931,17 @@ final class ThreadController {
             appendAgentLog(line)
         case .unknownNotification:
             break
+        case .terminated(let cause):
+            // Child agent went away. Surface a status row so the user
+            // notices instead of staring at a working spinner that will
+            // never resolve. Pending continuations are already drained by
+            // ACPClient; the rpcError / writeFailed / childTerminated
+            // throws land in whichever send path was awaiting.
+            appendAgentLog("[child terminated] \(cause)")
+            if isWorking {
+                isWorking = false
+            }
+            items.append(.status(id: UUID(), text: "■ agent process ended: \(cause)"))
         }
     }
 
