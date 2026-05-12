@@ -78,4 +78,20 @@ enum StallPolicy {
         let v = UserDefaults.standard.integer(forKey: autoCancelCeilingKey)
         return v > 0 ? v : autoCancelCeilingDefault
     }
+
+    /// SOUL-SOUL_DESKTOP-033: per-tool-call timeout. Independent of the
+    /// turn-level stall watchdog above. A single tool call (commonly a shell
+    /// execute like `tail -f`) can sit in_progress forever while emitting
+    /// enough output to keep `lastActivityAt` fresh, so the turn-level budget
+    /// never trips. This threshold gives each in_progress tool call its own
+    /// deadline; when exceeded, ThreadController flips the row to `.stopped`,
+    /// writes a `ToolCallTimeout` hook, and cancels the turn (ACP has no
+    /// per-toolCallId cancel today).
+    static let toolCallTimeoutKey = "soul.toolCallTimeout.seconds"
+    static let toolCallTimeoutDefault: Int = 60
+
+    static var toolCallTimeoutSeconds: Int {
+        let v = UserDefaults.standard.integer(forKey: toolCallTimeoutKey)
+        return v > 0 ? v : toolCallTimeoutDefault
+    }
 }

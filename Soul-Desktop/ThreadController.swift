@@ -246,6 +246,14 @@ final class ThreadController {
     /// captured for the hook payload so post-mortems can pattern-match
     /// `swarm-status.py --oneshot` style hangs across sessions.
     private var lastInProgressToolKind: String?
+    /// SOUL-SOUL_DESKTOP-033: per-toolCallId in_progress start timestamps.
+    /// Each in-flight tool call gets its own deadline; the watchdog tick
+    /// fires a ToolCallTimeout + turn cancel when any entry exceeds the
+    /// configured threshold. Removed when the call hits a terminal status.
+    private var toolCallStartedAt: [String: Date] = [:]
+    /// IDs we've already fired a timeout for so the watchdog doesn't keep
+    /// hammering cancel + writing duplicate hooks every tick after expiry.
+    private var toolCallTimedOut: Set<String> = []
 
     init(provider: Provider, project: SoulProject) {
         self.provider = provider
@@ -460,6 +468,10 @@ final class ThreadController {
         stallWatchdog = nil
         stallHookEmittedAt = nil
         lastInProgressToolKind = nil
+        // Drop per-tool-call deadlines at end-of-turn so a stray entry from
+        // a never-resolved tool call doesn't leak across turns.
+        toolCallStartedAt.removeAll()
+        toolCallTimedOut.removeAll()
     }
 
     /// One watchdog tick. Runs on @MainActor so it can read `items` /
@@ -497,6 +509,79 @@ final class ThreadController {
 
         if quiet >= ceiling {
             await recoverStalledTurn(source: "auto")
+            return
+        }
+
+        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout sweep. Independent
+        // from the turn-level quiet check — catches the `tail -f` case
+        // where a single tool call sits in_progress forever while still
+        // emitting enough output to keep `lastActivityAt` fresh.
+        let toolTimeout = StallPolicy.toolCallTimeoutSeconds
+        let now = Date()
+        var expired: [String] = []
+        for (toolId, startedAt) in toolCallStartedAt where !toolCallTimedOut.contains(toolId) {
+            if Int(now.timeIntervalSince(startedAt)) >= toolTimeout {
+                expired.append(toolId)
+            }
+        }
+        for toolId in expired {
+            await fireToolCallTimeout(toolId: toolId, threshold: toolTimeout)
+        }
+    }
+
+    /// Mark a stuck tool call timed out, flip its row to stopped, write the
+    /// telemetry hook, and cancel the turn so the agent unblocks. ACP today
+    /// has no per-toolCallId cancel surface; the turn-level cancel is the
+    /// only tool we have to free the awaiting `client.prompt`. Idempotent
+    /// via `toolCallTimedOut`.
+    private func fireToolCallTimeout(toolId: String, threshold: Int) async {
+        guard !toolCallTimedOut.contains(toolId) else { return }
+        toolCallTimedOut.insert(toolId)
+        let startedAt = toolCallStartedAt[toolId] ?? Date()
+        let elapsed = Int(Date().timeIntervalSince(startedAt))
+
+        // Snapshot the row's kind/title for the hook and flip its visible
+        // status to stopped so the spinner clears.
+        var kindForHook = ""
+        var titleForHook = ""
+        if let uuid = seenToolCallIds[toolId],
+           let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .toolCall(let id, let k, let t, _, let loc, let details) = items[idx] {
+            kindForHook = k
+            titleForHook = t
+            items[idx] = .toolCall(
+                id: id,
+                kind: k,
+                title: t,
+                status: "stopped",
+                locationHint: loc,
+                details: details
+            )
+        }
+
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            event: [
+                "event": "ToolCallTimeout",
+                "provider": provider.rawValue,
+                "tool_call_id": toolId,
+                "tool_kind": kindForHook,
+                "tool_title": titleForHook,
+                "elapsed_seconds": elapsed,
+                "threshold": threshold,
+            ]
+        )
+
+        items.append(.status(
+            id: UUID(),
+            text: "⚠ tool call timed out after \(elapsed)s (limit \(threshold)s) — cancelling turn"
+        ))
+
+        // Best-effort turn cancel so the awaiting client.prompt resolves.
+        if let client, let sid = sessionId {
+            let nid = nativeSessionId ?? sid
+            try? await client.cancel(sessionId: nid)
         }
     }
 
@@ -1151,6 +1236,17 @@ final class ThreadController {
             return nil
         }()
 
+        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout bookkeeping. Record the
+        // first time we see a toolCallId in a non-terminal state; clear on
+        // any terminal transition so the watchdog stops watching it.
+        let isTerminal = (status == "completed" || status == "failed" || status == "stopped")
+        if isTerminal {
+            toolCallStartedAt.removeValue(forKey: toolId)
+            toolCallTimedOut.remove(toolId)
+        } else if toolCallStartedAt[toolId] == nil {
+            toolCallStartedAt[toolId] = Date()
+        }
+
         if let existingId = seenToolCallIds[toolId],
            let idx = items.firstIndex(where: { $0.id == existingId }),
            case .toolCall(let id, let oldKind, let oldTitle, _, let oldLoc, let oldDetails) = items[idx] {
@@ -1179,6 +1275,15 @@ final class ThreadController {
         // The tool_call_update notifications that follow will supply the
         // real rawInput once the agent finishes streaming the call.
         let firstSeenDetails: ToolCallDetails? = structuredDetails
+
+        // SOUL-SOUL_DESKTOP-034: surface known-stuck shell commands (tail -f,
+        // watch, interactive top, …) with a warning row above the tool-call
+        // card so the user knows to Recover instead of waiting on a turn that
+        // will never resolve. Pure detection — the command still runs.
+        if kind == "execute", !command.isEmpty,
+           let reason = StuckCommandPatterns.reason(forExecuteCommand: command) {
+            items.append(.status(id: UUID(), text: "⚠ \(reason)"))
+        }
 
         let uuid = UUID()
         seenToolCallIds[toolId] = uuid
