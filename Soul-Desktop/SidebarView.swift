@@ -29,6 +29,11 @@ struct SidebarView: View {
     @State private var hideUntitled: Bool = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
     @State private var watcher: RegistryWatcher? = nil
+    /// SOUL-SOUL_DESKTOP-036: per-project expand/collapse state, persisted
+    /// to UserDefaults keyed by project id. Default = expanded for the
+    /// selected project, collapsed for others. Mirrored into local state so
+    /// SwiftUI animates the toggle and the chevron stays in sync.
+    @State private var projectExpanded: [String: Bool] = [:]
     @State private var repairToast: String? = nil
     @State private var repairToastTaskId: UUID = UUID()
     @State private var ambiguousRepair: AmbiguousRepairContext? = nil
@@ -120,6 +125,7 @@ struct SidebarView: View {
                                     isSelected: selectedProject == project.id
                                         && activeSessionId == nil
                                         && activeReplaySessionId == nil,
+                                    isExpanded: expansionBinding(for: project.id),
                                     onSelect: { selectedProject = project.id },
                                     onNewChat: {
                                         selectedProject = project.id
@@ -131,8 +137,11 @@ struct SidebarView: View {
                                 // hooks.jsonl dirs without a finalize sibling.
                                 // Only show under the currently selected
                                 // project; switching projects swaps the
-                                // visible set.
+                                // visible set. SOUL-SOUL_DESKTOP-036: also
+                                // gate on the per-project expand state so
+                                // a collapsed project hides its live rows.
                                 if project.id == selectedProject,
+                                   isExpanded(project.id),
                                    let lives = liveSessions[project.id] {
                                     // Sub-group by worktree_path. Sessions
                                     // without a recorded worktree go under
@@ -427,6 +436,31 @@ struct SidebarView: View {
         }
     }
 
+    /// SOUL-SOUL_DESKTOP-036: read the per-project expand flag, defaulting to
+    /// expanded for the selected project and collapsed for every other.
+    /// First-launch default mirrors the previous behavior (only the selected
+    /// project shows its inline children) so existing users see no surprise.
+    private func isExpanded(_ projectId: String) -> Bool {
+        if let local = projectExpanded[projectId] { return local }
+        let key = "soul.sidebar.expanded.\(projectId)"
+        if UserDefaults.standard.object(forKey: key) != nil {
+            return UserDefaults.standard.bool(forKey: key)
+        }
+        return projectId == selectedProject
+    }
+
+    private func setExpanded(_ projectId: String, _ value: Bool) {
+        projectExpanded[projectId] = value
+        UserDefaults.standard.set(value, forKey: "soul.sidebar.expanded.\(projectId)")
+    }
+
+    private func expansionBinding(for projectId: String) -> Binding<Bool> {
+        Binding(
+            get: { isExpanded(projectId) },
+            set: { setExpanded(projectId, $0) }
+        )
+    }
+
     private func showRepairToast(_ text: String) {
         repairToast = text
         // Cancel any prior auto-dismiss before scheduling the new one — a
@@ -601,9 +635,14 @@ struct ChatRow: View {
 /// affordance. The hint pill floats to the right of the label and a trailing
 /// pencil icon takes the click — tapping the row body still just selects the
 /// project, so the existing single-click behavior stays intact.
+///
+/// SOUL-SOUL_DESKTOP-036: a leading chevron toggles per-project expand/collapse.
+/// Expand state lives in the parent view (passed in as a Binding) so it can be
+/// persisted to UserDefaults keyed by project id and survive relaunches.
 private struct ProjectSidebarRow: View {
     let project: SoulProject
     let isSelected: Bool
+    @Binding var isExpanded: Bool
     let onSelect: () -> Void
     let onNewChat: () -> Void
 
@@ -611,7 +650,20 @@ private struct ProjectSidebarRow: View {
     @State private var buttonHover = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse" : "Expand")
+
             SoulIcon(name: "folder", color: isSelected ? SoulColor.accent : SoulColor.fgMuted)
             Text(project.name)
                 .font(SoulFont.ui(13, weight: isSelected ? .medium : .regular))
