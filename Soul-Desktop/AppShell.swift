@@ -31,7 +31,6 @@ struct AppShell: View {
     @State private var showTerminal: Bool = false
     @AppStorage("soul.review.visible") private var showReview: Bool = false
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
-    @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
@@ -47,6 +46,9 @@ struct AppShell: View {
     /// side preview pane. Set by FileChipRow taps via the Environment
     /// `openFilePreview` callback; cleared by the panel's X button.
     @State private var filePreviewPath: String? = nil
+    /// Remembers whether the sidebar was open before the preview pane took
+    /// over the canvas width, so closing the preview restores prior layout.
+    @State private var sidebarWasOpenBeforePreview: Bool = true
 
     private var replayFraction: Double {
         guard let replay, replay.total > 0 else { return 0 }
@@ -65,6 +67,18 @@ struct AppShell: View {
             return ContextUsage.compute(provider: thread.provider, sessionId: sid, cwd: thread.project.path)
         }
         return nil
+    }
+
+    private var sidePanelAnimation: Animation {
+        .easeInOut(duration: 0.22)
+    }
+
+    private var reviewPanelWidth: CGFloat {
+        showReview ? 461 : 0
+    }
+
+    private var filePreviewPanelWidth: CGFloat {
+        filePreviewPath == nil ? 0 : 521
     }
 
     private func currentProject() -> SoulProject? {
@@ -231,10 +245,7 @@ struct AppShell: View {
         guard let project = currentProject() else { return }
         sidebarWasOpenBeforeReplay = showSidebar
         if showSidebar {
-            withAnimation(.easeInOut(duration: 0.22)) {
-                showSidebar = false
-                splitVisibility = .detailOnly
-            }
+            setSidebarVisible(false)
         }
         // Replay is a separate view — it doesn't replace the active thread.
         // The thread keeps running; switching back via exitReplay reveals it.
@@ -257,10 +268,7 @@ struct AppShell: View {
             }
         }
         if sidebarWasOpenBeforeReplay && !showSidebar {
-            withAnimation(.easeOut(duration: 0.26)) {
-                showSidebar = true
-                splitVisibility = .all
-            }
+            setSidebarVisible(true)
         }
     }
 
@@ -297,25 +305,19 @@ struct AppShell: View {
     }
 
     private func toggleSidebar() {
-        if showSidebar {
-            withAnimation(.easeInOut(duration: 0.22)) {
-                showSidebar = false
-                splitVisibility = .detailOnly
-            }
-        } else {
-            withAnimation(.easeOut(duration: 0.26)) {
-                showSidebar = true
-                splitVisibility = .all
-            }
-        }
+        setSidebarVisible(!showSidebar)
+    }
+
+    private func setSidebarVisible(_ visible: Bool) {
+        withAnimation(sidePanelAnimation) { showSidebar = visible }
     }
 
     private func toggleReview() {
-        if showReview {
-            withAnimation(.easeInOut(duration: 0.22)) { showReview = false }
-        } else {
-            withAnimation(.easeOut(duration: 0.26)) { showReview = true }
-        }
+        withAnimation(sidePanelAnimation) { showReview.toggle() }
+    }
+
+    private func setFilePreviewPath(_ path: String?) {
+        withAnimation(sidePanelAnimation) { filePreviewPath = path }
     }
 
     private func toggleTerminal() {
@@ -359,8 +361,113 @@ struct AppShell: View {
         }
     }
 
-    var body: some View {
-        NavigationSplitView(columnVisibility: $splitVisibility) {
+    private var mainCanvas: some View {
+        VStack(spacing: 0) {
+            CanvasToolbar(
+                harness: harness,
+                onPickHarness: { picked in
+                    if thread != nil { newChat() }
+                    harness = picked
+                },
+                onSmokeTest: { showSmoke = true },
+                onNewChat: newChat,
+                onToggleSidebar: toggleSidebar,
+                onToggleTerminal: toggleTerminal,
+                onToggleReview: toggleReview,
+                threadActive: thread != nil || replay != nil,
+                sidebarActive: showSidebar,
+                terminalActive: showTerminal,
+                reviewActive: showReview,
+                replayActive: replay != nil,
+                contextUsage: contextUsage,
+                thread: thread
+            )
+            ZStack {
+                SoulColor.bg.ignoresSafeArea()
+                if let replay {
+                    ReplayView(controller: replay, onExit: exitReplay)
+                } else if let thread {
+                    ThreadView(
+                        controller: thread,
+                        prompt: $prompt,
+                        onCancel: cancelTurn
+                    )
+                        // Force a fresh view identity per thread so SwiftUI
+                        // tears down the ScrollView on switch and our
+                        // `.onAppear` restore actually fires.
+                        .id(thread.id)
+                } else {
+                    HeroEmptyState(
+                        projectName: currentProject()?.name ?? "your project",
+                        projectPath: currentProject()?.path,
+                        currentProjectID: selectedProject ?? "",
+                        prompt: $prompt,
+                        onSend: { display, agent in startThread(display: display, agent: agent) },
+                        onSelectProject: { selectedProject = $0 },
+                        onNewProject: openNewProjectWizard,
+                        devCommand: currentProject()?.devCommand,
+                        devURL: currentProject()?.devURL,
+                        devRunning: devServerRunning,
+                        onRunLocal: runLocal,
+                        pendingPermissionMode: $pendingPermissionMode,
+                        provider: harness
+                    )
+                }
+            }
+            if showTerminal {
+                terminalSection
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+        .geometryGroup()
+    }
+
+    @ViewBuilder
+    private var rightSidePanels: some View {
+        HStack(spacing: 0) {
+            ZStack(alignment: .leading) {
+                if showReview {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(SoulColor.border.opacity(0.5))
+                            .frame(width: 1)
+                        ReviewPanel(
+                            projectPath: currentProject()?.path,
+                            onClose: { withAnimation(sidePanelAnimation) { showReview = false } }
+                        )
+                        .frame(width: 460)
+                    }
+                }
+            }
+            .frame(width: reviewPanelWidth, alignment: .leading)
+            .frame(maxHeight: .infinity)
+            .background(SoulColor.bg)
+            .clipped()
+
+            ZStack(alignment: .leading) {
+                if let preview = filePreviewPath {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(SoulColor.border.opacity(0.5))
+                            .frame(width: 1)
+                        FilePreviewPanel(
+                            path: preview,
+                            onClose: { setFilePreviewPath(nil) }
+                        )
+                        .frame(width: 520)
+                    }
+                }
+            }
+            .frame(width: filePreviewPanelWidth, alignment: .leading)
+            .frame(maxHeight: .infinity)
+            .background(SoulColor.bg)
+            .clipped()
+        }
+    }
+
+    private var sidebarPane: some View {
+        ZStack(alignment: .leading) {
             SidebarView(
                 selectedProject: $selectedProject,
                 onSelectSession: loadSession,
@@ -376,120 +483,53 @@ struct AppShell: View {
                 activeSessionId: thread?.sessionId ?? pendingActiveId,
                 currentProvider: harness
             )
-                .navigationSplitViewColumnWidth(min: 220, ideal: SoulMetric.sidebarWidth, max: 320)
-                .toolbar(removing: .sidebarToggle)
-        } detail: {
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    CanvasToolbar(
-                        harness: harness,
-                        onPickHarness: { picked in
-                            if thread != nil { newChat() }
-                            harness = picked
-                        },
-                        onSmokeTest: { showSmoke = true },
-                        onNewChat: newChat,
-                        onToggleSidebar: toggleSidebar,
-                        onToggleTerminal: toggleTerminal,
-                        onToggleReview: toggleReview,
-                        threadActive: thread != nil || replay != nil,
-                        sidebarActive: showSidebar,
-                        terminalActive: showTerminal,
-                        reviewActive: showReview,
-                        replayActive: replay != nil,
-                        contextUsage: contextUsage,
-                        thread: thread
-                    )
-                    ZStack {
-                        SoulColor.bg.ignoresSafeArea()
-                        if let replay {
-                            ReplayView(controller: replay, onExit: exitReplay)
-                        } else if let thread {
-                            ThreadView(
-                                controller: thread,
-                                prompt: $prompt,
-                                onCancel: cancelTurn
-                            )
-                                // Force a fresh view identity per thread so
-                                // SwiftUI tears down the ScrollView on switch
-                                // and our `.onAppear` restore actually fires.
-                                // Without this, SwiftUI reuses the same view
-                                // structure across thread swaps and the
-                                // ScrollView retains the previous thread's
-                                // internal NSScrollView offset.
-                                .id(thread.id)
-                        } else {
-                            HeroEmptyState(
-                                projectName: currentProject()?.name ?? "your project",
-                                projectPath: currentProject()?.path,
-                                currentProjectID: selectedProject ?? "",
-                                prompt: $prompt,
-                                onSend: { display, agent in startThread(display: display, agent: agent) },
-                                onSelectProject: { selectedProject = $0 },
-                                onNewProject: openNewProjectWizard,
-                                devCommand: currentProject()?.devCommand,
-                                devURL: currentProject()?.devURL,
-                                devRunning: devServerRunning,
-                                onRunLocal: runLocal,
-                                pendingPermissionMode: $pendingPermissionMode,
-                                provider: harness
-                            )
-                        }
-                    }
-                    if showTerminal {
-                        terminalSection
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                if showReview {
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(SoulColor.border.opacity(0.5))
-                            .frame(width: 1)
-                        ReviewPanel(
-                            projectPath: currentProject()?.path,
-                            onClose: { withAnimation(.easeInOut(duration: 0.22)) { showReview = false } }
-                        )
-                        .frame(minWidth: 380, idealWidth: 460, maxWidth: 720)
-                    }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-                if let preview = filePreviewPath {
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(SoulColor.border.opacity(0.5))
-                            .frame(width: 1)
-                        FilePreviewPanel(
-                            path: preview,
-                            onClose: { withAnimation(.easeInOut(duration: 0.22)) { filePreviewPath = nil } }
-                        )
-                        .frame(minWidth: 380, idealWidth: 520, maxWidth: 820)
-                    }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            .frame(width: SoulMetric.sidebarWidth)
+            .frame(maxHeight: .infinity)
+        }
+        .frame(width: showSidebar ? SoulMetric.sidebarWidth : 0, alignment: .leading)
+        .frame(maxHeight: .infinity)
+        .clipped()
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebarPane
+            mainCanvas
+            rightSidePanels
+        }
+        .animation(sidePanelAnimation, value: showSidebar)
+        .animation(sidePanelAnimation, value: showReview)
+        .animation(sidePanelAnimation, value: filePreviewPath)
+        .environment(\.openFilePreview) { path in
+            if filePreviewPath == nil {
+                sidebarWasOpenBeforePreview = showSidebar
+                if showSidebar {
+                    setSidebarVisible(false)
                 }
             }
-            .environment(\.openFilePreview) { path in
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    filePreviewPath = path
-                }
+            setFilePreviewPath(path)
+        }
+        .onChange(of: filePreviewPath) { _, new in
+            if new == nil, sidebarWasOpenBeforePreview, !showSidebar {
+                setSidebarVisible(true)
             }
-            .toolbar(.hidden)
-            .sheet(isPresented: $showSmoke) { ACPSmokeView() }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(harness: $harness, onDismiss: { showSettings = false })
-            }
-            .sheet(isPresented: $showNewProject) {
-                NewProjectWizard(
-                    onCreated: { newKey in
-                        showNewProject = false
-                        selectedProject = newKey
-                    },
-                    onCancel: { showNewProject = false }
-                )
-            }
-            .sheet(item: $externalLiveSession) { session in
-                externalLiveSessionSheet(session)
-            }
+        }
+        .toolbar(.hidden)
+        .sheet(isPresented: $showSmoke) { ACPSmokeView() }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(harness: $harness, onDismiss: { showSettings = false })
+        }
+        .sheet(isPresented: $showNewProject) {
+            NewProjectWizard(
+                onCreated: { newKey in
+                    showNewProject = false
+                    selectedProject = newKey
+                },
+                onCancel: { showNewProject = false }
+            )
+        }
+        .sheet(item: $externalLiveSession) { session in
+            externalLiveSessionSheet(session)
         }
         .background {
             Button("") { showSettings = true }
@@ -501,8 +541,6 @@ struct AppShell: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
         }
-        .onAppear { splitVisibility = showSidebar ? .all : .detailOnly }
-        .navigationSplitViewStyle(.balanced)
         .background(SoulColor.bg)
         .preferredColorScheme(.light)
         .onChange(of: selectedProject) { _, _ in
