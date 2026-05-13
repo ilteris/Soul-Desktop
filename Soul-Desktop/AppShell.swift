@@ -43,6 +43,10 @@ struct AppShell: View {
     /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
     /// and surface a sheet offering the read-only Replay path instead.
     @State private var externalLiveSession: SoulSession? = nil
+    /// SOUL-SOUL_DESKTOP-041: path of the file currently open in the right-
+    /// side preview pane. Set by FileChipRow taps via the Environment
+    /// `openFilePreview` callback; cleared by the panel's X button.
+    @State private var filePreviewPath: String? = nil
 
     private var replayFraction: Double {
         guard let replay, replay.total > 0 else { return 0 }
@@ -449,6 +453,24 @@ struct AppShell: View {
                         .frame(minWidth: 380, idealWidth: 460, maxWidth: 720)
                     }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+                if let preview = filePreviewPath {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(SoulColor.border.opacity(0.5))
+                            .frame(width: 1)
+                        FilePreviewPanel(
+                            path: preview,
+                            onClose: { withAnimation(.easeInOut(duration: 0.22)) { filePreviewPath = nil } }
+                        )
+                        .frame(minWidth: 380, idealWidth: 520, maxWidth: 820)
+                    }
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .environment(\.openFilePreview) { path in
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    filePreviewPath = path
                 }
             }
             .toolbar(.hidden)

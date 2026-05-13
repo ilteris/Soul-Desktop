@@ -602,6 +602,10 @@ private struct FileChipRow<Trailing: View>: View {
     let statusColor: Color
     let icon: String
     @ViewBuilder var trailing: () -> Trailing
+    /// SOUL-SOUL_DESKTOP-041: AppShell injects this to open the right-side
+    /// preview pane instead of the default NSWorkspace fallback. Default is
+    /// a no-op so unit tests / previews don't crash.
+    @Environment(\.openFilePreview) private var openFilePreview
 
     init(kind: String, status: String, path: String, statusColor: Color, icon: String,
          @ViewBuilder trailing: @escaping () -> Trailing) {
@@ -616,8 +620,7 @@ private struct FileChipRow<Trailing: View>: View {
     var body: some View {
         HStack(spacing: 8) {
             Button {
-                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-                NSWorkspace.shared.open(url)
+                openFilePreview(path)
             } label: {
                 HStack(spacing: 6) {
                     Text(icon)
