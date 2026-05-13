@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Soul-Desktop — User Flow Paths</title>
+<style>
+  :root {
+    --bg: #0f1d2e;
+    --bg-deep: #08111c;
+    --card: #18293f;
+    --card-stroke: #243a55;
+    --accent: #4ee29b;
+    --accent-card: #1a3a2c;
+    --accent-stroke: #4ee29b;
+    --fg: #d6e2f0;
+    --fg-muted: #8fa3bb;
+    --fg-subtle: #5d7390;
+    --label-bg: #050a14;
+    --edge: #3b5170;
+    --edge-dashed: #2c4865;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    overflow-x: auto;
+  }
+  header {
+    padding: 24px 32px 8px;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  header p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--fg-muted);
+    max-width: 820px;
+    line-height: 1.5;
+  }
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 32px 0;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-swatch {
+    width: 18px; height: 10px;
+    border-radius: 2px;
+    background: var(--card);
+    border: 1px solid var(--card-stroke);
+  }
+  .legend-swatch.accent { background: var(--accent-card); border-color: var(--accent-stroke); }
+  .legend-swatch.dashed { background: transparent; border: 1px dashed var(--edge); }
+  .legend-swatch.solid { background: transparent; border-top: 2px solid var(--edge); border-radius: 0; height: 2px; }
+
+  .stage {
+    padding: 24px 32px 48px;
+    overflow: auto;
+  }
+  svg {
+    display: block;
+    width: 1480px;
+    height: 1080px;
+    background: var(--bg-deep);
+    border-radius: 8px;
+    border: 1px solid #1a2a3e;
+  }
+
+  /* Node card */
+  .node rect {
+    fill: var(--card);
+    stroke: var(--card-stroke);
+    stroke-width: 1;
+    rx: 10; ry: 10;
+  }
+  .node.accent rect {
+    fill: var(--accent-card);
+    stroke: var(--accent-stroke);
+    stroke-width: 1.5;
+  }
+  .node .icon-bg {
+    fill: rgba(255,255,255,0.04);
+    stroke: var(--card-stroke);
+    stroke-width: 0.5;
+  }
+  .node.accent .icon-bg {
+    fill: rgba(78,226,155,0.1);
+    stroke: var(--accent-stroke);
+  }
+  .node .icon { fill: var(--fg); }
+  .node.accent .icon { fill: var(--accent); }
+  .node .title {
+    fill: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .node.accent .title { fill: var(--accent); }
+  .node .subtitle {
+    fill: var(--fg-muted);
+    font-size: 11px;
+  }
+  .node .ref {
+    fill: var(--fg-subtle);
+    font-size: 9.5px;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+
+  /* Edges */
+  .edge { fill: none; stroke: var(--edge); stroke-width: 1.2; }
+  .edge.dashed { stroke-dasharray: 4 4; stroke: var(--edge-dashed); }
+  .edge-arrow { fill: var(--edge); }
+
+  /* Edge labels */
+  .edge-label {
+    fill: var(--fg);
+    font-size: 10px;
+  }
+  .edge-label-bg {
+    fill: var(--label-bg);
+    rx: 10;
+    ry: 10;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Soul-Desktop — User Flow Paths</h1>
+  <p>
+    Every entry point and rendering path in Soul-Desktop, with the actual file:function names on each edge.
+    Solid lines are happy paths; dashed lines are feedback / recovery loops. The accent-bordered node
+    is the canonical success state (session/load resolves, ThreadView renders with all chips).
+  </p>
+</header>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-swatch"></span> Process / view node</div>
+  <div class="legend-item"><span class="legend-swatch accent"></span> Happy-path terminal state</div>
+  <div class="legend-item"><span class="legend-swatch solid"></span> Forward routing</div>
+  <div class="legend-item"><span class="legend-swatch dashed"></span> Feedback / retry / fallback</div>
+</div>
+
+<div class="stage">
+<svg viewBox="0 0 1480 1080" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="edge-arrow"/>
+    </marker>
+    <marker id="arr-dashed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-dashed)"/>
+    </marker>
+  </defs>
+
+  <!--
+    Layout:
+      Column 1 (x≈40):  Entry points (Composer, Sidebar row click, Repair menu, Settings)
+      Column 2 (x≈340): Routing layer (ThreadController dispatch, AppShell.loadSession gate)
+      Column 3 (x≈680): ACP / Registry calls
+      Column 4 (x≈1020): Render targets / failure handlers
+      Column 5 (x≈1280): Terminal states
+  -->
+
+  <!-- ENTRY POINTS -->
+
+  <!-- Composer typed message -->
+  <g class="node" transform="translate(40, 60)">
+    <rect width="240" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16" font-family="ui-monospace">⌨︎</text>
+    <text class="title" x="58" y="32">Composer typed</text>
+    <text class="subtitle" x="58" y="50">user prompt or /slash</text>
+    <text class="ref" x="58" y="65">ComposerView.swift</text>
+  </g>
+
+  <!-- Sidebar row click -->
+  <g class="node" transform="translate(40, 170)">
+    <rect width="240" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">▤</text>
+    <text class="title" x="58" y="32">Sidebar row click</text>
+    <text class="subtitle" x="58" y="50">finalized or live session</text>
+    <text class="ref" x="58" y="65">SidebarView → onSelectSession</text>
+  </g>
+
+  <!-- Sidebar Repair menu -->
+  <g class="node" transform="translate(40, 280)">
+    <rect width="240" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⚒︎</text>
+    <text class="title" x="58" y="32">Repair Session Link</text>
+    <text class="subtitle" x="58" y="50">contextMenu on chat row</text>
+    <text class="ref" x="58" y="65">SidebarView.repairSessionLink</text>
+  </g>
+
+  <!-- Settings → Advanced -->
+  <g class="node" transform="translate(40, 390)">
+    <rect width="240" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⚙</text>
+    <text class="title" x="58" y="32">Settings · Advanced</text>
+    <text class="subtitle" x="58" y="50">stall + tool-call timeouts</text>
+    <text class="ref" x="58" y="65">SettingsView.AdvancedPane</text>
+  </g>
+
+  <!-- Replay click (live terminal-origin sheet) -->
+  <g class="node" transform="translate(40, 720)">
+    <rect width="240" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">▶</text>
+    <text class="title" x="58" y="32">Open Replay</text>
+    <text class="subtitle" x="58" y="50">read-only fallback</text>
+    <text class="ref" x="58" y="65">AppShell.startReplay</text>
+  </g>
+
+
+  <!-- ROUTING LAYER -->
+
+  <!-- ThreadController.send -->
+  <g class="node" transform="translate(340, 60)">
+    <rect width="260" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">↪</text>
+    <text class="title" x="58" y="32">ThreadController.send</text>
+    <text class="subtitle" x="58" y="50">queue + dispatch</text>
+    <text class="ref" x="58" y="65">writes UserPrompt hook</text>
+  </g>
+
+  <!-- AppShell.loadSession + terminal gate -->
+  <g class="node" transform="translate(340, 170)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⤳</text>
+    <text class="title" x="58" y="32">AppShell.loadSession</text>
+    <text class="subtitle" x="58" y="50">already-open check</text>
+    <text class="subtitle" x="58" y="66">terminal-origin gate · -035</text>
+    <text class="ref" x="58" y="84">AppShell.swift:118 + :126</text>
+  </g>
+
+  <!-- Terminal-origin sheet -->
+  <g class="node" transform="translate(340, 300)">
+    <rect width="260" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⓵</text>
+    <text class="title" x="58" y="32">Session-elsewhere sheet</text>
+    <text class="subtitle" x="58" y="50">refuses double-writer load</text>
+    <text class="ref" x="58" y="65">externalLiveSession state</text>
+  </g>
+
+  <!-- backfillNativeSessionID -->
+  <g class="node" transform="translate(340, 410)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⌬</text>
+    <text class="title" x="58" y="32">backfillNativeSessionID</text>
+    <text class="subtitle" x="58" y="50">content-match scan · -022</text>
+    <text class="subtitle" x="58" y="66">BackfillResult enum · -029</text>
+    <text class="ref" x="58" y="84">SoulRegistry.swift:625</text>
+  </g>
+
+  <!-- Stall + tool-call watchdog -->
+  <g class="node" transform="translate(340, 545)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⏱</text>
+    <text class="title" x="58" y="32">tickStallWatchdog</text>
+    <text class="subtitle" x="58" y="50">stall · -024 + tool-call · -033</text>
+    <text class="subtitle" x="58" y="66">stuck-cmd warn · -034</text>
+    <text class="ref" x="58" y="84">ThreadController.swift</text>
+  </g>
+
+  <!-- ReplayController -->
+  <g class="node" transform="translate(340, 720)">
+    <rect width="260" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⤺</text>
+    <text class="title" x="58" y="32">ReplayController</text>
+    <text class="subtitle" x="58" y="50">hooks.jsonl streaming + pacing</text>
+    <text class="ref" x="58" y="65">HooksReader + chapter group</text>
+  </g>
+
+
+  <!-- ACP / REGISTRY CALLS -->
+
+  <!-- ACP session/prompt -->
+  <g class="node" transform="translate(680, 60)">
+    <rect width="260" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⇄</text>
+    <text class="title" x="58" y="32">ACPClient.prompt</text>
+    <text class="subtitle" x="58" y="50">native UUID via nativeSessionId</text>
+    <text class="ref" x="58" y="65">session/prompt JSON-RPC</text>
+  </g>
+
+  <!-- ACP session/load -->
+  <g class="node" transform="translate(680, 170)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⤓</text>
+    <text class="title" x="58" y="32">ACPClient.loadSession</text>
+    <text class="subtitle" x="58" y="50">streams session/update events</text>
+    <text class="subtitle" x="58" y="66">-32602 → backfill catch</text>
+    <text class="ref" x="58" y="84">ThreadController.swift:553</text>
+  </g>
+
+  <!-- injectSlashCommandPrompts -->
+  <g class="node" transform="translate(680, 410)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⊕</text>
+    <text class="title" x="58" y="32">injectSlashCommandPrompts</text>
+    <text class="subtitle" x="58" y="50">claude-only · -038</text>
+    <text class="subtitle" x="58" y="66">reads /-prefixed UserPrompt hooks</text>
+    <text class="ref" x="58" y="84">ThreadController.swift</text>
+  </g>
+
+  <!-- ACPTransport child-death -->
+  <g class="node" transform="translate(680, 545)">
+    <rect width="260" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">✖</text>
+    <text class="title" x="58" y="32">Child terminated</text>
+    <text class="subtitle" x="58" y="50">EOF or processExit · -030</text>
+    <text class="subtitle" x="58" y="66">drainPending all continuations</text>
+    <text class="ref" x="58" y="84">ACPTransport + ACPClient</text>
+  </g>
+
+  <!-- HooksReader stream -->
+  <g class="node" transform="translate(680, 720)">
+    <rect width="260" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⌐</text>
+    <text class="title" x="58" y="32">HooksReader events</text>
+    <text class="subtitle" x="58" y="50">timestamp-paced playback</text>
+    <text class="ref" x="58" y="65">HooksReader.swift</text>
+  </g>
+
+
+  <!-- RENDER / FAILURE -->
+
+  <!-- ThreadView render (HAPPY PATH) -->
+  <g class="node accent" transform="translate(1020, 110)">
+    <rect width="270" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">✓</text>
+    <text class="title" x="58" y="32">ThreadView render</text>
+    <text class="subtitle" x="58" y="50">items array + UserMessageRow</text>
+    <text class="subtitle" x="58" y="66">/slash chips via SlashCommandParse</text>
+    <text class="ref" x="58" y="84">-037 chip · -039 unify</text>
+  </g>
+
+  <!-- ReplayView render -->
+  <g class="node" transform="translate(1020, 720)">
+    <rect width="270" height="100"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">▷</text>
+    <text class="title" x="58" y="32">ReplayView render</text>
+    <text class="subtitle" x="58" y="50">chapter headers (collapsed)</text>
+    <text class="subtitle" x="58" y="66">ChapterHeader chip via -039</text>
+    <text class="ref" x="58" y="84">ReplayView.swift</text>
+  </g>
+
+  <!-- Ambiguous repair popover -->
+  <g class="node" transform="translate(1020, 410)">
+    <rect width="270" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⁇</text>
+    <text class="title" x="58" y="32">Ambiguous-repair sheet</text>
+    <text class="subtitle" x="58" y="50">user picks native UUID</text>
+    <text class="ref" x="58" y="65">SidebarView.ambiguousRepair</text>
+  </g>
+
+  <!-- Watchdog cancel -->
+  <g class="node" transform="translate(1020, 545)">
+    <rect width="270" height="74"/>
+    <rect class="icon-bg" x="14" y="18" width="32" height="32" rx="8"/>
+    <text class="icon" x="22" y="40" font-size="16">⏹</text>
+    <text class="title" x="58" y="32">recoverStalledTurn</text>
+    <text class="subtitle" x="58" y="50">session/cancel · status row</text>
+    <text class="ref" x="58" y="65">manual + auto-ceiling</text>
+  </g>
+
+
+  <!-- EDGES -->
+
+  <!-- Composer → send -->
+  <path class="edge" d="M 280,97 L 340,97" marker-end="url(#arr)"/>
+
+  <!-- send → ACP prompt -->
+  <path class="edge" d="M 600,97 L 680,97" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="606" y="84" width="68" height="14"/>
+    <text class="edge-label" x="640" y="94" text-anchor="middle">native id</text>
+  </g>
+
+  <!-- ACPClient.prompt → ThreadView render -->
+  <path class="edge" d="M 940,97 C 990,97 990,150 1020,150" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="945" y="110" width="80" height="14"/>
+    <text class="edge-label" x="985" y="120" text-anchor="middle">session/update</text>
+  </g>
+
+  <!-- Sidebar click → loadSession -->
+  <path class="edge" d="M 280,207 L 340,207" marker-end="url(#arr)"/>
+
+  <!-- loadSession → ACP.loadSession (happy path) -->
+  <path class="edge" d="M 600,207 L 680,207" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="608" y="194" width="64" height="14"/>
+    <text class="edge-label" x="640" y="204" text-anchor="middle">!terminal</text>
+  </g>
+
+  <!-- loadSession → external sheet (terminal-origin) -->
+  <path class="edge" d="M 470,270 L 470,300" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="430" y="276" width="86" height="14"/>
+    <text class="edge-label" x="473" y="286" text-anchor="middle">live · terminal</text>
+  </g>
+
+  <!-- ACP loadSession success → injectSlash -->
+  <path class="edge" d="M 810,270 L 810,410" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="770" y="328" width="74" height="14"/>
+    <text class="edge-label" x="807" y="338" text-anchor="middle">success</text>
+  </g>
+
+  <!-- injectSlash → ThreadView render -->
+  <path class="edge" d="M 940,440 C 1000,440 1000,180 1020,180" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="942" y="280" width="96" height="14"/>
+    <text class="edge-label" x="990" y="290" text-anchor="middle">items merged</text>
+  </g>
+
+  <!-- ACP loadSession rpcError → backfill -->
+  <path class="edge dashed" d="M 750,270 C 750,360 470,360 470,410" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="556" y="346" width="116" height="14"/>
+    <text class="edge-label" x="614" y="356" text-anchor="middle">-32602 / -028 gate</text>
+  </g>
+
+  <!-- backfill .hit → retry ACP loadSession -->
+  <path class="edge dashed" d="M 600,440 C 650,440 650,260 680,260" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="610" y="376" width="40" height="14"/>
+    <text class="edge-label" x="630" y="386" text-anchor="middle">.hit</text>
+  </g>
+
+  <!-- backfill .ambiguous → Sidebar ambiguous sheet -->
+  <path class="edge dashed" d="M 600,470 L 1020,447" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="780" y="448" width="76" height="14"/>
+    <text class="edge-label" x="818" y="458" text-anchor="middle">.ambiguous</text>
+  </g>
+
+  <!-- Repair menu → backfill -->
+  <path class="edge" d="M 280,317 C 320,317 320,460 340,460" marker-end="url(#arr)"/>
+
+  <!-- Settings → watchdog config -->
+  <path class="edge dashed" d="M 280,427 L 340,575" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="278" y="496" width="78" height="14"/>
+    <text class="edge-label" x="317" y="506" text-anchor="middle">UserDefaults</text>
+  </g>
+
+  <!-- ThreadController.send → watchdog (active turn) -->
+  <path class="edge dashed" d="M 470,134 C 470,500 470,500 470,545" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="392" y="332" width="84" height="14"/>
+    <text class="edge-label" x="434" y="342" text-anchor="middle">isWorking</text>
+  </g>
+
+  <!-- watchdog → ACPClient.prompt cancel -->
+  <path class="edge dashed" d="M 600,575 C 660,575 660,134 680,134" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="606" y="358" width="54" height="14"/>
+    <text class="edge-label" x="633" y="368" text-anchor="middle">cancel</text>
+  </g>
+
+  <!-- watchdog → recoverStalledTurn -->
+  <path class="edge" d="M 600,580 L 1020,580" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="780" y="566" width="86" height="14"/>
+    <text class="edge-label" x="823" y="576" text-anchor="middle">timeout · auto</text>
+  </g>
+
+  <!-- ACPClient.prompt → child terminated (transport-level) -->
+  <path class="edge dashed" d="M 810,134 L 810,545" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="755" y="324" width="106" height="14"/>
+    <text class="edge-label" x="808" y="334" text-anchor="middle">EOF / processExit</text>
+  </g>
+
+  <!-- child terminated → ThreadView render (terminated event) -->
+  <path class="edge dashed" d="M 940,580 C 990,580 990,200 1020,200" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="950" y="436" width="74" height="14"/>
+    <text class="edge-label" x="987" y="446" text-anchor="middle">drain pending</text>
+  </g>
+
+  <!-- External sheet → Open Replay -->
+  <path class="edge" d="M 340,360 C 200,360 200,720 270,720" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="170" y="540" width="74" height="14"/>
+    <text class="edge-label" x="207" y="550" text-anchor="middle">Open Replay</text>
+  </g>
+
+  <!-- Open Replay → ReplayController -->
+  <path class="edge" d="M 280,757 L 340,757" marker-end="url(#arr)"/>
+
+  <!-- ReplayController → HooksReader -->
+  <path class="edge" d="M 600,757 L 680,757" marker-end="url(#arr)"/>
+
+  <!-- HooksReader → ReplayView -->
+  <path class="edge" d="M 940,757 L 1020,757" marker-end="url(#arr)"/>
+  <g>
+    <rect class="edge-label-bg" x="942" y="744" width="74" height="14"/>
+    <text class="edge-label" x="980" y="754" text-anchor="middle">items[]</text>
+  </g>
+
+  <!-- ambiguous sheet → backfill (user-picked uuid) -->
+  <path class="edge dashed" d="M 1020,440 C 990,440 990,500 600,500" marker-end="url(#arr-dashed)"/>
+  <g>
+    <rect class="edge-label-bg" x="752" y="487" width="106" height="14"/>
+    <text class="edge-label" x="805" y="497" text-anchor="middle">writeNativeSessionID</text>
+  </g>
+
+</svg>
+</div>
+
+<footer style="padding: 12px 32px 32px; font-size: 11px; color: var(--fg-subtle);">
+  Registry tasks referenced: <code>-022</code> (backfill), <code>-024</code> (stall),
+  <code>-028</code> (rpcError gate), <code>-029</code> (BackfillResult), <code>-030</code> (child-death),
+  <code>-033</code> (tool-call timeout), <code>-034</code> (stuck-cmd patterns), <code>-035</code> (terminal-origin gate),
+  <code>-037</code> (chip render), <code>-038</code> (slash injection), <code>-039</code> (unified chip parse).
+</footer>
+
+</body>
+</html>

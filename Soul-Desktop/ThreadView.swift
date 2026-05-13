@@ -398,19 +398,10 @@ private struct UserMessageRow: View {
     @State private var copied = false
 
     private var parsed: (commandName: String?, rest: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("/") else { return (nil, text) }
-        let body = trimmed.dropFirst()
-        if let space = body.firstIndex(of: " ") {
-            let cmd = String(body[..<space])
-            let rest = String(body[body.index(after: space)...]).trimmingCharacters(in: .whitespaces)
-            return cmd.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-                ? (cmd, rest)
-                : (nil, text)
-        }
-        return body.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-            ? (String(body), "")
-            : (nil, text)
+        // SOUL-SOUL_DESKTOP-039: shared parser; same recognition rule the
+        // replay path now uses for chapter-header chip detection.
+        let p = SlashCommandParse.parse(text)
+        return (p.commandName, p.rest)
     }
 
     var body: some View {

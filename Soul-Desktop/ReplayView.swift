@@ -151,6 +151,15 @@ private struct ChapterHeader: View {
     let expanded: Bool
     let onToggle: () -> Void
 
+    /// Parsed slash command if the user-message header is one, else nil.
+    /// SOUL-SOUL_DESKTOP-039: routes through the shared SlashCommandParse so
+    /// chapter headers chip-render the same way ThreadView's UserMessageRow does.
+    private var slashCommand: SlashCommandParse.Parsed? {
+        guard case .userMessage(_, let text, _) = header else { return nil }
+        let p = SlashCommandParse.parse(text)
+        return p.commandName == nil ? nil : p
+    }
+
     private var preview: String {
         if case .userMessage(_, let text, _) = header {
             let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -168,11 +177,15 @@ private struct ChapterHeader: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 12)
-                Text(preview)
-                    .font(SoulFont.ui(15, weight: .regular))
-                    .foregroundStyle(SoulColor.fg)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if let cmd = slashCommand {
+                    chipHeader(cmd)
+                } else {
+                    Text(preview)
+                        .font(SoulFont.ui(15, weight: .regular))
+                        .foregroundStyle(SoulColor.fg)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer(minLength: 8)
                 Text("\(bodyCount) \(bodyCount == 1 ? "event" : "events")")
                     .font(SoulFont.code(10))
@@ -185,5 +198,30 @@ private struct ChapterHeader: View {
         }
         .buttonStyle(.plain)
         .padding(.top, 6)
+    }
+
+    /// Capsule chip matching UserMessageRow.bubble's slash-command rendering:
+    /// accent-tinted background, monospaced command name, args muted/truncated
+    /// to the right so the chapter header stays single-line.
+    @ViewBuilder
+    private func chipHeader(_ cmd: SlashCommandParse.Parsed) -> some View {
+        HStack(spacing: 8) {
+            Text("/\(cmd.commandName ?? "")")
+                .font(SoulFont.code(12, weight: .regular))
+                .foregroundStyle(SoulColor.accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(SoulColor.accentMuted, in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 0.5)
+                )
+            if !cmd.rest.isEmpty {
+                Text(cmd.rest)
+                    .font(SoulFont.ui(13))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
     }
 }
