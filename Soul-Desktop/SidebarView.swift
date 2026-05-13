@@ -436,31 +436,17 @@ struct SidebarView: View {
         }
     }
 
-    /// SOUL-SOUL_DESKTOP-036: per-project expand flag. Reads from the local
-    /// dict only — never derives from selectedProject. Without that
-    /// invariant, clicking an unselected project would have the binding's
-    /// default flip to true (because selectedProject just changed) BEFORE
-    /// withAnimation wraps a toggle, producing an un-animated open. We seed
-    /// projectExpanded explicitly from UserDefaults via ensureSeeded(_:).
+    /// SOUL-SOUL_DESKTOP-036: read the per-project expand flag, defaulting to
+    /// expanded for the selected project and collapsed for every other.
+    /// First-launch default mirrors the previous behavior (only the selected
+    /// project shows its inline children) so existing users see no surprise.
     private func isExpanded(_ projectId: String) -> Bool {
-        projectExpanded[projectId] ?? false
-    }
-
-    /// Lazy seed for a project's expand state. Called when a binding is
-    /// first requested for the project; reads UserDefaults if present,
-    /// otherwise defaults to true for the currently-selected project and
-    /// false for everything else (matching legacy first-launch behavior).
-    /// Once seeded, isExpanded is stable until the user toggles it.
-    private func ensureSeeded(_ projectId: String) {
-        guard projectExpanded[projectId] == nil else { return }
+        if let local = projectExpanded[projectId] { return local }
         let key = "soul.sidebar.expanded.\(projectId)"
-        let initial: Bool
         if UserDefaults.standard.object(forKey: key) != nil {
-            initial = UserDefaults.standard.bool(forKey: key)
-        } else {
-            initial = (projectId == selectedProject)
+            return UserDefaults.standard.bool(forKey: key)
         }
-        projectExpanded[projectId] = initial
+        return projectId == selectedProject
     }
 
     private func setExpanded(_ projectId: String, _ value: Bool) {
@@ -469,9 +455,8 @@ struct SidebarView: View {
     }
 
     private func expansionBinding(for projectId: String) -> Binding<Bool> {
-        ensureSeeded(projectId)
-        return Binding(
-            get: { projectExpanded[projectId] ?? false },
+        Binding(
+            get: { isExpanded(projectId) },
             set: { setExpanded(projectId, $0) }
         )
     }
