@@ -650,20 +650,7 @@ private struct ProjectSidebarRow: View {
     @State private var buttonHover = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(isExpanded ? "Collapse" : "Expand")
-
+        HStack(spacing: 8) {
             SoulIcon(name: "folder", color: isSelected ? SoulColor.accent : SoulColor.fgMuted)
             Text(project.name)
                 .font(SoulFont.ui(13, weight: isSelected ? .medium : .regular))
@@ -695,7 +682,13 @@ private struct ProjectSidebarRow: View {
             in: RoundedRectangle(cornerRadius: SoulMetric.radiusS)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .onTapGesture {
+            // SOUL-SOUL_DESKTOP-036: click the folder row to toggle expand
+            // AND select the project. Each click flips the state; the
+            // children animate in/out via the parent's withAnimation wrap.
+            onSelect()
+            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+        }
         .onHover { h in
             withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
         }
