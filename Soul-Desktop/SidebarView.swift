@@ -436,17 +436,21 @@ struct SidebarView: View {
         }
     }
 
-    /// SOUL-SOUL_DESKTOP-036: read the per-project expand flag, defaulting to
-    /// expanded for the selected project and collapsed for every other.
-    /// First-launch default mirrors the previous behavior (only the selected
-    /// project shows its inline children) so existing users see no surprise.
+    /// SOUL-SOUL_DESKTOP-036: read the per-project expand flag. Default is
+    /// always false (collapsed). The previous fallback to
+    /// `projectId == selectedProject` caused un-animated opens on the first
+    /// click of any project: onSelect() flipped selectedProject before
+    /// withAnimation ran, the fallback then read true, and the body
+    /// re-rendered expanded without an animation transaction. With a flat
+    /// false default, the only path to true is the toggle inside
+    /// withAnimation — every open is animated.
     private func isExpanded(_ projectId: String) -> Bool {
         if let local = projectExpanded[projectId] { return local }
         let key = "soul.sidebar.expanded.\(projectId)"
         if UserDefaults.standard.object(forKey: key) != nil {
             return UserDefaults.standard.bool(forKey: key)
         }
-        return projectId == selectedProject
+        return false
     }
 
     private func setExpanded(_ projectId: String, _ value: Bool) {
