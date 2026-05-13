@@ -39,6 +39,10 @@ struct AppShell: View {
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
     @State private var pendingPermissionMode: PermissionMode = .fullAccess
+    /// SOUL-SOUL_DESKTOP-035: when the user clicks a live row owned by an
+    /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
+    /// and surface a sheet offering the read-only Replay path instead.
+    @State private var externalLiveSession: SoulSession? = nil
 
     private var replayFraction: Double {
         guard let replay, replay.total > 0 else { return 0 }
@@ -121,6 +125,18 @@ struct AppShell: View {
             return
         }
 
+        // SOUL-SOUL_DESKTOP-035: refuse to ACP-load a live session that's
+        // owned by an external writer (terminal-origin row whose hooks.jsonl
+        // is being actively appended by Claude / Gemini-CLI in a terminal).
+        // session/load would stream the entire transcript back and we'd end
+        // up with two writers on the same session — a SwiftUI layout storm
+        // AND a semantic disaster. Offer Replay (read-only) instead.
+        if session.isLive, session.origin == .terminal {
+            pendingActiveId = nil
+            externalLiveSession = session
+            return
+        }
+
         harness = provider
         // SOUL-SOUL_DESKTOP-021: if the session was started inside a git
         // worktree, spawn the agent in that worktree, not the main project
@@ -171,6 +187,40 @@ struct AppShell: View {
         draftsByThread.removeValue(forKey: key)
         if activeThreadKey == key { activeThreadKey = nil; prompt = "" }
         Task { await controller.teardown() }
+    }
+
+    @ViewBuilder
+    private func externalLiveSessionSheet(_ session: SoulSession) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 22))
+                    .foregroundStyle(SoulColor.accent)
+                Text("Session is running elsewhere")
+                    .font(SoulFont.ui(15)).bold()
+            }
+            Text("This chat is being driven by a terminal Claude/Gemini-CLI session, not by Soul-Desktop. Loading it here would spawn a second writer on the same session and stream the entire transcript back. You can open it in read-only Replay instead.")
+                .font(SoulFont.ui(12))
+                .foregroundStyle(SoulColor.fgMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text(session.id)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Spacer()
+            }
+            HStack {
+                Button("Cancel") { externalLiveSession = nil }
+                Spacer()
+                Button("Open Replay") {
+                    externalLiveSession = nil
+                    startReplay(session)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 440)
     }
 
     private func startReplay(_ session: SoulSession) {
@@ -414,6 +464,9 @@ struct AppShell: View {
                     },
                     onCancel: { showNewProject = false }
                 )
+            }
+            .sheet(item: $externalLiveSession) { session in
+                externalLiveSessionSheet(session)
             }
         }
         .background {
