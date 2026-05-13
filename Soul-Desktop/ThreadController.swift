@@ -642,6 +642,7 @@ final class ThreadController {
                     nativeSessionId = resumeId
                     hasInitialized = true
                     items.append(.status(id: UUID(), text: "✓ session/load: \(resumeId.prefix(8))…"))
+                    injectSlashCommandPrompts(sid: sid)
                 } catch ACPClientError.rpcError(let rpc) {
                     isReplayingLoad = false
                     // SOUL-SOUL_DESKTOP-022: before surfacing the error, try a
@@ -686,6 +687,7 @@ final class ThreadController {
                                 nativeSessionId = backfilled
                                 hasInitialized = true
                                 items.append(.status(id: UUID(), text: "✓ session/load: \(backfilled.prefix(8))…"))
+                                injectSlashCommandPrompts(sid: sid)
                                 return
                             } catch {
                                 isReplayingLoad = false
@@ -827,6 +829,61 @@ final class ThreadController {
         for it in history { historicalIDs.insert(it.id) }
         items.append(contentsOf: history)
         items.append(.status(id: UUID(), text: "─ history above (read-only) ─"))
+    }
+
+    /// SOUL-SOUL_DESKTOP-038: merge slash-command UserPrompt hooks back into
+    /// the canvas after a Claude session/load. Terminal Claude Code expands
+    /// `/decision` etc. client-side before the model API sees them, so the
+    /// ACP transcript Claude streams back has no record of the literal
+    /// invocation. The Soul harness captures them into hooks.jsonl; we
+    /// re-inject so the chip rendering in UserMessageRow stays consistent
+    /// across surfaces.
+    private func injectSlashCommandPrompts(sid: String) {
+        guard provider == .claude else { return }
+        let prompts = SoulRegistry.slashCommandPrompts(projectKey: project.id, sessionId: sid)
+        guard !prompts.isEmpty else { return }
+
+        for prompt in prompts {
+            // Skip if an existing userMessage already carries the same
+            // literal text near the same time — protects against double
+            // injection on a retry or a re-load.
+            let dedupWindow: TimeInterval = 2
+            let alreadyPresent = items.contains { item in
+                if case .userMessage(_, let text, let ts) = item,
+                   text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt.text,
+                   abs(ts.timeIntervalSince(prompt.timestamp)) <= dedupWindow {
+                    return true
+                }
+                return false
+            }
+            if alreadyPresent { continue }
+
+            // Find the first user/agent message in items whose timestamp is
+            // strictly after the hook's. Insert before it so narrative order
+            // is preserved. If none later, append at the end of the
+            // historical block (right before the load-complete status row).
+            let id = UUID()
+            let inserted: ThreadItem = .userMessage(id: id, text: prompt.text, timestamp: prompt.timestamp)
+            historicalIDs.insert(id)
+
+            var insertAt: Int? = nil
+            for (i, item) in items.enumerated() {
+                let ts: Date? = {
+                    if case .userMessage(_, _, let t) = item { return t }
+                    if case .agentMessage(_, _, _, let t) = item { return t }
+                    return nil
+                }()
+                if let ts, ts > prompt.timestamp {
+                    insertAt = i
+                    break
+                }
+            }
+            if let i = insertAt {
+                items.insert(inserted, at: i)
+            } else {
+                items.append(inserted)
+            }
+        }
     }
 
     func teardown() async {

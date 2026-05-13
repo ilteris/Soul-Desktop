@@ -948,6 +948,61 @@ enum SoulRegistry {
         return nil
     }
 
+    /// SOUL-SOUL_DESKTOP-038: read UserPrompt hooks whose text starts with a
+    /// slash command (e.g. `/decision`, `/finalize`). Terminal Claude Code
+    /// expands these client-side before the model API sees them, so a
+    /// session/load via ACP never re-streams them. The Soul harness captures
+    /// the raw text into hooks.jsonl, so we merge those back into the canvas
+    /// on load to keep the slash-command chip rendering consistent across
+    /// surfaces. Returns chronological order.
+    static func slashCommandPrompts(projectKey: String, sessionId: String) -> [(text: String, timestamp: Date)] {
+        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return [] }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        // hooks.jsonl writes microsecond-precision UTC timestamps with a Z
+        // suffix (post -027). Tolerate the legacy naive-local format too so
+        // older files keep working.
+        let withZ = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+        let naive = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+
+        var out: [(text: String, timestamp: Date)] = []
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            let event = (obj["event"] as? String) ?? ""
+            guard event == "UserPrompt" || event == "UserMessage" else { continue }
+            let raw = (obj["text"] as? String)
+                ?? (obj["content"] as? String)
+                ?? (obj["prompt"] as? String)
+                ?? ""
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("/") else { continue }
+            // Match the same /<kebab> shape UserMessageRow.parsed accepts so we
+            // don't inject text that wouldn't render as a chip anyway.
+            let body = trimmed.dropFirst()
+            let name: Substring = {
+                if let space = body.firstIndex(of: " ") { return body[..<space] }
+                if let nl = body.firstIndex(of: "\n") { return body[..<nl] }
+                return body
+            }()
+            guard !name.isEmpty,
+                  name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            else { continue }
+            let tsStr = (obj["timestamp"] as? String) ?? ""
+            fmt.dateFormat = withZ
+            let ts = fmt.date(from: tsStr)
+                ?? { fmt.dateFormat = naive; return fmt.date(from: tsStr) }()
+                ?? Date()
+            out.append((text: trimmed, timestamp: ts))
+        }
+        return out.sorted { $0.timestamp < $1.timestamp }
+    }
+
     private static func hooksLineCount(projectKey: String, sessionId: String) -> Int {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
