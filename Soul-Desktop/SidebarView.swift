@@ -149,18 +149,28 @@ struct SidebarView: View {
                                     // its own indented sub-header with the
                                     // basename of the worktree path as label.
                                     let groups = worktreeGroups(for: lives)
-                                    ForEach(groups, id: \.label) { group in
-                                        if groups.count > 1 || group.label != mainWorktreeLabel {
-                                            WorktreeSubheader(label: group.label)
-                                        }
-                                        ForEach(group.sessions) { live in
-                                            LiveSessionRow(
-                                                session: live,
-                                                isSelected: live.id == activeSessionId
-                                            )
-                                                .onTapGesture { onSelectSession(live) }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        ForEach(groups, id: \.label) { group in
+                                            if groups.count > 1 || group.label != mainWorktreeLabel {
+                                                WorktreeSubheader(label: group.label)
+                                            }
+                                            ForEach(group.sessions) { live in
+                                                LiveSessionRow(
+                                                    session: live,
+                                                    isSelected: live.id == activeSessionId
+                                                )
+                                                    .onTapGesture { onSelectSession(live) }
+                                            }
                                         }
                                     }
+                                    // Explicit transition: slide down + fade
+                                    // from the top edge. The default opacity-
+                                    // only transition is too subtle to read as
+                                    // an expand on a quick toggle.
+                                    .transition(.asymmetric(
+                                        insertion: .move(edge: .top).combined(with: .opacity),
+                                        removal: .move(edge: .top).combined(with: .opacity)
+                                    ))
                                 }
                             }
                         }
@@ -277,7 +287,15 @@ struct SidebarView: View {
         .sheet(item: $ambiguousRepair) { ctx in
             ambiguousRepairSheet(ctx)
         }
-        .task { await reload() }
+        .task {
+            await reload()
+            seedExpansionStates()
+        }
+        .onChange(of: projects.map(\.id)) { _, _ in
+            // Newly-discovered projects need their expand state seeded so
+            // the first click animates cleanly. Existing entries are untouched.
+            seedExpansionStates()
+        }
         .onChange(of: currentProvider) { _, _ in
             // Harness change → re-filter live rows. A row that's valid under
             // Claude isn't valid under Gemini-CLI (and vice-versa).
@@ -446,34 +464,33 @@ struct SidebarView: View {
         projectExpanded[projectId] ?? false
     }
 
-    /// Lazy seed for a project's expand state. Called when a binding is
-    /// first requested for the project; reads UserDefaults if present,
-    /// otherwise defaults to true for the currently-selected project and
-    /// false for everything else (matching legacy first-launch behavior).
-    /// Once seeded, isExpanded is stable until the user toggles it.
-    private func ensureSeeded(_ projectId: String) {
-        guard projectExpanded[projectId] == nil else { return }
-        let key = "soul.sidebar.expanded.\(projectId)"
-        let initial: Bool
-        if UserDefaults.standard.object(forKey: key) != nil {
-            initial = UserDefaults.standard.bool(forKey: key)
-        } else {
-            initial = (projectId == selectedProject)
-        }
-        projectExpanded[projectId] = initial
-    }
-
     private func setExpanded(_ projectId: String, _ value: Bool) {
         projectExpanded[projectId] = value
         UserDefaults.standard.set(value, forKey: "soul.sidebar.expanded.\(projectId)")
     }
 
     private func expansionBinding(for projectId: String) -> Binding<Bool> {
-        ensureSeeded(projectId)
-        return Binding(
+        Binding(
             get: { projectExpanded[projectId] ?? false },
             set: { setExpanded(projectId, $0) }
         )
+    }
+
+    /// Seed every visible project's expand state in one pass at view start.
+    /// Mutating @State during body evaluation (the previous approach) was
+    /// silently dropping animations because SwiftUI can't reliably track
+    /// state writes that happen *while* it's computing the view tree.
+    private func seedExpansionStates() {
+        for p in projects where projectExpanded[p.id] == nil {
+            let key = "soul.sidebar.expanded.\(p.id)"
+            let initial: Bool
+            if UserDefaults.standard.object(forKey: key) != nil {
+                initial = UserDefaults.standard.bool(forKey: key)
+            } else {
+                initial = (p.id == selectedProject)
+            }
+            projectExpanded[p.id] = initial
+        }
     }
 
     private func showRepairToast(_ text: String) {
@@ -698,11 +715,16 @@ private struct ProjectSidebarRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            // SOUL-SOUL_DESKTOP-036: click the folder row to toggle expand
-            // AND select the project. Each click flips the state; the
-            // children animate in/out via the parent's withAnimation wrap.
-            onSelect()
-            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            // SOUL-SOUL_DESKTOP-036: click the folder row to select AND
+            // toggle. Both mutations live inside one withAnimation block so
+            // the visibility flip caused by selectedProject changing AND the
+            // children flip caused by isExpanded toggling are part of the
+            // same animation transaction. Outside withAnimation either flip
+            // snaps un-animated.
+            withAnimation(.easeInOut(duration: 0.22)) {
+                onSelect()
+                isExpanded.toggle()
+            }
         }
         .onHover { h in
             withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
