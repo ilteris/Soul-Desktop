@@ -20,9 +20,10 @@ struct AppShell: View {
     /// sidebar highlight before the spawn completes and `thread.sessionId`
     /// is real. Cleared once the thread's own session ID catches up.
     @State private var pendingActiveId: String? = nil
-    /// Per-thread composer drafts. The thread that's active reads/writes
-    /// `prompt`; switching threads swaps drafts in and out.
-    @State private var draftsByThread: [String: String] = [:]
+    /// Pre-thread composer text. Used by HeroEmptyState (no thread yet) and
+    /// while the draft-session row is selected. Once a real thread exists,
+    /// each ThreadController owns its own `composerDraft` so keystrokes
+    /// don't invalidate AppShell.body.
     @State private var prompt: String = ""
     @State private var showSmoke = false
     @State private var codexSmokeModel = CodexSmokeViewModel()
@@ -58,6 +59,10 @@ struct AppShell: View {
     /// Remembers whether the sidebar was open before the preview pane took
     /// over the canvas width, so closing the preview restores prior layout.
     @State private var sidebarWasOpenBeforePreview: Bool = true
+    /// Lifted from SidebarView so the repair-session toast renders at the
+    /// top center of the whole window instead of being clipped inside the
+    /// 320pt sidebar column. SidebarView writes here via Binding.
+    @State private var repairToast: String? = nil
 
     private var replayFraction: Double {
         guard let replay, replay.total > 0 else { return 0 }
@@ -66,11 +71,12 @@ struct AppShell: View {
 
     private var contextUsage: ContextUsage? {
         if let replay {
-            // Replay rows don't carry a provider — try claude first (precise
-            // usage), fall back to hooks-byte estimate so the chip still
-            // shows something for gemini/pi replays.
-            return ContextUsage.compute(provider: .claude, sessionId: replay.sessionId, cwd: replay.project.path)
-                ?? ContextUsage.compute(provider: .pi, sessionId: replay.sessionId, cwd: replay.project.path)
+            // During replay, simulate the context window filling as events
+            // reveal — sum text bytes from `visible` (the prefix of all
+            // events played so far) rather than the static end-of-session
+            // value. The chip animates 0% → final-fill in lockstep with
+            // the timeline scrubber.
+            return ContextUsage.estimateFromReplayItems(replay.visible)
         }
         if let thread, let sid = thread.sessionId {
             // Codex streams precise token usage through the
@@ -123,25 +129,29 @@ struct AppShell: View {
         return threads[key]
     }
 
-    /// Switch the active thread, stashing the outgoing draft and loading the
-    /// incoming one. No teardown, no re-spawn — the previous thread keeps its
-    /// agent process and continues streaming in the background.
-    /// Per-thread composer draft binding. Each ThreadView reads/writes its
-    /// own slot in `draftsByThread` directly, so multiple mounted threads
-    /// don't fight over a shared `prompt` state.
+    /// Binding for the active controller's `pendingRecovery`. Extracted out
+    /// of the body to keep the chained `.sheet(...)` modifiers type-checking
+    /// in reasonable time.
+    private var recoveryBinding: Binding<ThreadController.RecoveryContext?> {
+        Binding(
+            get: { thread?.pendingRecovery },
+            set: { thread?.pendingRecovery = $0 }
+        )
+    }
+
+    /// Per-thread composer-draft binding. Routes the @Bindable controller's
+    /// own `composerDraft` so keystrokes invalidate only ThreadView — not
+    /// AppShell.body and everything downstream. Returns a no-op binding if
+    /// the controller has gone missing (shouldn't happen in practice).
     private func bindingForDraft(_ id: String) -> Binding<String> {
         Binding(
-            get: { draftsByThread[id] ?? "" },
-            set: { draftsByThread[id] = $0 }
+            get: { threads[id]?.composerDraft ?? "" },
+            set: { threads[id]?.composerDraft = $0 }
         )
     }
 
     private func setActiveThread(_ key: String?) {
-        if let oldKey = activeThreadKey {
-            draftsByThread[oldKey] = prompt
-        }
         activeThreadKey = key
-        prompt = key.flatMap { draftsByThread[$0] } ?? ""
     }
 
     private func startThread(display: String, agent: String) {
@@ -161,12 +171,25 @@ struct AppShell: View {
             replay?.stop()
             replay = nil
             activeThreadKey = nil
-            prompt = draftsByThread[draft.id] ?? ""
             pendingActiveId = draft.id
             return
         }
         draftSession = nil
-        guard let project = currentProject() else { return }
+        // SOUL-SOUL_DESKTOP-043: route by the session's own project, NOT the
+        // sidebar's currently-selected project. Clicking a chat row in
+        // SidebarView doesn't first re-select the parent project, so
+        // `currentProject()` here could still point at whatever was previously
+        // active. A Soul-Desktop session opened while Truss Labs was last
+        // selected used to spawn the agent in /Code/truss-labs (wrong cwd →
+        // session/load misses → recovery cascade). The session record knows
+        // its own project; trust it. We also nudge `selectedProject` so the
+        // sidebar visibly follows.
+        guard let project = SoulRegistry.projects().first(where: { $0.id == session.project })
+                ?? currentProject()
+        else { return }
+        if selectedProject != session.project {
+            selectedProject = session.project
+        }
         let provider: Provider = {
             // Finalized rows carry `source` (set by the kernel at /finalize).
             switch session.source {
@@ -181,9 +204,36 @@ struct AppShell: View {
             switch session.liveProvider {
             case "claude":    return .claude
             case "geminiCLI": return .geminiCLI
-            default:          return harness
+            default: break
             }
+            // SOUL-SOUL_DESKTOP-043: last resort — read the recorded provider
+            // from the session's hooks ledger. Without this, an archived
+            // Gemini row clicked while Claude is the active harness defaults
+            // to Claude, then session/load fails against a UUID Claude never
+            // minted and we cascade into a destructive "starting fresh"
+            // recovery. The ledger is the only authoritative source for what
+            // agent actually owned this session.
+            if let recorded = SoulRegistry.findProvider(projectKey: session.project, sessionId: session.id) {
+                switch recorded {
+                case "claude":    return .claude
+                case "geminiCLI": return .geminiCLI
+                case "pi":        return .pi
+                case "codex":     return .codex
+                default: break
+                }
+            }
+            return harness
         }()
+        // Guard against rapid double-clicks: if a controller for this session
+        // is already in `threads` (matched by sessionId once hydrate sets it,
+        // OR by a pending pendingActiveId == session.id when sessionId hasn't
+        // been resolved yet), surface it instead of spawning a duplicate.
+        // Without this, two clicks in <1s create two ThreadControllers, each
+        // calling hydrateFromDisk, and the dedup in the sidebar only masks
+        // one of them.
+        if pendingActiveId == session.id, activeThreadKey != nil {
+            return
+        }
         pendingActiveId = session.id
 
         // If this session is already open in a live ThreadController, just
@@ -201,10 +251,45 @@ struct AppShell: View {
         // session/load would stream the entire transcript back and we'd end
         // up with two writers on the same session — a SwiftUI layout storm
         // AND a semantic disaster. Offer Replay (read-only) instead.
-        if session.isLive, session.origin == .terminal {
+        //
+        // SOUL-SOUL_DESKTOP-059: Gemini-CLI exception. The probe in -058
+        // confirmed `gemini --acp` accepts session/load with a CLI-minted
+        // UUID as long as the cwd basename matches the session's origin
+        // (~/.gemini/tmp/<basename>(-N)/chats/). agentMatchCached only sets
+        // liveProvider == "geminiCLI" when the chats dir basename already
+        // matches project.path's basename (sibling walk included), so by
+        // construction passing project.path as cwd is the correct call.
+        // The "concurrent terminal writer" risk is real but rare in practice
+        // — sidebar rows tend to be stale terminal sessions the user moved
+        // on from. Accept the trade-off to unlock cross-surface resume.
+        let isResumableGeminiTerminal = (provider == .geminiCLI && session.liveProvider == "geminiCLI")
+        if session.isLive, session.origin == .terminal, !isResumableGeminiTerminal {
             pendingActiveId = nil
             externalLiveSession = session
             return
+        }
+
+        // Loadability gate, now UUID-keyed across ALL four providers
+        // (Claude, Gemini-CLI, Pi, Codex). The fast `session.loadable`
+        // check looks for the transcript bound to the row's project
+        // bucket. When that misses, fall through to a global UUID scan
+        // before routing to the recovery sheet — this unblocks clicks on
+        // split-ledger rows (same sid, two buckets) and cross-project
+        // resumes where the transcript lives elsewhere on disk.
+        //
+        // When the global scan finds a hit, overlay its discovered cwd
+        // onto the routed project so the agent spawns where its transcript
+        // actually was authored, regardless of which sidebar bucket the
+        // user clicked from.
+        var discoveredCwdOverride: String? = nil
+        if !session.loadable, session.replayable {
+            if let hit = SessionLoadability.discover(sessionId: session.id) {
+                discoveredCwdOverride = hit.cwd
+            } else {
+                pendingActiveId = nil
+                externalLiveSession = session
+                return
+            }
         }
 
         harness = provider
@@ -220,6 +305,15 @@ struct AppShell: View {
            FileManager.default.fileExists(atPath: wt) {
             routedProject.path = wt
         }
+        // If the global UUID scan discovered the transcript in a different
+        // cwd than the sidebar bucket suggests (split-ledger / cross-project
+        // resume), override the spawn cwd so the agent finds its own
+        // session file. Worktree-overlay still wins when both apply.
+        if let override = discoveredCwdOverride,
+           session.worktreePath?.isEmpty ?? true,
+           FileManager.default.fileExists(atPath: override) {
+            routedProject.path = override
+        }
         let controller = ThreadController(provider: provider, project: routedProject)
         // Anchor the session-length chip to the original session start —
         // prefer the first hooks.jsonl event, fall back to the SoulSession's
@@ -229,6 +323,27 @@ struct AppShell: View {
         } else {
             controller.startedAt = session.timestamp
         }
+        // Seed the controller's title from the clicked session row so the
+        // sidebar's synthetic row inherits the right label immediately. Without
+        // this, the synthetic shows "New chat" for the brief window before
+        // hydrateFromDisk fills customTitle from the registry — and during
+        // that window, dedup picks the synthetic ("New chat 1 sec ago") over
+        // the finalized row, making the clicked session visually disappear
+        // and replaced by a fake-new-chat at the top. lastActivityAt anchored
+        // to the session's own timestamp keeps the row in its natural slot
+        // until real activity bumps it.
+        if let seed = (session.intent ?? session.summary)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !seed.isEmpty {
+            controller.customTitle = seed
+        }
+        controller.lastActivityAt = session.timestamp
+        // Stake out the session id BEFORE handing off to the async hydrate
+        // task. The sidebar's synthetic row keys off ctrl.sessionId; without
+        // this synchronous assignment the first render after click uses the
+        // fallback id ("thread-<uuid>") and renders a phantom duplicate row
+        // alongside the finalized one until the async first-line of
+        // hydrateFromDisk lands on the MainActor.
+        controller.assignSessionId(session.id)
         threads[controller.id] = controller
         setActiveThread(controller.id)
         // SOUL-SOUL_DESKTOP-043: Claude / Gemini-CLI sessions render from the
@@ -240,7 +355,13 @@ struct AppShell: View {
         // someone abandoned without /finalize). Both shapes are safe to read
         // from disk — the kernel marks them "live" purely because the dir
         // hasn't been finalized, not because an agent is actively writing.
-        let useReadFirst = provider == .claude || provider == .geminiCLI
+        // Codex joins the read-first path: even though codex has no
+        // `session/load`, we can re-render its kernel hooks ledger
+        // (UserPrompts + AfterAgent rows) so reopening a codex row shows
+        // the prior conversation instead of dropping the user into a blank
+        // fresh thread. Pi stays on the spawn-first path until we wire a
+        // hydrate reader for it.
+        let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex
         if useReadFirst {
             Task { await controller.hydrateFromDisk(id: session.id) }
         } else {
@@ -251,9 +372,6 @@ struct AppShell: View {
     private func newChat(targetProjectID: String? = nil) {
         replay?.stop()
         replay = nil
-        if let oldKey = activeThreadKey {
-            draftsByThread[oldKey] = prompt
-        }
         activeThreadKey = nil
         prompt = ""
         // Resolve the target up front. Callers (per-project "+" button) pass
@@ -295,7 +413,6 @@ struct AppShell: View {
     private func closeThread(_ key: String) {
         guard let controller = threads[key] else { return }
         threads.removeValue(forKey: key)
-        draftsByThread.removeValue(forKey: key)
         if activeThreadKey == key { activeThreadKey = nil; prompt = "" }
         Task { await controller.teardown() }
     }
@@ -307,10 +424,12 @@ struct AppShell: View {
                 Image(systemName: "person.crop.circle.badge.exclamationmark")
                     .font(.system(size: 22))
                     .foregroundStyle(SoulColor.accent)
-                Text("Session is running elsewhere")
+                Text(session.origin == .terminal ? "Session is running elsewhere" : "Session can't be loaded here")
                     .font(SoulFont.ui(15)).bold()
             }
-            Text("This chat is being driven by a terminal Claude/Gemini-CLI session, not by Soul-Desktop. Loading it here would spawn a second writer on the same session and stream the entire transcript back. You can open it in read-only Replay instead.")
+            Text(session.origin == .terminal
+                ? "This chat is being driven by a terminal Claude/Gemini-CLI session, not by Soul-Desktop. Loading it here would spawn a second writer on the same session and stream the entire transcript back. You can open it in read-only Replay instead."
+                : "The agent transcript for this session isn't available on disk — it may have been rotated out, force-quit, or never written. You can replay the kernel hooks ledger (prompts + decisions) in read-only mode.")
                 .font(SoulFont.ui(12))
                 .foregroundStyle(SoulColor.fgMuted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -332,6 +451,92 @@ struct AppShell: View {
         }
         .padding(20)
         .frame(minWidth: 440)
+    }
+
+    /// Recovery sheet for gemini-CLI sessions whose chat file got corrupted
+    /// (typically force-quit mid-write). Surfaces three concrete actions —
+    /// Replay the kernel ledger read-only, reveal the safe `.bak` snapshot
+    /// in Finder, or start a fresh chat that inherits this row's title.
+    /// Replaces the previous "rename the .bak file yourself" status-row
+    /// dead-end with single-click recovery.
+    @ViewBuilder
+    private func corruptedSessionSheet(_ ctx: ThreadController.RecoveryContext) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color.orange)
+                Text("Session can't be resumed")
+                    .font(SoulFont.ui(15)).bold()
+            }
+            Text("Gemini-CLI couldn't parse this session's chat file — most likely the app was force-quit while it was being written. Your conversation is safe in the backup; pick how you'd like to continue.")
+                .font(SoulFont.ui(12))
+                .foregroundStyle(SoulColor.fgMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Session")
+                        .font(SoulFont.ui(11))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                    Text(ctx.sessionId)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(SoulColor.fgMuted)
+                }
+                HStack(alignment: .top) {
+                    Text("Parser said")
+                        .font(SoulFont.ui(11))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                    Text(ctx.rpcMessage)
+                        .font(SoulFont.ui(11))
+                        .foregroundStyle(SoulColor.fgMuted)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 10) {
+                Button("Replay (read-only)") {
+                    let cap = ctx
+                    thread?.pendingRecovery = nil
+                    if let project = currentProject(),
+                       let session = synthesizeSessionRow(forContext: cap, project: project) {
+                        startReplay(session)
+                    }
+                }
+                Button("Reveal backup in Finder") {
+                    let url = URL(fileURLWithPath: ctx.backupPath)
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Spacer()
+                Button("Start fresh chat") {
+                    _ = ctx
+                    let projectId = thread?.project.id
+                    thread?.pendingRecovery = nil
+                    if let key = activeThreadKey {
+                        closeThread(key)
+                    }
+                    newChat(targetProjectID: projectId)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 480)
+    }
+
+    /// Build a transient `SoulSession` from a recovery context so the
+    /// existing Replay path (which expects a `SoulSession`) can consume it.
+    /// We don't reach into the registry here — the kernel ledger row keyed
+    /// by `ctx.sessionId` is what Replay reads, and that already exists.
+    private func synthesizeSessionRow(forContext ctx: ThreadController.RecoveryContext, project: SoulProject) -> SoulSession? {
+        SoulSession(
+            id: ctx.sessionId,
+            project: project.id,
+            timestamp: Date(),
+            intent: ctx.title,
+            source: "gemini",
+            isLive: true,
+            origin: .desktop
+        )
     }
 
     private func startReplay(_ session: SoulSession) {
@@ -460,6 +665,47 @@ struct AppShell: View {
         }
     }
 
+    /// Window-level top-leading control cluster: sidebar toggle + provider
+    /// picker. Lives in the empty strip above the sidebar pane so the two
+    /// primary controls share one visual row (same horizontal line as the
+    /// right-side toolbar icons). Position is fixed via `.padding(.leading,
+    /// 20)` regardless of sidebar open/closed state.
+    @ViewBuilder
+    private var sidebarToggleOverlay: some View {
+        // Harness picker moved to the composer toolbar next to the
+        // PermissionModePicker — keeps related controls (which agent +
+        // what permissions) co-located instead of split across the
+        // top-left overlay and the bottom composer.
+        Button(action: toggleSidebar) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(showSidebar ? SoulColor.accent : SoulColor.fgMuted)
+                .padding(6)
+                .background(
+                    showSidebar
+                        ? AnyShapeStyle(SoulColor.surface)
+                        : AnyShapeStyle(Color.clear),
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Toggle sidebar (⌘\\)")
+        .padding(.leading, 32)
+        .padding(.top, 10)
+        .opacity(replay != nil ? 0.35 : 1)
+    }
+
+    /// Closure handed to every composer surface (ThreadView, HeroEmptyState)
+    /// so the user can switch harness from the bottom toolbar. Mirrors the
+    /// old sidebar-overlay behavior: changing harness mid-thread starts a
+    /// new chat because a Claude session can't be continued by Pi etc.
+    private var onPickHarness: (Provider) -> Void {
+        { picked in
+            if thread != nil { newChat() }
+            harness = picked
+        }
+    }
+
     private var mainCanvas: some View {
         VStack(spacing: 0) {
             CanvasToolbar(
@@ -499,7 +745,8 @@ struct AppShell: View {
                             ThreadView(
                                 controller: ctrl,
                                 prompt: bindingForDraft(ctrl.id),
-                                onCancel: { if isActive { cancelTurn() } }
+                                onCancel: { if isActive { cancelTurn() } },
+                                onPickHarness: onPickHarness
                             )
                             .opacity(isActive ? 1 : 0)
                             .allowsHitTesting(isActive)
@@ -520,7 +767,8 @@ struct AppShell: View {
                                 devRunning: devServerRunning,
                                 onRunLocal: runLocal,
                                 pendingPermissionMode: $pendingPermissionMode,
-                                provider: harness
+                                provider: harness,
+                                onPickHarness: onPickHarness
                             )
                             .zIndex(100)
                         }
@@ -534,12 +782,16 @@ struct AppShell: View {
         }
         .overlay(alignment: .topTrailing) {
             // SOUL-SOUL_DESKTOP-054: hover-revealed branch+artifacts card.
-            // Suppressed while a right-side pane is open so it doesn't fight
-            // the FilePreview / Review surfaces for the right edge.
-            if !rightPaneOpen {
+            // Suppressed when:
+            //  - a right-side pane is open (FilePreview / Review fight for
+            //    the right edge), or
+            //  - the canvas is in Replay mode (the overlay's git/branch
+            //    actions don't apply to a read-only chapter view)
+            if !rightPaneOpen, replay == nil {
                 CanvasInfoOverlay(
                     projectPath: thread?.project.path ?? currentProject()?.path,
-                    projectName: thread?.project.name ?? currentProject()?.name
+                    projectName: thread?.project.name ?? currentProject()?.name,
+                    projectKey: thread?.project.id ?? currentProject()?.id
                 )
                 .allowsHitTesting(true)
             }
@@ -697,6 +949,7 @@ struct AppShell: View {
                 onReplaySession: startReplay,
                 onNewChat: { target in newChat(targetProjectID: target) },
                 onOpenSettings: { showSettings = true },
+                onToggleSidebar: toggleSidebar,
                 activeReplaySessionId: replay?.sessionId,
                 replayProgress: replayFraction,
                 replayIndex: replay?.index ?? 0,
@@ -706,7 +959,9 @@ struct AppShell: View {
                 activeSessionId: thread?.sessionId ?? pendingActiveId,
                 activeProjectId: thread?.project.id ?? replay?.project.id ?? draftSession?.project,
                 currentProvider: harness,
-                draftSession: draftSession
+                draftSession: draftSession,
+                activeThreads: Array(threads.values),
+                repairToast: $repairToast
             )
             .frame(width: SoulMetric.sidebarWidth)
             .frame(maxHeight: .infinity)
@@ -719,8 +974,8 @@ struct AppShell: View {
         .frame(maxHeight: .infinity)
         .clipped()
         .padding(.leading, showSidebar ? 24 : 0)
-        .padding(.top, 40)
-        .padding(.bottom, 24)
+        .padding(.top, 0)
+        .padding(.bottom, 40)
     }
 
     var body: some View {
@@ -729,6 +984,32 @@ struct AppShell: View {
             mainCanvas
             rightSidePanels
         }
+        // Sidebar toggle floats at the window-level top-leading slot above
+        // the sidebar pane. Living here (rather than inside the sidebar's
+        // rounded card or inside the canvas toolbar) means it stays at the
+        // exact x/y regardless of whether the sidebar is open, and it's
+        // horizontally aligned with the right-side toolbar icons.
+        .overlay(alignment: .topLeading) {
+            sidebarToggleOverlay
+        }
+        // Top-center toast banner (lifted from SidebarView). Renders here
+        // so it spans the whole window — visible regardless of which pane
+        // the action was triggered from.
+        .overlay(alignment: .top) {
+            if let toast = repairToast {
+                Text(toast)
+                    .font(SoulFont.ui(13))
+                    .foregroundStyle(SoulColor.fg)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(SoulColor.border.opacity(0.5), lineWidth: 0.5))
+                    .shadow(color: Color.black.opacity(0.18), radius: 10, x: 0, y: 4)
+                    .padding(.top, 14)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: repairToast)
         // Paint the window background in the canvas color so where the
         // sidebar's rounded trailing corner curves away, the cut-out shows
         // the same surface as the canvas instead of the system window
@@ -759,6 +1040,23 @@ struct AppShell: View {
             // with U+2026 ellipsis like `…_097e4d72-…json`. Glob the parent
             // dir for a single match before giving up.
             var final = resolveEllipsisPath(resolved)
+            // Agents often prefix relative paths with the project basename
+            // (e.g. "soul/README.md" inside the ~/dotfiles/soul project),
+            // producing a doubled segment after join. If the join missed and
+            // the relative path's first segment matches the project base,
+            // retry by dropping that segment.
+            if !FileManager.default.fileExists(atPath: final),
+               !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
+               let base = thread?.project.path ?? replay?.project.path ?? currentProject()?.path {
+                let baseName = (base as NSString).lastPathComponent
+                let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+                if parts.count == 2, parts[0] == Substring(baseName) {
+                    let retry = (base as NSString).appendingPathComponent(String(parts[1]))
+                    if FileManager.default.fileExists(atPath: retry) {
+                        final = retry
+                    }
+                }
+            }
             // Bare filenames sometimes belong to a different project than the
             // active one (e.g. agent references a file in another project it
             // just mentioned). If the resolved path doesn't exist but the
@@ -808,6 +1106,13 @@ struct AppShell: View {
         }
         .sheet(item: $externalLiveSession) { session in
             externalLiveSessionSheet(session)
+        }
+        // Recovery sheet for gemini-CLI sessions whose chat file got
+        // corrupted (force-quit mid-write, etc.). Bound to the active
+        // controller's pendingRecovery so the sheet appears the moment
+        // loadSession finishes failing, not on a re-click.
+        .sheet(item: recoveryBinding) { ctx in
+            corruptedSessionSheet(ctx)
         }
         .background {
             Button("") { showSettings = true }
@@ -860,27 +1165,10 @@ private struct CanvasToolbar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ToolbarIcon(name: "sidebar.left", isActive: sidebarActive, action: onToggleSidebar)
-                .padding(.trailing, 6)
-                .disabled(replayActive)
-                .opacity(replayActive ? 0.35 : 1)
-            if threadActive {
-                Button(action: onNewChat) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 11))
-                        Text("New chat")
-                            .font(SoulFont.ui(12, weight: .regular))
-                    }
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(SoulColor.surface, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(replayActive)
-                .opacity(replayActive ? 0.35 : 1)
-            }
+            // Sidebar toggle no longer lives in this toolbar — it floats at
+            // the window-level top-leading slot. The previous toolbar
+            // duplicate of "New chat" was removed (sidebar already exposes
+            // its own row and ⌘N is bound globally).
 
             // Title cluster — codex-style header merged into the toolbar.
             // Only renders once the thread has a real session id (i.e. not a
@@ -912,8 +1200,8 @@ private struct CanvasToolbar: View {
             }
 
             HStack(spacing: 14) {
-                HarnessPicker(selection: harness, onSelect: onPickHarness)
-                    .disabled(replayActive)
+                // HarnessPicker moved to the top-leading overlay alongside
+                // the sidebar toggle. See `sidebarToggleOverlay` on AppShell.
                 if showSmoke {
                     Button(action: onSmokeTest) {
                         Image(systemName: "ladybug")
@@ -933,7 +1221,14 @@ private struct CanvasToolbar: View {
             }
             .opacity(replayActive ? 0.35 : 1)
         }
-        .padding(.horizontal, 14)
+        // Reserve leading space for the AppShell-level overlay (just the
+        // sidebar toggle button now that the harness picker moved to the
+        // composer). 60pt covers the 32pt leading padding + the toggle's
+        // ~28pt clickable square. With the sidebar open the canvas starts
+        // at the sidebar's trailing edge, so the overlay sits over the
+        // sidebar pane and doesn't collide with toolbar content.
+        .padding(.leading, sidebarActive ? 14 : 60)
+        .padding(.trailing, 14)
         .padding(.top, 10)
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity)
@@ -1012,7 +1307,7 @@ private struct ThreadTitleCluster: View {
     }
 }
 
-private struct HarnessPicker: View {
+struct HarnessPicker: View {
     var selection: Provider
     var onSelect: (Provider) -> Void
 
@@ -1038,13 +1333,16 @@ private struct HarnessPicker: View {
                     .font(.system(size: 11))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
-                    .font(SoulFont.ui(12, weight: .regular))
-                    .foregroundStyle(SoulColor.fg)
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgMuted)
+                    .font(SoulFont.ui(12))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(SoulColor.surface.opacity(0.6), in: Capsule())
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -1098,7 +1396,7 @@ private struct AgentLogChip: View {
         .buttonStyle(.plain)
         .help("Agent log (\(controller.agentLog.count) lines)")
         .popover(isPresented: $showing, arrowEdge: .top) {
-            AgentLogPanel(lines: controller.agentLog)
+            AgentLogPanel(lines: controller.agentLog + controller.traceLog)
         }
     }
 }
@@ -1134,6 +1432,8 @@ private struct ContextUsageChip: View {
                 .font(SoulFont.code(11))
                 .foregroundStyle(tone)
         }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(SoulColor.surface, in: Capsule())
@@ -1163,7 +1463,13 @@ private struct SessionStatsChip: View {
     }
 
     private func elapsedLabel(now: Date) -> String {
-        let seconds = Int(max(0, now.timeIntervalSince(controller.startedAt)))
+        // Cap at lastActivityAt so idle wall-clock time doesn't inflate
+        // the chip. When the user reopens a 17h-old session and just
+        // looks at it for 5 minutes, the chip should read "15h 47m"
+        // (the actual conversation duration), not "17h 30m" (now -
+        // first hook). Matches the sidebar row's duration metric.
+        let endpoint = min(now, controller.lastActivityAt)
+        let seconds = Int(max(0, endpoint.timeIntervalSince(controller.startedAt)))
         if seconds < 60 { return "\(seconds)s" }
         let m = seconds / 60
         if m < 60 { return "\(m)m" }
@@ -1231,23 +1537,79 @@ private func stripLineSuffix(_ path: String) -> String {
     return result
 }
 
-/// Searches the top level of every active project's root directory for a
-/// file matching `filename` exactly. Returns the absolute path when exactly
-/// one match exists across all roots — anything ambiguous (zero / multi)
-/// returns nil so the caller falls through to its "not found" path. Bounded
-/// to a single readdir per project; no recursion.
+/// Searches the top level of every active project's root directory plus a
+/// short list of implicit kernel roots (`~/dotfiles/soul`) for a file
+/// matching `filename` exactly. Returns the absolute path when exactly one
+/// match exists across all roots — anything ambiguous (zero / multi) returns
+/// nil so the caller falls through to its "not found" path.
+///
+/// The kernel roots cover bare references to PROJECTS.json / SOUL.md / etc.
+/// — files that live under ~/dotfiles/soul/ but get name-dropped in prose
+/// without an explicit project context. Same bounded BFS + skip-dirs as the
+/// project search so a deep dependency tree can't make link clicks hitch.
 private func findFileInKnownProjects(filename: String) -> String? {
-    let projects = SoulRegistry.activeProjects()
-    var hits: [String] = []
-    for p in projects {
-        guard !p.path.isEmpty else { continue }
-        let candidate = (p.path as NSString).appendingPathComponent(filename)
-        if FileManager.default.fileExists(atPath: candidate) {
-            hits.append(candidate)
-            if hits.count > 1 { return nil }
+    var roots: [String] = SoulRegistry.activeProjects()
+        .map(\.path)
+        .filter { !$0.isEmpty }
+    let home = NSHomeDirectory()
+    let kernelRoots = ["\(home)/dotfiles/soul"]
+    roots.append(contentsOf: kernelRoots.filter {
+        FileManager.default.fileExists(atPath: $0) && !roots.contains($0)
+    })
+    // First-match wins. Project roots come before kernel roots, so when an
+    // agent says `README.md` and the active project has one at its root
+    // that's what opens — only fall through to `~/dotfiles/soul` when no
+    // project has it. Previous "exactly one match" guard returned nil on
+    // collisions and silently failed; first-match is more useful in
+    // practice and the bias matches user expectation.
+    for root in roots {
+        let direct = (root as NSString).appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: direct) {
+            return direct
+        }
+        if let match = shallowFindFile(named: filename, under: root, maxDepth: 4) {
+            return match
         }
     }
-    return hits.first
+    return nil
+}
+
+/// Bounded breadth-first search for a file named `filename` under `root`.
+/// Skips hidden dirs and common heavy caches (`node_modules`, `.build`,
+/// `DerivedData`, `.git`, `target`, `dist`, `__pycache__`) so a large repo
+/// doesn't make link clicks hitch. Returns the first match; depth ≥ 4 is
+/// enough for the typical `<root>/<package>/<file>` layout without
+/// wandering into deep dependency trees.
+private func shallowFindFile(named filename: String, under root: String, maxDepth: Int) -> String? {
+    let fm = FileManager.default
+    let skipDirs: Set<String> = [
+        ".git", "node_modules", ".build", "DerivedData", "target", "dist",
+        "__pycache__", ".venv", "venv", ".next", ".turbo", "build",
+    ]
+    var frontier: [(path: String, depth: Int)] = [(root, 0)]
+    while let (dir, depth) = frontier.first {
+        frontier.removeFirst()
+        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+        for name in entries {
+            if name == filename {
+                let candidate = (dir as NSString).appendingPathComponent(name)
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: candidate, isDirectory: &isDir), !isDir.boolValue {
+                    return candidate
+                }
+            }
+        }
+        if depth >= maxDepth { continue }
+        for name in entries {
+            if name.hasPrefix(".") || skipDirs.contains(name) { continue }
+            let sub = (dir as NSString).appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: sub, isDirectory: &isDir), isDir.boolValue {
+                frontier.append((sub, depth + 1))
+            }
+        }
+    }
+    return nil
 }
 
 /// If `path` contains a U+2026 ellipsis (LLM- or kernel-elided filename),

@@ -39,8 +39,10 @@ struct GitReviewSnapshot {
     var additions: Int
     var deletions: Int
     var files: [GitDiffFile]
+    var untracked: [String]
+    var prStatus: String?
 
-    static let empty = GitReviewSnapshot(branch: nil, upstream: nil, additions: 0, deletions: 0, files: [])
+    static let empty = GitReviewSnapshot(branch: nil, upstream: nil, additions: 0, deletions: 0, files: [], untracked: [], prStatus: nil)
 }
 
 @MainActor
@@ -50,10 +52,14 @@ final class GitReviewModel: ObservableObject {
     @Published private(set) var lastError: String? = nil
 
     private(set) var projectPath: String? = nil
+    private var prCacheTime: Date? = nil
 
     func bind(projectPath: String?) {
         guard projectPath != self.projectPath else { return }
         self.projectPath = projectPath
+        snapshot = .empty
+        lastError = nil
+        prCacheTime = nil
         Task { await refresh() }
     }
 
@@ -74,7 +80,11 @@ final class GitReviewModel: ObservableObject {
         let ignoreWS = ignoreWhitespace
         let snap = await Task.detached(priority: .utility) { GitReviewModel.compute(at: path, ignoreWhitespace: ignoreWS) }.value
         switch snap {
-        case .success(let s):
+        case .success(var s):
+            // Preserve PR status if it was already fetched and hasn't expired (60s)
+            if let existingPR = snapshot.prStatus, let cache = prCacheTime, Date().timeIntervalSince(cache) < 60 {
+                s.prStatus = existingPR
+            }
             snapshot = s
             lastError = nil
         case .failure(let e):
@@ -83,6 +93,25 @@ final class GitReviewModel: ObservableObject {
         }
     }
 
+    func fetchPRStatus() async {
+        guard let path = projectPath, !path.isEmpty else { return }
+        // Cache for 60s
+        if let cache = prCacheTime, Date().timeIntervalSince(cache) < 60, snapshot.prStatus != nil {
+            return
+        }
+
+        let pr = await Task.detached(priority: .utility) { GitReviewModel.fetchPR(at: path) }.value
+        snapshot.prStatus = pr
+        prCacheTime = Date()
+    }
+
+    
+    func stageAll() async -> Result<Void, GitError> {
+        guard let path = projectPath else { return .failure(GitError(message: "no project")) }
+        return await Task.detached(priority: .utility) {
+            GitReviewModel.run("git", ["-C", path, "add", "-A"]).map { _ in () }
+        }.value
+    }
     func commit(message: String) async -> Result<Void, GitError> {
         guard let path = projectPath else { return .failure(GitError(message: "no project")) }
         return await Task.detached(priority: .utility) {
@@ -140,22 +169,53 @@ final class GitReviewModel: ObservableObject {
             return nil
         }()
 
-        // -c core.quotepath=false → unicode + spaces in paths come through unquoted, so the
-        // unified-diff parser can read paths as the rest-of-line on `--- a/`, `+++ b/`, and
-        // rename-from/-to records.
         var diffArgs = ["-c", "core.quotepath=false", "-C", path, "diff", "--no-color", "--no-ext-diff"]
         if ignoreWhitespace { diffArgs.append("-w") }
         diffArgs.append(base ?? "HEAD")
-        guard let raw = runCapture("git", diffArgs, allowEmpty: true) else {
-            return .success(GitReviewSnapshot(branch: branch, upstream: upstream, additions: 0, deletions: 0, files: []))
-        }
+        let raw = runCapture("git", diffArgs, allowEmpty: true) ?? ""
         let files = parseUnifiedDiff(raw)
         let adds = files.reduce(0) { $0 + $1.additions }
         let dels = files.reduce(0) { $0 + $1.deletions }
+
+        // Untracked + modified files via status --porcelain
+        var untracked: [String] = []
+        if let status = runCapture("git", ["-c", "core.quotepath=false", "-C", path, "status", "--porcelain"], allowEmpty: true) {
+            for line in status.split(separator: "\n", omittingEmptySubsequences: true) {
+                let str = String(line)
+                guard str.count > 3 else { continue }
+                let code = str.prefix(2)
+                var rest = String(str.dropFirst(3))
+                if let arrow = rest.range(of: " -> ") {
+                    rest = String(rest[arrow.upperBound...])
+                }
+                // Code matches: ?? (untracked), M (modified), A (added), D (deleted), R (renamed)
+                // Porcelain v1 has XY format where X is index and Y is worktree.
+                if code == "??" || code.contains("M") || code.contains("A") || code.contains("D") || code.contains("R") {
+                    untracked.append(rest)
+                }
+            }
+        }
+
         return .success(GitReviewSnapshot(
             branch: branch, upstream: upstream,
-            additions: adds, deletions: dels, files: files
+            additions: adds, deletions: dels, files: files,
+            untracked: untracked, prStatus: nil
         ))
+    }
+
+    nonisolated private static func fetchPR(at path: String) -> String? {
+        // `gh pr view` defaults to the current branch's PR.
+        guard let raw = runCapture("gh", ["-C", path, "pr", "view", "--json", "state,number,title"]) else {
+            return nil
+        }
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let state = (obj["state"] as? String) ?? "OPEN"
+        let number = obj["number"] as? Int ?? 0
+        let title = (obj["title"] as? String) ?? ""
+        return "#\(number) · \(state.capitalized) · \(title)"
     }
 
     @discardableResult
@@ -198,8 +258,6 @@ final class GitReviewModel: ObservableObject {
             let line = lines[i]
             if !line.hasPrefix("diff --git ") { i += 1; continue }
 
-            // The `diff --git a/X b/Y` line is unreliable when paths contain spaces; rely on
-            // the unambiguous `--- a/`, `+++ b/`, `rename from`, `rename to` records below.
             var oldPath: String? = nil
             var newPath: String? = nil
             var isBinary = false
@@ -210,7 +268,6 @@ final class GitReviewModel: ObservableObject {
             var adds = 0, dels = 0
             i += 1
 
-            // Pre-hunk metadata lines
             while i < lines.count {
                 let l = lines[i]
                 if l.hasPrefix("diff --git ") { break }
@@ -237,7 +294,6 @@ final class GitReviewModel: ObservableObject {
                 i += 1
             }
 
-            // Hunks
             var oldNo = 0
             var newNo = 0
             while i < lines.count {
@@ -252,7 +308,7 @@ final class GitReviewModel: ObservableObject {
                     while i < lines.count {
                         let h = lines[i]
                         if h.hasPrefix("diff --git ") || h.hasPrefix("@@") { break }
-                        if h.hasPrefix("\\ ") { i += 1; continue } // \ No newline at end of file
+                        if h.hasPrefix("\\ ") { i += 1; continue }
                         if h.hasPrefix("+") {
                             hunk.lines.append(GitDiffLine(kind: .add, oldNo: nil, newNo: newNo, text: String(h.dropFirst())))
                             newNo += 1; adds += 1
@@ -299,13 +355,11 @@ final class GitReviewModel: ObservableObject {
     }
 
     nonisolated private static func parseHunkHeader(_ line: String) -> (Int, Int, String) {
-        // @@ -oldStart,oldLen +newStart,newLen @@ optional
         var header = ""
         var oStart = 0, nStart = 0
         if let endRange = line.range(of: "@@", range: line.index(line.startIndex, offsetBy: 2)..<line.endIndex) {
             header = String(line[endRange.upperBound...]).trimmingCharacters(in: .whitespaces)
             let meta = String(line[line.startIndex..<endRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-            // meta = "@@ -a,b +c,d"
             let toks = meta.split(separator: " ").map(String.init)
             for t in toks {
                 if t.hasPrefix("-") {

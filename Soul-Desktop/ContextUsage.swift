@@ -38,7 +38,33 @@ struct ContextUsage {
         case .claude:    return computeClaude(sessionId: sessionId, cwd: cwd)
         case .geminiCLI: return computeGemini(sessionId: sessionId, cwd: cwd)
         case .pi:        return computePi(sessionId: sessionId, cwd: cwd)
+        case .codex:     return nil  // Phase 1 stub: token usage not wired yet
         }
+    }
+
+    /// Coarse running estimate from the items revealed so far in a Replay.
+    /// Sums message text bytes and divides by 4 (the same chars-per-token
+    /// heuristic the gemini/pi paths use). Lets the context-usage chip
+    /// animate from 0% → final-fill as the replay scrubs through events,
+    /// instead of pinning to the static end-of-session value.
+    static func estimateFromReplayItems(_ items: [ThreadItem], max: Int = 1_000_000) -> ContextUsage {
+        var bytes = 0
+        for item in items {
+            switch item {
+            case .userMessage(_, let text, _),
+                 .agentMessage(_, let text, _, _),
+                 .agentThought(_, let text, _, _):
+                bytes += text.utf8.count
+            case .toolCall(_, _, let title, _, let loc, _):
+                bytes += title.utf8.count
+                if let loc { bytes += loc.utf8.count }
+            case .status(_, let text), .error(_, let text):
+                bytes += text.utf8.count
+            case .plan, .finalize:
+                continue
+            }
+        }
+        return ContextUsage(tokens: bytes / 4, max: max, isEstimate: true)
     }
 
     // MARK: - Claude (precise)
@@ -87,8 +113,9 @@ struct ContextUsage {
     /// expose this on every model in a structured field — the bracket marker
     /// in the model id is the most reliable client-side signal.
     private static func claudeBudget(for model: String?) -> Int {
-        guard let m = model?.lowercased() else { return 200_000 }
+        guard let m = model?.lowercased() else { return 1_000_000 }
         if m.contains("[1m]") { return 1_000_000 }
+        if m.contains("opus-4-7") || m.contains("opus-4.7") { return 1_000_000 }
         return 200_000
     }
 

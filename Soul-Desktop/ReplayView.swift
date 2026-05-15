@@ -11,6 +11,10 @@ struct ReplayView: View {
     /// to "only the latest chapter is open" — so as new prompts land, prior
     /// chapters auto-collapse without trapping any chapter the user opened.
     @State private var explicitExpansion: [Int: Bool] = [:]
+    /// Tracks whether the bottom sentinel is on-screen. Replay only follows the
+    /// stream when the user is parked at the bottom; if they scrolled up to
+    /// read, new items land off-screen without yanking their position.
+    @State private var atBottom: Bool = true
 
     private var chapters: [ReplayChapter] {
         ReplayView.chapters(from: controller.visible)
@@ -33,13 +37,24 @@ struct ReplayView: View {
                                 chapterView(chapter, isLatest: chapter.id == chapters.count - 1)
                             }
                         }
-                        Color.clear.frame(height: 60).id("__bottom__")
+                        Color.clear
+                            .frame(height: 60)
+                            .id("__bottom__")
+                            .onAppear { atBottom = true }
+                            .onDisappear { atBottom = false }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 24)
                 }
+                // Vertical bounce always on; horizontal elasticity killed
+                // via the AppKit configurator (the canvas never scrolls X).
+                .scrollBounceBehavior(.always, axes: .vertical)
+                .background(NSScrollViewConfigurator { sv in
+                    sv.horizontalScrollElasticity = .none
+                })
                 .onChange(of: controller.visible.count) { _, _ in
+                    guard atBottom else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
                     }
@@ -178,7 +193,9 @@ private struct ChapterHeader: View {
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 12)
                 if let cmd = slashCommand {
-                    chipHeader(cmd)
+                    let lines = cmd.rest.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                    let firstLine = lines.first.map(String.init) ?? ""
+                    SlashCommandChip(command: cmd.commandName ?? "", args: firstLine, isHistorical: false, lineLimit: 1)
                 } else {
                     Text(preview)
                         .font(SoulFont.ui(15, weight: .regular))
@@ -198,30 +215,5 @@ private struct ChapterHeader: View {
         }
         .buttonStyle(.plain)
         .padding(.top, 6)
-    }
-
-    /// Capsule chip matching UserMessageRow.bubble's slash-command rendering:
-    /// accent-tinted background, monospaced command name, args muted/truncated
-    /// to the right so the chapter header stays single-line.
-    @ViewBuilder
-    private func chipHeader(_ cmd: SlashCommandParse.Parsed) -> some View {
-        HStack(spacing: 8) {
-            Text("/\(cmd.commandName ?? "")")
-                .font(SoulFont.code(12, weight: .regular))
-                .foregroundStyle(SoulColor.accent)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(SoulColor.accentMuted, in: Capsule())
-                .overlay(
-                    Capsule().strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 0.5)
-                )
-            if !cmd.rest.isEmpty {
-                Text(cmd.rest)
-                    .font(SoulFont.ui(13))
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
     }
 }

@@ -1,5 +1,15 @@
 import Foundation
 
+private let _wireTimeFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    return f
+}()
+
+func wireTimestamp() -> String {
+    _wireTimeFormatter.string(from: Date())
+}
+
 /// Why the child went away. Distinguishes deliberate teardown from a crash so
 /// ACPClient can decide whether to surface a user-facing error.
 enum ACPTransportTermination: Sendable {

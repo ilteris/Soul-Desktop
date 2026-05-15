@@ -69,7 +69,7 @@ struct SoulRegistryBackfillTests {
                 cwd: cwd
             )
             
-            #expect(result == nativeId)
+            #expect(result == .hit(nativeId))
             
             // Verify hook was written
             let updatedHooks = try String(contentsOfFile: hooksPath)
@@ -111,7 +111,7 @@ struct SoulRegistryBackfillTests {
                 cwd: cwd
             )
             
-            #expect(result == nativeId)
+            #expect(result == .hit(nativeId))
         }
     }
 
@@ -148,7 +148,7 @@ struct SoulRegistryBackfillTests {
                 cwd: cwd
             )
             
-            #expect(result == nativeId)
+            #expect(result == .hit(nativeId))
         }
     }
 
@@ -184,7 +184,11 @@ struct SoulRegistryBackfillTests {
                 cwd: cwd
             )
             
-            #expect(result == nil)
+            if case .ambiguous(let candidates) = result {
+                #expect(Set(candidates) == Set(["NATIVE-1", "NATIVE-2"]))
+            } else {
+                Issue.record("Expected ambiguous backfill result, got \(result)")
+            }
             let updatedHooks = try String(contentsOfFile: hooksDir.appendingPathComponent("hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"BackfillAmbiguous\""))
         }
@@ -210,7 +214,7 @@ struct SoulRegistryBackfillTests {
                 cwd: "/any"
             )
             
-            #expect(result == nativeId)
+            #expect(result == .alreadyMapped(nativeId))
         }
     }
 
@@ -241,7 +245,64 @@ struct SoulRegistryBackfillTests {
             )
             
             // Should be nil because the 64KB read didn't reach the sessionId or messages
-            #expect(result == nil)
+            #expect(result == .miss)
+        }
+    }
+
+    @Test func testExistingIdentityMappingShortCircuits() throws {
+        try withTempHome { home in
+            let fm = FileManager.default
+            let projectKey = "test-proj"
+            let sessionId = "12345678-1234-1234-1234-123456781234"
+            let cwd = "/work/test-proj"
+            let firstPrompt = "This prompt would otherwise match another transcript."
+
+            let hooksDir = home.appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)")
+            try fm.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+            let hooksPath = hooksDir.appendingPathComponent("hooks.jsonl").path
+            let hooks = """
+            {"event":"NativeSessionID","nativeId":"\(sessionId)"}
+            {"event":"UserPrompt","text":"\(firstPrompt)"}
+
+            """
+            try hooks.write(toFile: hooksPath, atomically: true, encoding: .utf8)
+
+            let chatsDir = home.appendingPathComponent(".gemini/tmp/test-proj/chats")
+            try fm.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+            let nativeId = "99999999-9999-4999-9999-999999999999"
+            let geminiJson = "{\"sessionId\":\"\(nativeId)\",\"messages\":[{\"type\":\"user\",\"content\":[{\"text\":\"\(firstPrompt)\"}]}]}"
+            try geminiJson.write(toFile: chatsDir.appendingPathComponent("session-hit.json").path, atomically: true, encoding: .utf8)
+
+            let result = SoulRegistry.backfillNativeSessionID(
+                projectKey: projectKey,
+                sessionId: sessionId,
+                provider: "geminiCLI",
+                cwd: cwd
+            )
+
+            #expect(result == .alreadyMapped(sessionId))
+            let updatedHooks = try String(contentsOfFile: hooksPath)
+            #expect(updatedHooks.components(separatedBy: "\"event\":\"NativeSessionID\"").count - 1 == 1)
+            #expect(!updatedHooks.contains(nativeId))
+        }
+    }
+
+    @Test func testAppendHookWritesTimezoneExplicitUTC() throws {
+        try withTempHome { home in
+            let projectKey = "test-proj"
+            let sessionId = "12345678-1234-1234-1234-123456781234"
+
+            SoulRegistry.appendHook(projectKey: projectKey, sessionId: sessionId, event: [
+                "event": "UserPrompt",
+                "text": "Timestamp check",
+            ])
+
+            let hooksPath = home
+                .appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")
+                .path
+            let line = try String(contentsOfFile: hooksPath)
+            #expect(line.contains("\"timestamp\""))
+            #expect(line.contains("Z\""))
         }
     }
 }

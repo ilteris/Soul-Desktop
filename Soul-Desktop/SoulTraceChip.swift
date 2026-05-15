@@ -46,15 +46,15 @@ struct SoulTraceChip: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "waveform.path")
-                        .font(.system(size: 9, weight: .regular))
+                        .font(.system(size: 12, weight: .regular))
                     Text("trace")
-                        .font(SoulFont.ui(10, weight: .regular))
+                        .font(SoulFont.ui(12, weight: .regular))
                     if !expanded, !trace.intent.isEmpty {
                         Text("·")
-                            .font(SoulFont.ui(10))
+                            .font(SoulFont.ui(12))
                             .foregroundStyle(SoulColor.fgSubtle)
                         Text(trace.intent)
-                            .font(SoulFont.ui(10))
+                            .font(SoulFont.ui(12))
                             .foregroundStyle(SoulColor.fgMuted)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -97,11 +97,11 @@ struct SoulTraceChip: View {
         if !value.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(label)
-                    .font(SoulFont.ui(10, weight: .regular))
+                    .font(SoulFont.ui(11, weight: .regular))
                     .foregroundStyle(SoulColor.fgSubtle)
-                    .frame(width: 36, alignment: .leading)
+                    .frame(width: 40, alignment: .leading)
                 Text(value)
-                    .font(SoulFont.ui(11))
+                    .font(SoulFont.ui(12))
                     .foregroundStyle(SoulColor.fgMuted)
                     .textSelection(.enabled)
             }

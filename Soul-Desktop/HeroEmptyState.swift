@@ -14,6 +14,7 @@ struct HeroEmptyState: View {
     var onRunLocal: (String, String?) -> Void = { _, _ in }
     @Binding var pendingPermissionMode: PermissionMode
     var provider: Provider = .geminiCLI
+    var onPickHarness: (Provider) -> Void = { _ in }
     @State private var builtInCommands: [SlashCommand] = []
 
     var body: some View {
@@ -39,7 +40,8 @@ struct HeroEmptyState: View {
                 devRunning: devRunning,
                 onRunLocal: onRunLocal,
                 permissionMode: $pendingPermissionMode,
-                provider: provider
+                provider: provider,
+                onPickHarness: onPickHarness
             )
             .frame(maxWidth: 720)
 

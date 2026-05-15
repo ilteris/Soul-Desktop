@@ -11,13 +11,15 @@ import Combine
 struct CanvasInfoOverlay: View {
     let projectPath: String?
     let projectName: String?
+    let projectKey: String?
 
     @Environment(\.openFilePreview) private var openFilePreview
 
     @State private var hoveringStrip: Bool = false
     @State private var hoveringCard: Bool = false
     @State private var pinned: Bool = false
-    @StateObject private var model = CanvasInfoModel()
+    @StateObject private var gitModel = GitReviewModel()
+    @StateObject private var taskStore = ActiveTaskStore()
 
     private var isVisible: Bool {
         pinned || hoveringStrip || hoveringCard
@@ -25,38 +27,63 @@ struct CanvasInfoOverlay: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Invisible hover trigger — a 28pt strip glued to the right edge.
-            // We keep it allowsHitTesting(true) but transparent so the
-            // toolbar buttons sitting above it (rendered earlier in the Z
-            // order) still receive their own clicks.
+            // Invisible hover trigger, inset 16pt from the trailing edge so
+            // the macOS overlay scrollbar gutter is hit-testable. Without the
+            // inset this strip swallowed every click/drag in the scrollbar
+            // zone — even when invisible — because `.onHover` needs hit
+            // testing on, so we can't just blanket-disable it.
             Color.clear
-                .frame(width: 28)
+                .frame(width: 24)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .onHover { hoveringStrip = $0 }
+                .padding(.trailing, 16)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .allowsHitTesting(!isVisible || !pinned)
 
             if isVisible {
                 card
                     .padding(.top, 8)
-                    .padding(.trailing, 8)
+                    // Leave room for the canvas scrollbar — macOS overlay
+                    // scrollbars sit ~15pt off the trailing edge and a stack
+                    // of buttons in the toolbar above add their own gutter.
+                    // 24pt keeps the bar fully reachable without dragging
+                    // the overlay too far inboard.
+                    .padding(.trailing, 24)
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
                     .onHover { hoveringCard = $0 }
             }
         }
         .animation(.easeInOut(duration: 0.12), value: isVisible)
         .onChange(of: projectPath) { _, new in
-            model.bind(projectPath: new)
+            gitModel.bind(projectPath: new)
         }
-        .task { model.bind(projectPath: projectPath) }
+        .onChange(of: projectKey) { _, new in
+            taskStore.bind(projectKey: new)
+        }
+        .onChange(of: isVisible) { _, visible in
+            if visible {
+                // SOUL-SOUL_DESKTOP-054: lazy PR fetch when card becomes visible.
+                Task { await gitModel.fetchPRStatus() }
+            }
+        }
+        .task {
+            gitModel.bind(projectPath: projectPath)
+            taskStore.bind(projectKey: projectKey)
+        }
     }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if !taskStore.criteria.isEmpty {
+                progressSection
+                Divider().background(SoulColor.border.opacity(0.4))
+            }
             branchSection
-            if !model.artifacts.isEmpty {
+            Divider().background(SoulColor.border.opacity(0.4))
+            actionsSection
+            if !gitModel.snapshot.untracked.isEmpty {
                 Divider().background(SoulColor.border.opacity(0.4))
                 artifactsSection
             }
@@ -76,7 +103,7 @@ struct CanvasInfoOverlay: View {
 
     private var header: some View {
         HStack {
-            Text("Branch details")
+            Text("Project Status")
                 .font(SoulFont.ui(11, weight: .regular))
                 .foregroundStyle(SoulColor.fgSubtle)
                 .textCase(.uppercase)
@@ -93,6 +120,45 @@ struct CanvasInfoOverlay: View {
         }
     }
 
+    private var progressSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Progress")
+                    .font(SoulFont.ui(11, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                if let tid = taskStore.taskId {
+                    Text(tid)
+                        .font(SoulFont.code(10))
+                        .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                let done = taskStore.criteria.filter { $0.done }.count
+                let total = taskStore.criteria.count
+                Text("\(done)/\(total)")
+                    .font(SoulFont.code(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
+            ForEach(taskStore.criteria, id: \.text) { c in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: c.done ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(c.done ? SoulColor.accent : SoulColor.fgMuted)
+                        .frame(width: 14)
+                        .padding(.top, 1)
+                    Text(c.text)
+                        .font(SoulFont.ui(12))
+                        .foregroundStyle(c.done ? SoulColor.fgSubtle : SoulColor.fg)
+                        .strikethrough(c.done, color: SoulColor.fgSubtle)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private var branchSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -103,18 +169,27 @@ struct CanvasInfoOverlay: View {
                     .font(SoulFont.ui(13))
                     .foregroundStyle(SoulColor.fg)
                 Spacer(minLength: 8)
-                if model.additions == 0 && model.deletions == 0 {
+                if gitModel.snapshot.additions == 0 && gitModel.snapshot.deletions == 0 && gitModel.snapshot.untracked.isEmpty {
                     Text("clean")
                         .font(SoulFont.code(11))
                         .foregroundStyle(SoulColor.fgSubtle)
                 } else {
                     HStack(spacing: 6) {
-                        Text("+\(model.additions)")
-                            .font(SoulFont.code(11))
-                            .foregroundStyle(Color.green.opacity(0.9))
-                        Text("-\(model.deletions)")
-                            .font(SoulFont.code(11))
-                            .foregroundStyle(Color.red.opacity(0.9))
+                        if gitModel.snapshot.additions > 0 {
+                            Text("+\(gitModel.snapshot.additions)")
+                                .font(SoulFont.code(11))
+                                .foregroundStyle(Color.green.opacity(0.9))
+                        }
+                        if gitModel.snapshot.deletions > 0 {
+                            Text("-\(gitModel.snapshot.deletions)")
+                                .font(SoulFont.code(11))
+                                .foregroundStyle(Color.red.opacity(0.9))
+                        }
+                        if !gitModel.snapshot.untracked.isEmpty && gitModel.snapshot.additions == 0 && gitModel.snapshot.deletions == 0 {
+                             Text("\(gitModel.snapshot.untracked.count) files")
+                                .font(SoulFont.code(11))
+                                .foregroundStyle(SoulColor.fgSubtle)
+                        }
                     }
                 }
             }
@@ -122,14 +197,14 @@ struct CanvasInfoOverlay: View {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 12))
                     .foregroundStyle(SoulColor.fgMuted)
-                Text(model.branch ?? "—")
+                Text(gitModel.snapshot.branch ?? "—")
                     .font(SoulFont.ui(13))
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            if let pr = model.prSummary {
+            if let pr = gitModel.snapshot.prStatus {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.seal")
                         .font(.system(size: 12))
@@ -145,6 +220,31 @@ struct CanvasInfoOverlay: View {
         }
     }
 
+    private var actionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Git Actions")
+                .font(SoulFont.ui(11, weight: .regular))
+                .foregroundStyle(SoulColor.fgSubtle)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            
+            HStack(spacing: 8) {
+                ActionButton(
+                    icon: "plus.square",
+                    label: "Stage",
+                    active: !gitModel.snapshot.untracked.isEmpty,
+                    action: { Task { await gitModel.stageAll(); await gitModel.refresh() } }
+                )
+                ActionButton(
+                    icon: "arrow.up.circle",
+                    label: "Push",
+                    active: gitModel.snapshot.branch != nil,
+                    action: { Task { _ = await gitModel.push(); await gitModel.refresh() } }
+                )
+            }
+        }
+    }
+
     private var artifactsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Artifacts")
@@ -152,28 +252,16 @@ struct CanvasInfoOverlay: View {
                 .foregroundStyle(SoulColor.fgSubtle)
                 .textCase(.uppercase)
                 .tracking(0.5)
-            let shown = Array(model.artifacts.prefix(8))
+            let shown = Array(gitModel.snapshot.untracked.prefix(8))
             ForEach(shown, id: \.self) { rel in
-                Button(action: { openArtifact(rel) }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: artifactIcon(rel))
-                            .font(.system(size: 11))
-                            .foregroundStyle(SoulColor.fgMuted)
-                            .frame(width: 14)
-                        Text((rel as NSString).lastPathComponent)
-                            .font(SoulFont.code(12))
-                            .foregroundStyle(SoulColor.fg)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(rel)
+                ArtifactRow(
+                    rel: rel,
+                    icon: artifactIcon(rel),
+                    onOpen: { openArtifact(rel) }
+                )
             }
-            if model.artifacts.count > shown.count {
-                Text("+\(model.artifacts.count - shown.count) more")
+            if gitModel.snapshot.untracked.count > shown.count {
+                Text("+\(gitModel.snapshot.untracked.count - shown.count) more")
                     .font(SoulFont.ui(11))
                     .foregroundStyle(SoulColor.fgSubtle)
                     .padding(.leading, 22)
@@ -197,125 +285,84 @@ struct CanvasInfoOverlay: View {
     }
 }
 
-@MainActor
-final class CanvasInfoModel: ObservableObject {
-    @Published private(set) var branch: String? = nil
-    @Published private(set) var additions: Int = 0
-    @Published private(set) var deletions: Int = 0
-    @Published private(set) var artifacts: [String] = []
-    @Published private(set) var prSummary: String? = nil
+private struct ActionButton: View {
+    let icon: String
+    let label: String
+    let active: Bool
+    let action: () -> Void
+    @State private var hovering = false
 
-    private var boundPath: String? = nil
-    private var refreshTimer: Timer? = nil
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                Text(label)
+                    .font(SoulFont.ui(12))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(active ? (hovering ? SoulColor.accent.opacity(0.2) : SoulColor.accent.opacity(0.1)) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(active ? SoulColor.accent.opacity(0.3) : SoulColor.border.opacity(0.3), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!active)
+        .opacity(active ? 1.0 : 0.5)
+        .onHover { hovering = $0 }
+    }
+}
 
-    func bind(projectPath: String?) {
-        guard projectPath != boundPath else { return }
-        boundPath = projectPath
-        branch = nil
-        additions = 0
-        deletions = 0
-        artifacts = []
-        prSummary = nil
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-        guard let path = projectPath, !path.isEmpty else { return }
-        Task { await refresh(path: path) }
-        // Poll lightly so the card stays current while the user hovers.
-        let t = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                guard let p = self.boundPath else { return }
-                await self.refresh(path: p)
+/// Artifact list row with explicit hover affordance — background tint,
+/// pointer cursor, and a chevron that only appears on hover so the resting
+/// state stays quiet. Makes the row read as "click to open" rather than
+/// a static text line.
+private struct ArtifactRow: View {
+    let rel: String
+    let icon: String
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(hovering ? SoulColor.accent : SoulColor.fgMuted)
+                    .frame(width: 14)
+                Text((rel as NSString).lastPathComponent)
+                    .font(SoulFont.code(12))
+                    .foregroundStyle(hovering ? SoulColor.accent : SoulColor.fg)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .opacity(hovering ? 1 : 0)
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(hovering ? SoulColor.accent.opacity(0.12) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(rel) in preview panel")
+        .onHover { inside in
+            hovering = inside
+            if inside {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
             }
         }
-        RunLoop.main.add(t, forMode: .common)
-        refreshTimer = t
-    }
-
-    deinit {
-        refreshTimer?.invalidate()
-    }
-
-    private func refresh(path: String) async {
-        let snap = await Task.detached(priority: .utility) { CanvasInfoModel.compute(at: path) }.value
-        branch = snap.branch
-        additions = snap.additions
-        deletions = snap.deletions
-        artifacts = snap.artifacts
-        // PR fetch is independent and slower — only kick it once per bind to
-        // keep the gh subprocess off the 5-second refresh loop.
-        if prSummary == nil {
-            let pr = await Task.detached(priority: .utility) { CanvasInfoModel.fetchPR(at: path) }.value
-            if path == boundPath { prSummary = pr }
-        }
-    }
-
-    private struct Snap {
-        var branch: String? = nil
-        var additions: Int = 0
-        var deletions: Int = 0
-        var artifacts: [String] = []
-    }
-
-    nonisolated private static func compute(at path: String) -> Snap {
-        var s = Snap()
-        s.branch = runCapture("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"])
-        if let diffStat = runCapture("git", ["-C", path, "diff", "--numstat", "HEAD"], allowEmpty: true) {
-            for line in diffStat.split(separator: "\n") {
-                let cols = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-                guard cols.count >= 2 else { continue }
-                let add = Int(cols[0]) ?? 0
-                let del = Int(cols[1]) ?? 0
-                s.additions += add
-                s.deletions += del
-            }
-        }
-        if let status = runCapture("git", ["-C", path, "status", "--porcelain"], allowEmpty: true) {
-            var out: [String] = []
-            for line in status.split(separator: "\n", omittingEmptySubsequences: true) {
-                // porcelain v1: "XY path" (possibly "R old -> new")
-                let str = String(line)
-                guard str.count > 3 else { continue }
-                var rest = String(str.dropFirst(3))
-                if let arrow = rest.range(of: " -> ") {
-                    rest = String(rest[arrow.upperBound...])
-                }
-                out.append(rest)
-            }
-            s.artifacts = out
-        }
-        return s
-    }
-
-    nonisolated private static func fetchPR(at path: String) -> String? {
-        // `gh pr view --json state,number,title` returns the current branch's PR.
-        guard let raw = runCapture("gh", ["-C", path, "pr", "view", "--json", "state,number,title"]) else {
-            return "no PR for this branch"
-        }
-        guard let data = raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        let state = (obj["state"] as? String) ?? "OPEN"
-        let number = obj["number"] as? Int ?? 0
-        let title = (obj["title"] as? String) ?? ""
-        return "#\(number) · \(state.capitalized) · \(title)"
-    }
-
-    nonisolated private static func runCapture(_ tool: String, _ args: [String], allowEmpty: Bool = false) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = [tool] + args
-        let out = Pipe(); let err = Pipe()
-        p.standardOutput = out
-        p.standardError = err
-        do { try p.run() } catch { return nil }
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let s = String(data: data, encoding: .utf8) ?? ""
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !allowEmpty && trimmed.isEmpty { return nil }
-        return allowEmpty ? s : trimmed
     }
 }

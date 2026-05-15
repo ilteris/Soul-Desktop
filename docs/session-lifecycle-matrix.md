@@ -255,6 +255,37 @@ These sessions are sidebar-noise — they never had an agent transcript to begin
 
 ---
 
+## 7.1 Backfill smoke: truss-labs / Shipping Nathan Demo URL
+
+Checked on 2026-05-14 against the registry row:
+
+- Project: `truss-labs`
+- Kernel session: `5b396f9f-14e3-4b5a-8ed4-9703268059ed`
+- Title hook: `Shipping Nathan Demo URL`
+- Hooks path: `~/soul_registry/sessions/truss-labs/5b396f9f-14e3-4b5a-8ed4-9703268059ed/hooks.jsonl`
+- Native Gemini transcript: `~/.gemini/tmp/truss-labs/chats/session-2026-05-11T13-16-5b396f9f.jsonl`
+
+Observed state:
+
+- `hooks.jsonl` already begins with a `NativeSessionID` hook for provider `geminiCLI`.
+- The recorded native ID is the same UUID as the kernel session ID.
+- The native Gemini transcript exists and is intact at 11 MB.
+- The first user prompt in both records is `hi`, which is intentionally below the backfill scanner's 20-character match floor.
+
+Result: this row is no longer a valid divergent-UUID backfill fixture. The current helper should short-circuit as `alreadyMapped` and must not append another `NativeSessionID` row. Forcing a content-match write here would violate the no-overwrite invariant and would not exercise the S1 recovery path.
+
+Verification run:
+
+```sh
+xcodebuild test -scheme Soul-Desktop -destination 'platform=macOS' -only-testing:Soul-DesktopTests/SoulRegistryBackfillTests
+```
+
+Result: passed. The suite covers Gemini `.json`, Gemini `.jsonl`, Claude `.jsonl`, no-match/64 KB cap, ambiguity diagnostics, existing mapping short-circuit, and UTC hook timestamp formatting.
+
+Remaining manual smoke for S1 needs a different fixture: a legacy row with no `NativeSessionID`, a first user prompt of at least 20 normalized characters, and a matching Gemini or Claude native transcript.
+
+---
+
 ## 7c. Summary table — "what gets past each failure"
 
 | Failure class      | Cheapest recovery                   | Best recovery                              | Recovers data? |

@@ -32,6 +32,11 @@ enum SoulHydration {
                 env: [:],
                 log: ["✓ Pi: hydration handled by soul-orchestrator extension at runtime"]
             )
+        case .codex:
+            return HydrationResult(
+                env: [:],
+                log: ["ℹ Codex: phase 1 stub — no AGENTS.md harness yet"]
+            )
         }
     }
 

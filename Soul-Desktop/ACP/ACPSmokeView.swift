@@ -99,6 +99,8 @@ final class ACPSmokeViewModel {
 
     private func handle(_ event: ACPClient.Event) {
         switch event {
+        case .request(let id, let method, _):
+            log("← request: \(method) (id=\(id))")
         case .sessionUpdate(let note):
             switch note.update {
             case .agentMessageChunk(let content):

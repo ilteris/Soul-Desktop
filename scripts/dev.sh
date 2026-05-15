@@ -7,8 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT="Soul-Desktop.xcodeproj"
-SCHEME="Soul-Desktop"
-APP_NAME="Soul-Desktop"
+SCHEME="${SOUL_DESKTOP_SCHEME:-Soul-Desktop Dev}"
+APP_NAME="${SOUL_DESKTOP_APP_NAME:-Soul-Desktop Dev}"
 WATCH_DIR="Soul-Desktop"
 
 if ! command -v fswatch >/dev/null 2>&1; then

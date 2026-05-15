@@ -38,6 +38,19 @@ struct PlaybackBar: View {
             .keyboardShortcut(.space, modifiers: [])
             .disabled(controller.finished)
 
+            // Jump-to-end: skip the rest of the playback and reveal the
+            // entire transcript at once. Useful when you only care about the
+            // final state and don't want to wait through the scrub.
+            Button(action: { controller.seek(to: controller.total) }) {
+                SoulIcon(name: "forward.end.fill", size: 10, color: SoulColor.fgMuted)
+                    .frame(width: 22, height: 22)
+                    .background(SoulColor.surface, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.rightArrow, modifiers: [.command])
+            .help("Jump to end (⌘→)")
+            .disabled(controller.finished)
+
             Text(statusLabel)
                 .font(SoulFont.ui(11, weight: .regular))
                 .foregroundStyle(statusColor)

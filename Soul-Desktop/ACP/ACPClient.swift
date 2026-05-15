@@ -15,6 +15,7 @@ enum ACPClientError: Error {
 
 actor ACPClient {
     enum Event {
+        case request(id: JSONRPCID, method: String, params: JSONValue?)
         case sessionUpdate(SessionNotification)
         case stderr(String)
         case unknownNotification(method: String, params: JSONValue?)
@@ -131,6 +132,23 @@ actor ACPClient {
         return resp.sessionId
     }
 
+    func newSession(id sid: String, cwd: String, mcpServers: [McpServer] = []) async throws -> String {
+        // session/new doesn't normally accept a sessionId, but the protocol
+        // doesn't forbid it in params. If the server supports it, this
+        // enforces kernel identity from frame zero.
+        var p: [String: JSONValue] = ["cwd": .string(cwd)]
+        p["sessionId"] = .string(sid)
+        if !mcpServers.isEmpty {
+            if let data = try? encoder.encode(mcpServers),
+               let val = try? decoder.decode(JSONValue.self, from: data) {
+                p["mcpServers"] = val
+            }
+        }
+        let result = try await call(method: "session/new", params: p)
+        let resp = try decode(NewSessionResponse.self, from: result)
+        return resp.sessionId
+    }
+
     func loadSession(sessionId: String, cwd: String, mcpServers: [McpServer] = []) async throws {
         let req = LoadSessionRequest(cwd: cwd, mcpServers: mcpServers, sessionId: sessionId)
         _ = try await call(method: "session/load", params: req)
@@ -183,7 +201,7 @@ actor ACPClient {
         try await transport.send(envelope)
     }
 
-    private func sendResponse(id: JSONRPCID, result: Encodable) throws {
+    func respond(id: JSONRPCID, result: Encodable) throws {
         var env = JSONRPCEnvelope()
         env.id = id
         env.result = try toJSONValue(result)
@@ -193,7 +211,7 @@ actor ACPClient {
         Task { try? await transport.send(data) }
     }
 
-    private func sendError(id: JSONRPCID, code: Int, message: String) {
+    func respondError(id: JSONRPCID, code: Int, message: String) {
         var env = JSONRPCEnvelope()
         env.id = id
         env.error = JSONRPCError(code: code, message: message)
@@ -224,6 +242,7 @@ actor ACPClient {
 
     private func readLoop() async {
         for await line in transport.incomingLines {
+            eventCont?.yield(.stderr("\(wireTimestamp()) ← wire: \(line)"))
             guard let data = line.data(using: .utf8) else { continue }
             do {
                 let env = try decoder.decode(JSONRPCEnvelope.self, from: data)
@@ -260,6 +279,7 @@ actor ACPClient {
     }
 
     private func handleNotification(method: String, params: JSONValue?) {
+        ACPProtocolLog.record(direction: "notification", method: method, params: params)
         switch method {
         case "session/update":
             if let params,
@@ -275,6 +295,7 @@ actor ACPClient {
     }
 
     private func handleClientRequest(id: JSONRPCID, method: String, params: JSONValue?) {
+        ACPProtocolLog.record(direction: "request", method: method, params: params)
         switch method {
         case "fs/read_text_file":
             handleFsRead(id: id, params: params)
@@ -283,13 +304,13 @@ actor ACPClient {
         case "session/request_permission":
             handlePermissionRequest(id: id, params: params)
         default:
-            sendError(id: id, code: -32601, message: "method not implemented: \(method)")
+            eventCont?.yield(.request(id: id, method: method, params: params))
         }
     }
 
     private func handlePermissionRequest(id: JSONRPCID, params: JSONValue?) {
         guard case .array(let opts)? = params?["options"], !opts.isEmpty else {
-            sendError(id: id, code: -32602, message: "missing options"); return
+            respondError(id: id, code: -32602, message: "missing options"); return
         }
 
         // Pull the tool name hint from the request so .autoReview can decide
@@ -301,7 +322,7 @@ actor ACPClient {
         }()
 
         func cancel() {
-            try? sendResponse(id: id, result: ["outcome": ["outcome": "cancelled"]])
+            try? respond(id: id, result: ["outcome": ["outcome": "cancelled"]])
         }
 
         func allowFirstMatching() {
@@ -313,9 +334,9 @@ actor ACPClient {
             }
             let chosen = pick ?? opts.first!
             guard case .string(let optionId)? = chosen["optionId"] ?? chosen["id"] else {
-                sendError(id: id, code: -32603, message: "no optionId on permission option"); return
+                respondError(id: id, code: -32603, message: "no optionId on permission option"); return
             }
-            try? sendResponse(id: id, result: [
+            try? respond(id: id, result: [
                 "outcome": ["outcome": "selected", "optionId": optionId]
             ])
         }
@@ -339,26 +360,26 @@ actor ACPClient {
 
     private func handleFsRead(id: JSONRPCID, params: JSONValue?) {
         guard case .string(let path)? = params?["path"] else {
-            sendError(id: id, code: -32602, message: "missing path"); return
+            respondError(id: id, code: -32602, message: "missing path"); return
         }
         do {
             let content = try String(contentsOfFile: path, encoding: .utf8)
-            try sendResponse(id: id, result: ["content": content])
+            try respond(id: id, result: ["content": content])
         } catch {
-            sendError(id: id, code: -32000, message: "read failed: \(error.localizedDescription)")
+            respondError(id: id, code: -32000, message: "read failed: \(error.localizedDescription)")
         }
     }
 
     private func handleFsWrite(id: JSONRPCID, params: JSONValue?) {
         guard case .string(let path)? = params?["path"],
               case .string(let content)? = params?["content"] else {
-            sendError(id: id, code: -32602, message: "missing path/content"); return
+            respondError(id: id, code: -32602, message: "missing path/content"); return
         }
         do {
             try content.write(toFile: path, atomically: true, encoding: .utf8)
-            try sendResponse(id: id, result: [String: String]())
+            try respond(id: id, result: [String: String]())
         } catch {
-            sendError(id: id, code: -32000, message: "write failed: \(error.localizedDescription)")
+            respondError(id: id, code: -32000, message: "write failed: \(error.localizedDescription)")
         }
     }
 }

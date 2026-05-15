@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Read-first session open — SOUL-SOUL_DESKTOP-043</title>
+<style>
+  :root {
+    --bg: #eef2f7;
+    --ink: #1f2430;
+    --muted: #6d7484;
+    --subtle: #9098aa;
+    --line: #a8b0c2;
+    --line-strong: #4f8f63;
+    --line-warn: #b7791f;
+    --panel: #ffffff;
+    --panel-2: #f7f9fc;
+    --green: #dcefe3;
+    --green-stroke: #62a875;
+    --blue: #dfeafe;
+    --blue-stroke: #6b8fd8;
+    --amber: #fff1d8;
+    --amber-stroke: #d59a34;
+    --red: #ffe2e0;
+    --red-stroke: #d36a61;
+    --violet: #ece4f8;
+    --violet-stroke: #8a6fc6;
+    --shadow: rgba(32, 42, 64, 0.12);
+  }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 22px 28px 10px;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 20px;
+    letter-spacing: -0.01em;
+  }
+  header p {
+    margin: 0;
+    max-width: 980px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .stage {
+    padding: 14px 24px 32px;
+    overflow: auto;
+  }
+  svg {
+    width: 1640px;
+    height: 1080px;
+    display: block;
+    background: #f8fafc;
+    border: 1px solid #d8deea;
+    border-radius: 10px;
+    box-shadow: 0 18px 40px var(--shadow);
+  }
+  .lane {
+    fill: #f1f5fb;
+    stroke: #dde4ef;
+  }
+  .lane-title {
+    fill: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .node rect {
+    fill: var(--panel);
+    stroke: #c9d1df;
+    stroke-width: 1;
+    rx: 8;
+  }
+  .node.green rect { fill: var(--green); stroke: var(--green-stroke); }
+  .node.blue rect { fill: var(--blue); stroke: var(--blue-stroke); }
+  .node.amber rect { fill: var(--amber); stroke: var(--amber-stroke); }
+  .node.red rect { fill: var(--red); stroke: var(--red-stroke); }
+  .node.violet rect { fill: var(--violet); stroke: var(--violet-stroke); }
+  .decision polygon {
+    fill: #fffaeb;
+    stroke: var(--amber-stroke);
+    stroke-width: 1.2;
+  }
+  .title {
+    fill: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .body {
+    fill: var(--muted);
+    font-size: 11px;
+  }
+  .ref {
+    fill: var(--subtle);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px;
+  }
+  .deciText {
+    fill: var(--ink);
+    font-size: 11px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .edge {
+    fill: none;
+    stroke: var(--line);
+    stroke-width: 1.4;
+  }
+  .edge.strong { stroke: var(--line-strong); stroke-width: 2; }
+  .edge.warn { stroke: var(--line-warn); stroke-width: 1.8; stroke-dasharray: 6 4; }
+  .edge.fail { stroke: var(--red-stroke); stroke-width: 1.6; stroke-dasharray: 4 4; }
+  .edge.repair { stroke: var(--blue-stroke); stroke-width: 1.8; stroke-dasharray: 3 4; }
+  .edge.lazy { stroke: var(--violet-stroke); stroke-width: 1.8; stroke-dasharray: 5 3; }
+  .label-bg {
+    fill: #ffffff;
+    stroke: #d9dfeb;
+    stroke-width: 0.8;
+    rx: 9;
+  }
+  .label {
+    fill: var(--ink);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .note {
+    fill: #fff;
+    stroke: #d8deea;
+    rx: 8;
+  }
+  .legend-swatch { stroke-width: 1; }
+  .legend-text {
+    fill: var(--ink);
+    font-size: 11px;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Read-first session open — SOUL-SOUL_DESKTOP-043</h1>
+  <p>
+    How a click on a sidebar row turns into rendered bubbles without spawning an agent process, and how the agent gets spawned lazily on the user's first send.
+    Green is the read-first happy path. Violet is the lazy spawn that fires only on first send. Amber decisions are branch points. Red is the blocked / fall-back outcome.
+  </p>
+</header>
+
+<div class="stage">
+<svg viewBox="0 0 1640 1080" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f7f99"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f8f63"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b8fd8"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b7791f"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d36a61"/>
+    </marker>
+    <marker id="arrowViolet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a6fc6"/>
+    </marker>
+  </defs>
+
+  <!-- Lanes -->
+  <rect class="lane" x="24" y="58" width="260" height="940" rx="12"/>
+  <rect class="lane" x="304" y="58" width="320" height="940" rx="12"/>
+  <rect class="lane" x="644" y="58" width="340" height="940" rx="12"/>
+  <rect class="lane" x="1004" y="58" width="300" height="940" rx="12"/>
+  <rect class="lane" x="1324" y="58" width="290" height="940" rx="12"/>
+
+  <text class="lane-title" x="44" y="38">User action</text>
+  <text class="lane-title" x="324" y="38">AppShell route</text>
+  <text class="lane-title" x="664" y="38">Hydrate from disk</text>
+  <text class="lane-title" x="1024" y="38">Lazy spawn on first send</text>
+  <text class="lane-title" x="1344" y="38">Canvas state</text>
+
+  <!-- ===== USER ACTION LANE ===== -->
+  <g class="node green" transform="translate(52 92)">
+    <rect width="204" height="92"/>
+    <text class="title" x="16" y="26">Click sidebar row</text>
+    <text class="body" x="16" y="46">Archived or unfinalized</text>
+    <text class="body" x="16" y="62">session UUID</text>
+    <text class="ref" x="16" y="80">AppShell.loadSession(session)</text>
+  </g>
+
+  <g class="node green" transform="translate(52 760)">
+    <rect width="204" height="100"/>
+    <text class="title" x="16" y="26">Type and hit send</text>
+    <text class="body" x="16" y="46">First prompt after a hydrate</text>
+    <text class="body" x="16" y="62">— the cost moves here, not</text>
+    <text class="body" x="16" y="78">to the click.</text>
+    <text class="ref" x="16" y="96">controller.send(text)</text>
+  </g>
+
+  <!-- ===== APPSHELL ROUTE LANE ===== -->
+  <g class="node" transform="translate(332 92)">
+    <rect width="262" height="92"/>
+    <text class="title" x="16" y="26">Already open in threads[ ]?</text>
+    <text class="body" x="16" y="46">Mount-once cache — opacity</text>
+    <text class="body" x="16" y="62">flip, no reload, no rebuild.</text>
+    <text class="ref" x="16" y="80">threads.values.first(where: sid)</text>
+  </g>
+
+  <g class="decision" transform="translate(332 228)">
+    <polygon points="131,0 262,46 131,92 0,46"/>
+    <text class="deciText" x="131" y="42">isLive AND</text>
+    <text class="deciText" x="131" y="58">origin == .terminal?</text>
+  </g>
+
+  <g class="node red" transform="translate(332 350)">
+    <rect width="262" height="86"/>
+    <text class="title" x="16" y="26">externalLiveSession sheet</text>
+    <text class="body" x="16" y="46">Another writer owns this dir.</text>
+    <text class="body" x="16" y="62">Offer read-only Replay.</text>
+    <text class="ref" x="16" y="80">No agent spawned.</text>
+  </g>
+
+  <g class="decision" transform="translate(332 478)">
+    <polygon points="131,0 262,46 131,92 0,46"/>
+    <text class="deciText" x="131" y="42">provider ∈</text>
+    <text class="deciText" x="131" y="58">{claude, geminiCLI}?</text>
+  </g>
+
+  <g class="node violet" transform="translate(332 596)">
+    <rect width="262" height="84"/>
+    <text class="title" x="16" y="26">Spawn-first loadSession</text>
+    <text class="body" x="16" y="46">Pi or unknown provider →</text>
+    <text class="body" x="16" y="62">existing ACP spawn path.</text>
+    <text class="ref" x="16" y="80">ThreadController.loadSession</text>
+  </g>
+
+  <!-- ===== HYDRATE FROM DISK LANE ===== -->
+  <g class="node green" transform="translate(672 92)">
+    <rect width="296" height="120"/>
+    <text class="title" x="16" y="26">hydrateFromDisk(sid)</text>
+    <text class="body" x="16" y="46">Off-main detached task.</text>
+    <text class="body" x="16" y="62">sessionId = sid set on main</text>
+    <text class="body" x="16" y="78">before disk work begins.</text>
+    <text class="body" x="16" y="94">No ACP process touched.</text>
+    <text class="ref" x="16" y="112">ThreadController.swift</text>
+  </g>
+
+  <g class="node blue" transform="translate(672 250)">
+    <rect width="296" height="116"/>
+    <text class="title" x="16" y="26">Resolve nativeSessionId</text>
+    <text class="body" x="16" y="46">Scan hooks for the</text>
+    <text class="body" x="16" y="62">NativeSessionID hook event.</text>
+    <text class="body" x="16" y="78">lookupId = nativeId ?? sid</text>
+    <text class="ref" x="16" y="96">SoulRegistry.findNativeSessionID</text>
+    <text class="ref" x="16" y="110">~/soul_registry/.../hooks.jsonl</text>
+  </g>
+
+  <g class="node" transform="translate(672 400)">
+    <rect width="296" height="120"/>
+    <text class="title" x="16" y="26">Read transcript</text>
+    <text class="body" x="16" y="46">claude →</text>
+    <text class="ref" x="40" y="62">~/.claude/projects/&lt;cwd&gt;/&lt;id&gt;.jsonl</text>
+    <text class="body" x="16" y="80">gemini →</text>
+    <text class="ref" x="40" y="96">~/.gemini/tmp/&lt;projectKey&gt;/chats/*.jsonl</text>
+    <text class="ref" x="16" y="112">match 1st-line sessionId = lookupId</text>
+  </g>
+
+  <g class="decision" transform="translate(672 555)">
+    <polygon points="148,0 296,46 148,92 0,46"/>
+    <text class="deciText" x="148" y="42">transcript</text>
+    <text class="deciText" x="148" y="58">found?</text>
+  </g>
+
+  <g class="node green" transform="translate(672 685)">
+    <rect width="296" height="120"/>
+    <text class="title" x="16" y="26">Hit — populate items</text>
+    <text class="body" x="16" y="46">items.append(history)</text>
+    <text class="body" x="16" y="62">historicalIDs ← every item id</text>
+    <text class="body" x="16" y="78">Inject slash-command hooks</text>
+    <text class="body" x="16" y="94">pendingResumeOnFirstSend = true</text>
+    <text class="ref" x="16" y="112">⌁ hydrate hit · N items</text>
+  </g>
+
+  <g class="node red" transform="translate(672 832)">
+    <rect width="296" height="120"/>
+    <text class="title" x="16" y="26">Miss — clean fallback</text>
+    <text class="body" x="16" y="46">Status row: no offline</text>
+    <text class="body" x="16" y="62">transcript on this machine.</text>
+    <text class="body" x="16" y="78">Claude falls through to</text>
+    <text class="body" x="16" y="94">loadSession; gemini does not.</text>
+    <text class="ref" x="16" y="112">⌁ hydrate miss · native=…</text>
+  </g>
+
+  <!-- ===== LAZY SPAWN LANE ===== -->
+  <g class="node violet" transform="translate(1032 760)">
+    <rect width="244" height="120"/>
+    <text class="title" x="16" y="26">ensureSession()</text>
+    <text class="body" x="16" y="46">Branches on</text>
+    <text class="body" x="16" y="62">pendingResumeOnFirstSend.</text>
+    <text class="body" x="16" y="78">Single call point for all</text>
+    <text class="body" x="16" y="94">subsequent spawns.</text>
+    <text class="ref" x="16" y="112">ThreadController.swift</text>
+  </g>
+
+  <g class="node violet" transform="translate(1032 540)">
+    <rect width="244" height="118"/>
+    <text class="title" x="16" y="26">spawnAndInitialize</text>
+    <text class="body" x="16" y="46">+ client.loadSession(</text>
+    <text class="body" x="16" y="62">  sessionId: nativeId ?? sid)</text>
+    <text class="body" x="16" y="78">suppressLoadReplay = true</text>
+    <text class="body" x="16" y="94">isReplayingLoad = true</text>
+    <text class="ref" x="16" y="112">drops user/agent chunks</text>
+  </g>
+
+  <g class="node violet" transform="translate(1032 360)">
+    <rect width="244" height="112"/>
+    <text class="title" x="16" y="26">apply(_ update:)</text>
+    <text class="body" x="16" y="46">Early-returns content events</text>
+    <text class="body" x="16" y="62">while suppressLoadReplay,</text>
+    <text class="body" x="16" y="78">but lets availableCommands</text>
+    <text class="body" x="16" y="94">populate the slash picker.</text>
+    <text class="ref" x="16" y="106"> </text>
+  </g>
+
+  <g class="node green" transform="translate(1032 180)">
+    <rect width="244" height="118"/>
+    <text class="title" x="16" y="26">client.prompt(text)</text>
+    <text class="body" x="16" y="46">Streams response normally.</text>
+    <text class="body" x="16" y="62">isReplayingLoad cleared.</text>
+    <text class="body" x="16" y="78">hasInitialized = true.</text>
+    <text class="body" x="16" y="94">Reward + alignment hooks fire.</text>
+    <text class="ref" x="16" y="112">ACPClient.prompt</text>
+  </g>
+
+  <!-- ===== CANVAS STATE LANE ===== -->
+  <g class="node green" transform="translate(1352 92)">
+    <rect width="244" height="120"/>
+    <text class="title" x="16" y="26">Instant render</text>
+    <text class="body" x="16" y="46">Disk bubbles appear &lt;100ms</text>
+    <text class="body" x="16" y="62">cold open. Mount-once turns</text>
+    <text class="body" x="16" y="78">re-opens into opacity flip.</text>
+    <text class="ref" x="16" y="100">ThreadView ScrollView keeps</text>
+    <text class="ref" x="16" y="112">offset across visibility toggles</text>
+  </g>
+
+  <g class="node violet" transform="translate(1352 360)">
+    <rect width="244" height="124"/>
+    <text class="title" x="16" y="26">Resume in flight</text>
+    <text class="body" x="16" y="46">Working indicator on the</text>
+    <text class="body" x="16" y="62">new user bubble.</text>
+    <text class="body" x="16" y="78">Agent recap stream silently</text>
+    <text class="body" x="16" y="94">discarded — no duplicates.</text>
+    <text class="ref" x="16" y="116">isReplayingLoad capsule visible</text>
+  </g>
+
+  <g class="node green" transform="translate(1352 540)">
+    <rect width="244" height="114"/>
+    <text class="title" x="16" y="26">Streaming</text>
+    <text class="body" x="16" y="46">Agent response appends</text>
+    <text class="body" x="16" y="62">below historical block.</text>
+    <text class="body" x="16" y="78">All-clear: live chat resumes.</text>
+    <text class="ref" x="16" y="100">ThreadController.items</text>
+  </g>
+
+  <g class="node red" transform="translate(1352 832)">
+    <rect width="244" height="120"/>
+    <text class="title" x="16" y="26">Read-only state</text>
+    <text class="body" x="16" y="46">Status row instructs user.</text>
+    <text class="body" x="16" y="62">Composer still works —</text>
+    <text class="body" x="16" y="78">pendingResume = false, so</text>
+    <text class="body" x="16" y="94">first send takes newSession</text>
+    <text class="ref" x="16" y="112">(fresh chat, same UUID)</text>
+  </g>
+
+  <!-- ===== EDGES ===== -->
+  <!-- Click → already-open check -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M256 138 C290 138 300 138 332 138"/>
+  <rect class="label-bg" x="266" y="122" width="62" height="20"/><text class="label" x="275" y="136">click</text>
+
+  <!-- already-open → canvas (yes) -->
+  <path class="edge" marker-end="url(#arrow)" d="M594 138 C760 138 1180 138 1352 138"/>
+  <rect class="label-bg" x="900" y="120" width="118" height="20"/><text class="label" x="908" y="134">yes → opacity flip</text>
+
+  <!-- not-already-open → terminal-live check -->
+  <path class="edge" marker-end="url(#arrow)" d="M463 184 C463 200 463 220 463 228"/>
+
+  <!-- terminal-live yes → external sheet -->
+  <path class="edge fail" marker-end="url(#arrowRed)" d="M463 320 C463 335 463 345 463 350"/>
+  <rect class="label-bg" x="473" y="324" width="44" height="20"/><text class="label" x="482" y="338">yes</text>
+
+  <!-- terminal-live no → provider check -->
+  <path class="edge" marker-end="url(#arrow)" d="M463 436 C463 455 463 470 463 478"/>
+  <rect class="label-bg" x="473" y="450" width="36" height="20"/><text class="label" x="482" y="464">no</text>
+
+  <!-- provider == claude/gemini yes → hydrate -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M594 524 C630 524 660 152 672 152"/>
+  <rect class="label-bg" x="618" y="306" width="118" height="20"/><text class="label" x="627" y="320">yes → hydrate</text>
+
+  <!-- provider check no → spawn-first -->
+  <path class="edge" marker-end="url(#arrow)" d="M463 570 C463 588 463 600 463 596"/>
+  <rect class="label-bg" x="473" y="572" width="36" height="20"/><text class="label" x="482" y="586">no</text>
+
+  <!-- hydrate → resolve nativeId -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M820 212 C820 230 820 240 820 250"/>
+
+  <!-- nativeId → read transcript -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M820 366 C820 386 820 392 820 400"/>
+
+  <!-- transcript → decision -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M820 520 C820 540 820 548 820 555"/>
+
+  <!-- decision yes → hit -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M820 647 C820 670 820 678 820 685"/>
+  <rect class="label-bg" x="830" y="654" width="44" height="20"/><text class="label" x="839" y="668">yes</text>
+
+  <!-- decision no → miss -->
+  <path class="edge fail" marker-end="url(#arrowRed)" d="M888 600 C940 600 968 832 968 832"/>
+  <rect class="label-bg" x="906" y="700" width="44" height="20"/><text class="label" x="915" y="714">no</text>
+
+  <!-- hit → canvas instant render -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M968 745 C1130 745 1230 150 1352 150"/>
+  <rect class="label-bg" x="1110" y="395" width="116" height="20"/><text class="label" x="1119" y="409">items rendered</text>
+
+  <!-- miss → read-only canvas -->
+  <path class="edge fail" marker-end="url(#arrowRed)" d="M968 892 C1130 892 1230 892 1352 892"/>
+  <rect class="label-bg" x="1140" y="874" width="100" height="20"/><text class="label" x="1149" y="888">status row</text>
+
+  <!-- send → ensureSession -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M256 808 C600 808 900 820 1032 820"/>
+  <rect class="label-bg" x="600" y="788" width="124" height="20"/><text class="label" x="609" y="802">first send wakes ACP</text>
+
+  <!-- ensureSession → spawn-and-load -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M1154 760 C1154 700 1154 660 1154 658"/>
+  <rect class="label-bg" x="1162" y="700" width="118" height="20"/><text class="label" x="1171" y="714">pendingResume?</text>
+
+  <!-- spawn-and-load → apply suppress -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M1154 540 C1154 510 1154 480 1154 472"/>
+  <rect class="label-bg" x="1162" y="488" width="124" height="20"/><text class="label" x="1171" y="502">suppressLoadReplay</text>
+
+  <!-- apply → client.prompt -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M1154 360 C1154 320 1154 300 1154 298"/>
+  <rect class="label-bg" x="1162" y="316" width="100" height="20"/><text class="label" x="1171" y="330">replay drained</text>
+
+  <!-- spawn-and-load → resume in flight (canvas) -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M1276 598 C1310 540 1330 440 1352 422"/>
+  <rect class="label-bg" x="1276" y="490" width="100" height="20"/><text class="label" x="1285" y="504">working chip</text>
+
+  <!-- client.prompt → streaming (canvas) -->
+  <path class="edge strong" marker-end="url(#arrowGreen)" d="M1276 240 C1310 280 1330 540 1352 595"/>
+  <rect class="label-bg" x="1294" y="380" width="74" height="20"/><text class="label" x="1303" y="394">stream</text>
+
+  <!-- hit fallthrough: also feed ensureSession on user send -->
+  <path class="edge lazy" marker-end="url(#arrowViolet)" d="M820 805 C900 820 1000 820 1032 820"/>
+
+  <!-- miss → ensureSession with pendingResume=false -->
+  <path class="edge" marker-end="url(#arrow)" d="M968 892 C1010 892 1032 880 1100 880"/>
+
+  <!-- ===== LEGEND ===== -->
+  <rect class="note" x="52" y="1002" width="1544" height="68"/>
+  <text class="title" x="68" y="1024">Edge legend</text>
+  <g transform="translate(68 1036)">
+    <line class="edge strong" x1="0" y1="10" x2="40" y2="10" marker-end="url(#arrowGreen)"/>
+    <text class="legend-text" x="52" y="14">Read-first happy path — hydrate to render, no agent process touched.</text>
+  </g>
+  <g transform="translate(68 1054)">
+    <line class="edge lazy" x1="0" y1="10" x2="40" y2="10" marker-end="url(#arrowViolet)"/>
+    <text class="legend-text" x="52" y="14">Lazy spawn — only after the user sends; carries suppressLoadReplay so the agent recap doesn't duplicate disk bubbles.</text>
+  </g>
+  <g transform="translate(800 1036)">
+    <line class="edge fail" x1="0" y1="10" x2="40" y2="10" marker-end="url(#arrowRed)"/>
+    <text class="legend-text" x="52" y="14">Blocked or missing — terminal-owned live, or no transcript on disk. User sees a status row, never a red rpcError.</text>
+  </g>
+  <g transform="translate(800 1054)">
+    <line class="edge" x1="0" y1="10" x2="40" y2="10" marker-end="url(#arrow)"/>
+    <text class="legend-text" x="52" y="14">Neutral routing — decision branches and same-as-before fallbacks (Pi spawn-first, etc.).</text>
+  </g>
+</svg>
+</div>
+</body>
+</html>

@@ -34,9 +34,26 @@ enum ClaudeTranscriptReader {
 
                 let msg = rec["message"] as? [String: Any]
                 if let raw = msg?["content"] as? String, !raw.isEmpty {
-                    let content = sanitizeUserContent(raw)
-                    if !content.isEmpty {
-                        items.append(.userMessage(id: UUID(), text: content, timestamp: ts))
+                    // Run the shared `<local-command-*>` classifier first so
+                    // caveat/stdout scaffolding in stored transcripts renders
+                    // identically to the live ACP path (compact status row
+                    // for command output, dropped for pure caveat reminders).
+                    switch LocalCommandClassifier.classify(raw) {
+                    case .skip:
+                        break
+                    case .status(let inner):
+                        items.append(.status(id: UUID(), text: inner))
+                    case .message(let cleaned):
+                        // Defensive: same auto-expansion strip the Gemini
+                        // reader uses. No-op for native Claude prompts —
+                        // Claude doesn't inline @path content. Covers the
+                        // case where a user pastes a previously-expanded
+                        // block from elsewhere into Claude.
+                        let stripped = GeminiTranscriptReader.stripGeminiReferencedFileBlock(cleaned)
+                        let content = sanitizeUserContent(stripped)
+                        if !content.isEmpty {
+                            items.append(.userMessage(id: UUID(), text: content, timestamp: ts))
+                        }
                     }
                 }
                 // user records with list content are tool_results — skip; they're already

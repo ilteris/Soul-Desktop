@@ -5,7 +5,11 @@ enum ACPProtocolVersion {
 }
 
 struct JSONRPCEnvelope: Codable {
-    var jsonrpc: String = "2.0"
+    /// Optional on the wire: codex app-server omits this header per its
+    /// protocol docs ("with the 'jsonrpc':'2.0' header omitted on the
+    /// wire"). ACP servers include it. We always emit "2.0" on outgoing
+    /// envelopes; on incoming we accept either shape.
+    var jsonrpc: String? = "2.0"
     var id: JSONRPCID?
     var method: String?
     var params: JSONValue?

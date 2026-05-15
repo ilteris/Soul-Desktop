@@ -5,6 +5,7 @@ struct ThreadView: View {
     @Bindable var controller: ThreadController
     @Binding var prompt: String
     var onCancel: () -> Void = {}
+    var onPickHarness: (Provider) -> Void = { _ in }
     var onNewChat: () -> Void = {}
 
     @State private var renaming = false
@@ -22,13 +23,6 @@ struct ThreadView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ThreadHeader(
-                title: controller.displayTitle,
-                onCopySessionId: copySessionId,
-                onCopyMarkdown: copyMarkdown,
-                onRename: startRename
-            )
-
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
@@ -86,6 +80,13 @@ struct ThreadView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 24)
                 }
+                // Vertical bounce always on (so reaching top/bottom rubber-bands
+                // — natural macOS feel). Horizontal elasticity killed via the
+                // AppKit configurator since the canvas never scrolls X.
+                .scrollBounceBehavior(.always, axes: .vertical)
+                .background(NSScrollViewConfigurator { sv in
+                    sv.horizontalScrollElasticity = .none
+                })
                 .onAppear {
                     // Restore the saved anchor when switching back to this
                     // thread. Suppress row `.onAppear` anchor writes during
@@ -145,7 +146,8 @@ struct ThreadView: View {
                         get: { controller.permissionMode },
                         set: { controller.permissionMode = $0 }
                     ),
-                    provider: controller.provider
+                    provider: controller.provider,
+                    onPickHarness: onPickHarness
                 )
                 .frame(maxWidth: 760)
             }
@@ -158,6 +160,10 @@ struct ThreadView: View {
             TextField("Title", text: $renameDraft)
             Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }
             Button("Cancel", role: .cancel) {}
+        }
+        .onChange(of: controller.renameRequestNonce) { _, _ in
+            renameDraft = controller.customTitle ?? controller.displayTitle
+            renaming = true
         }
     }
 
@@ -181,71 +187,6 @@ struct ThreadView: View {
         return true
     }
 
-    private func startRename() {
-        renameDraft = controller.customTitle ?? controller.displayTitle
-        renaming = true
-    }
-
-    private func copySessionId() {
-        // sessionId is private; store last via controller.id for now
-        let value = controller.id
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
-    }
-
-    private func copyMarkdown() {
-        let md = controller.markdownTranscript()
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(md, forType: .string)
-    }
-}
-
-private struct ThreadHeader: View {
-    let title: String
-    let onCopySessionId: () -> Void
-    let onCopyMarkdown: () -> Void
-    let onRename: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(SoulFont.ui(13, weight: .regular))
-                .foregroundStyle(SoulColor.fg)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Menu {
-                Button("Rename chat", action: onRename)
-                Divider()
-                Button("Copy session ID", action: onCopySessionId)
-                Button("Copy as Markdown", action: onCopyMarkdown)
-                Divider()
-                Section("Coming soon") {
-                    Button("Fork into new worktree") {}.disabled(true)
-                    Button("Open side chat") {}.disabled(true)
-                    Button("Open in new window") {}.disabled(true)
-                    Button("Copy deeplink") {}.disabled(true)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .frame(width: 22, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-
-            Spacer()
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(SoulColor.bg)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(SoulColor.border.opacity(0.4)).frame(height: 0.5)
-        }
-    }
 }
 
 struct ThreadItemRow: View {
@@ -262,13 +203,15 @@ struct ThreadItemRow: View {
             UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
         case .agentMessage(_, let text, _, let ts):
             AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+        case .agentThought(_, let text, let complete, _):
+            AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
             ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details)
         case .plan(_, let entries):
             PlanCard(entries: entries)
         case .status(_, let text):
             Text(text)
-                .font(SoulFont.ui(11))
+                .font(SoulFont.ui(13))
                 .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.62 : 1.0))
         case .error(_, let text):
             Text(text)
@@ -276,6 +219,149 @@ struct ThreadItemRow: View {
                 .foregroundStyle(Color.red.opacity(isHistorical ? 0.62 : 1.0))
                 .padding(8)
                 .background(Color.red.opacity(isHistorical ? 0.05 : 0.08), in: RoundedRectangle(cornerRadius: 6))
+        case .finalize(_, let intent, let summary, let rationale, let fixed, let nextStep, _):
+            FinalizeCard(intent: intent, summary: summary, rationale: rationale, fixed: fixed, nextStep: nextStep)
+        }
+    }
+}
+
+/// Live reasoning bubble fed by `agent_thought_chunk` notifications. Muted
+/// italic styling so it reads as background context, not the agent's
+/// official reply. Collapsed by default once streaming completes; expand to
+/// re-read the reasoning trail.
+private struct AgentThoughtRow: View {
+    let text: String
+    var isStreaming: Bool = false
+    var isHistorical: Bool = false
+    @State private var expanded: Bool = true
+
+    /// Parse `text` as inline markdown (the AttributedString markdown
+    /// initializer handles `**bold**`, `*italic*`, `` `code` ``, links,
+    /// etc.). Falls back to plain text on parse failure. Cached implicitly
+    /// by SwiftUI's view-identity diffing — the Text rebuilds only when
+    /// `text` actually changes.
+    private var thoughtAttributed: AttributedString {
+        if let a = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return a
+        }
+        return AttributedString(text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "brain")
+                    .font(.system(size: 11))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Text(isStreaming ? "Thinking…" : "Thought")
+                    .font(SoulFont.ui(11, weight: .medium))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
+                } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+            }
+            if expanded {
+                // Inline-markdown rendering via AttributedString: `**bold**`,
+                // `*italic*`, `` `code` ``, links, etc. all parse into a
+                // single Text view — flat layout, no nested stacks.
+                //
+                // We tried nesting MarkdownView (which uses an inner
+                // VStack-of-blocks) here, but during streaming thought
+                // chunks the entire block tree re-laid out on every chunk
+                // and triggered exponential `_FlexFrameLayout.sizeThatFits`
+                // recursion inside the outer ThreadView's LazyVStack —
+                // 100% main thread beachball.
+                Text(thoughtAttributed)
+                    .font(SoulFont.code(12).italic())
+                    .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(SoulColor.bgElevated.opacity(0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SoulColor.border.opacity(0.3), lineWidth: 0.5)
+        )
+    }
+}
+
+/// Structured Quad card pulled from a session's finalize JSON. Renders at
+/// the tail of a hydrated read-only transcript so opening a finalized
+/// session immediately surfaces what was accomplished.
+private struct FinalizeCard: View {
+    let intent: String?
+    let summary: String?
+    let rationale: String?
+    let fixed: String?
+    let nextStep: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(SoulColor.accent)
+                Text("Finalize")
+                    .font(SoulFont.ui(13, weight: .semibold))
+                    .foregroundStyle(SoulColor.fg)
+            }
+            if let intent, !intent.isEmpty {
+                field(label: "Intent", value: intent)
+            }
+            if let summary, !summary.isEmpty {
+                field(label: "Summary", value: summary)
+            }
+            if let rationale, !rationale.isEmpty {
+                field(label: "Rationale", value: rationale)
+            }
+            if let fixed, !fixed.isEmpty {
+                field(label: "Fixed", value: fixed)
+            }
+            if let nextStep, !nextStep.isEmpty {
+                field(label: "Next", value: nextStep)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(SoulColor.accent.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func field(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(SoulFont.ui(10, weight: .medium))
+                .foregroundStyle(SoulColor.fgSubtle)
+                .tracking(0.5)
+            Text(value)
+                .font(SoulFont.ui(13))
+                .foregroundStyle(SoulColor.fg)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 }
@@ -307,12 +393,11 @@ private struct AgentMessageRow: View {
                 SoulTraceChip(trace: trace)
             }
 
-            if isHistorical {
-                Text(MessageTimestamp.format(timestamp))
-                    .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
-                    .help(MessageTimestamp.absolute(timestamp))
-            } else {
+            // Footer renders for live AND historical messages. Earlier
+            // versions hid the buttons on historical bubbles, which left
+            // every reply lacking copy/feedback after a session reload —
+            // you couldn't act on prior content. Historical rows just get
+            // slightly more muted styling via the parent `mutedFg`.
             HStack(spacing: 4) {
                 FooterButton(systemName: "doc.on.doc", help: "Copy as Markdown") {
                     NSPasteboard.general.clearContents()
@@ -340,30 +425,47 @@ private struct AgentMessageRow: View {
                 .disabled(true)
                 Text(MessageTimestamp.format(timestamp))
                     .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
+                    .foregroundStyle(isHistorical ? SoulColor.fgSubtle.opacity(0.7) : SoulColor.fgSubtle)
                     .help(MessageTimestamp.absolute(timestamp))
                 Spacer()
             }
             .opacity(isHovering ? 1 : 0.55)
             .animation(.easeInOut(duration: 0.12), value: isHovering)
-            }  // end !isHistorical else branch
         }
         .onHover { isHovering = $0 }
     }
 }
 
 enum MessageTimestamp {
-    static func format(_ d: Date) -> String {
+    // SOUL-SOUL_DESKTOP-063 perf: DateFormatter allocation is expensive (~1-2ms
+    // per call). These get hit on every AgentMessageRow / UserMessageRow body
+    // evaluation, of which we have hundreds during heavy streaming. Cache one
+    // instance per format so we pay the setup cost once. macOS 10.9+ makes
+    // DateFormatter thread-safe for read.
+    private static let todayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : "MMM d, HH:mm"
-        return f.string(from: d)
-    }
-    static func absolute(_ d: Date) -> String {
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    private static let pastFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, HH:mm"
+        return f
+    }()
+    private static let absoluteFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
         f.timeStyle = .medium
-        return f.string(from: d)
+        return f
+    }()
+
+    static func format(_ d: Date) -> String {
+        (Calendar.current.isDateInToday(d) ? todayFormatter : pastFormatter).string(from: d)
+    }
+    static func absolute(_ d: Date) -> String {
+        absoluteFormatter.string(from: d)
     }
 }
 
@@ -458,28 +560,20 @@ private struct UserMessageRow: View {
         HStack(alignment: .top, spacing: 6) {
             Spacer(minLength: 32)
             if let cmd = p.commandName {
-                Text("/\(cmd)")
-                    .font(SoulFont.code(12, weight: .regular))
-                    .foregroundStyle(isHistorical ? SoulColor.accent.opacity(0.62) : SoulColor.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(
-                        (isHistorical ? SoulColor.accentMuted.opacity(0.62) : SoulColor.accentMuted),
-                        in: Capsule()
-                    )
-                    .overlay(
-                        Capsule().strokeBorder(
-                            SoulColor.accent.opacity(isHistorical ? 0.18 : 0.3),
-                            lineWidth: 0.5
+                VStack(alignment: .trailing, spacing: 6) {
+                    let lines = p.rest.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                    let firstLine = lines.first.map(String.init) ?? ""
+                    let remaining = lines.count > 1 ? String(lines[1]) : ""
+
+                    SlashCommandChip(command: cmd, args: firstLine, isHistorical: isHistorical)
+
+                    if !remaining.isEmpty {
+                        MarkdownView(
+                            text: remaining,
+                            headerColor: isHistorical ? mutedFg : SoulColor.fg,
+                            bodyColor: isHistorical ? mutedFg : SoulColor.fg,
+                            codeColor: isHistorical ? mutedFg : SoulColor.fg
                         )
-                    )
-                if !p.rest.isEmpty {
-                    MarkdownView(
-                        text: p.rest,
-                        headerColor: isHistorical ? mutedFg : SoulColor.fg,
-                        bodyColor: isHistorical ? mutedFg : SoulColor.fg,
-                        codeColor: isHistorical ? mutedFg : SoulColor.fg
-                    )
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -494,6 +588,7 @@ private struct UserMessageRow: View {
                                 )
                         )
                         .textSelection(.enabled)
+                    }
                 }
             } else {
                 MarkdownView(
@@ -502,14 +597,20 @@ private struct UserMessageRow: View {
                     bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                     codeColor: isHistorical ? mutedFg : SoulColor.fg
                 )
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(bubbleStroke, lineWidth: 0.5)
-                    )
-                    .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(
+                            bubbleStroke,
+                            style: StrokeStyle(
+                                lineWidth: isQueued ? 1.0 : 0.5,
+                                dash: isQueued ? [3, 3] : []
+                            )
+                        )
+                )
+                .textSelection(.enabled)
             }
         }
     }
@@ -553,17 +654,60 @@ private struct ToolCallRow: View {
 
     @ViewBuilder
     private var chevron: some View {
-        if details != nil {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { diffExpanded.toggle() }
-            } label: {
-                Image(systemName: diffExpanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 10))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .padding(6)
+        if let details {
+            HStack(spacing: 6) {
+                diffStats(for: details)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { diffExpanded.toggle() }
+                } label: {
+                    Image(systemName: diffExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    /// Compact git-diff-style line counter: green `+N` for added lines, red
+    /// `-M` for removed. Edit shows both; Write is additions-only. Mirrors
+    /// `git diff --shortstat` so the user can eyeball blast radius without
+    /// expanding the card.
+    @ViewBuilder
+    private func diffStats(for details: ToolCallDetails) -> some View {
+        let (added, removed) = countLines(details)
+        HStack(spacing: 4) {
+            if added > 0 {
+                Text("+\(added)")
+                    .font(SoulFont.code(13, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+            if removed > 0 {
+                Text("-\(removed)")
+                    .font(SoulFont.code(13, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func countLines(_ details: ToolCallDetails) -> (added: Int, removed: Int) {
+        switch details.kind {
+        case .edit(let oldString, let newString):
+            return (lineCount(newString), lineCount(oldString))
+        case .write(let content):
+            return (lineCount(content), details.previousLineCount ?? 0)
+        }
+    }
+
+    private func lineCount(_ s: String) -> Int {
+        if s.isEmpty { return 0 }
+        // Count newline-separated lines but treat a trailing newline as just
+        // ending the previous line, not a blank line of its own (matches the
+        // way `wc -l`-style stats are usually read).
+        var n = s.components(separatedBy: "\n").count
+        if s.hasSuffix("\n") { n -= 1 }
+        return max(n, 1)
     }
 
     private var icon: String {
@@ -625,15 +769,15 @@ private struct FileChipRow<Trailing: View>: View {
                 HStack(spacing: 6) {
                     Text(icon)
                     Text(kind)
-                        .font(SoulFont.code(11, weight: .bold))
+                        .font(SoulFont.code(13, weight: .bold))
                         .foregroundStyle(SoulColor.fg)
                     Text((path as NSString).lastPathComponent)
-                        .font(SoulFont.code(11, weight: .regular))
+                        .font(SoulFont.code(13, weight: .regular))
                         .foregroundStyle(SoulColor.fg)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Image(systemName: "arrow.up.right")
-                        .font(.system(size: 8))
+                        .font(.system(size: 10))
                         .foregroundStyle(SoulColor.fgSubtle)
                 }
                 .padding(.horizontal, 8)
@@ -650,7 +794,7 @@ private struct FileChipRow<Trailing: View>: View {
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
             Text(status)
-                .font(SoulFont.ui(10, weight: .regular))
+                .font(SoulFont.ui(13, weight: .regular))
                 .foregroundStyle(SoulColor.fgSubtle)
 
             trailing()
@@ -685,10 +829,10 @@ private struct DefaultToolRow<Trailing: View>: View {
             HStack(spacing: 6) {
                 if !icon.isEmpty { Text(icon) }
                 Text(kind)
-                    .font(SoulFont.code(11, weight: .bold))
+                    .font(SoulFont.code(13, weight: .bold))
                     .foregroundStyle(SoulColor.fg)
                 Text(title)
-                    .font(SoulFont.code(11, weight: .regular))
+                    .font(SoulFont.code(13, weight: .regular))
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -728,7 +872,7 @@ private struct DefaultToolRow<Trailing: View>: View {
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
             Text(status)
-                .font(SoulFont.ui(10, weight: .regular))
+                .font(SoulFont.ui(13, weight: .regular))
                 .foregroundStyle(SoulColor.fgSubtle)
 
             trailing()
@@ -869,13 +1013,24 @@ struct AgentLogPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Agent stderr")
+            HStack(spacing: 8) {
+                Text("Agent log")
                     .font(SoulFont.ui(12, weight: .bold))
                 Spacer()
                 Text("\(lines.count) lines")
                     .font(SoulFont.code(10))
                     .foregroundStyle(SoulColor.fgSubtle)
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(lines.joined(separator: "\n"), forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("Copy log")
+                .disabled(lines.isEmpty)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -929,6 +1084,13 @@ private struct DiffView: View {
         }
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Single text-selection scope for the whole diff card. Without this
+        // each per-line Text would become its own NSTextView; with N lines
+        // that's N selection participants in every drag-tick layout pass —
+        // the bug that pegged the main thread to 100% during selection. One
+        // scope at this level lets AppKit treat the diff as a single
+        // selectable block.
+        .textSelection(.enabled)
         .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
@@ -952,23 +1114,30 @@ private struct DiffView: View {
         let lines = text.isEmpty ? [" "] : text.components(separatedBy: "\n")
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
                     Text(start.map { "\($0 + i)" } ?? "")
-                        .font(SoulFont.code(11))
+                        .font(SoulFont.code(12))
                         .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
                         .frame(width: gutterWidth, alignment: .trailing)
                     Text(sign)
-                        .font(SoulFont.code(11, weight: .bold))
+                        .font(SoulFont.code(12, weight: .bold))
                         .foregroundStyle(tint.opacity(0.7))
                         .frame(width: 10, alignment: .leading)
+                    // No per-line .textSelection / no per-line .frame on the
+                    // Text. The whole DiffView declares selection once at the
+                    // outer HStack; the flex anchor moves down to the line
+                    // HStack (single layout node) so the tint background
+                    // still spans the column without promoting each Text to
+                    // an NSTextView. Both modifiers on the Text triggered the
+                    // layout-recursion storm during drag-select (sample
+                    // 2026-05-14: 100% main thread inside _bellerophonTrack).
                     Text(line.isEmpty ? " " : line)
-                        .font(SoulFont.code(11))
+                        .font(SoulFont.code(12))
                         .foregroundStyle(SoulColor.fg)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, 1)
                 .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(tint.opacity(0.08))
             }
         }

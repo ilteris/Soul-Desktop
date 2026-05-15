@@ -145,10 +145,10 @@ struct SettingsView: View {
 /// would trip the capsule on normal tool-call latency; ceilings under 60s
 /// risk killing legitimate long-running turns before the agent recovers.
 private struct AdvancedPane: View {
-    @AppStorage("soul.stall.budget.geminiCLI") private var geminiBudget: Int = 90
-    @AppStorage("soul.stall.budget.claude")    private var claudeBudget: Int = 60
-    @AppStorage("soul.stall.budget.pi")        private var piBudget: Int = 120
-    @AppStorage("soul.stall.autoCancelCeiling") private var autoCancelCeiling: Int = 300
+    @AppStorage("soul.stall.budget.geminiCLI") private var geminiBudget: Int = 240
+    @AppStorage("soul.stall.budget.claude")    private var claudeBudget: Int = 180
+    @AppStorage("soul.stall.budget.pi")        private var piBudget: Int = 300
+    @AppStorage("soul.stall.autoCancelCeiling") private var autoCancelCeiling: Int = 900
     @AppStorage("soul.toolCallTimeout.seconds") private var toolCallTimeout: Int = 60
 
     var body: some View {
@@ -357,6 +357,7 @@ private struct AppearancePane: View {
     @AppStorage("soul.fontSmoothing") private var fontSmoothing: Bool = true
     @AppStorage("soul.pointerCursors")private var pointerCursors: Bool = true
     @AppStorage(SoulColor.accentStorageKey) private var accentHex: Int = Int(SoulColor.defaultAccentHex)
+    @AppStorage("soul.appearance") private var appearancePref: String = "system"
 
     private let presets: [(label: String, hex: UInt32)] = [
         ("Mauve",   0x8839EF),
@@ -413,11 +414,19 @@ private struct AppearancePane: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                SectionHeader("Theme")
-                Text("Custom themes are coming soon. For now, Soul-Desktop runs the Catppuccin Latte palette.")
-                    .font(SoulFont.ui(12))
+            VStack(alignment: .leading, spacing: 10) {
+                SectionHeader("Appearance")
+                Text("Choose whether the UI follows your system appearance or stays on one side.")
+                    .font(SoulFont.ui(11))
                     .foregroundStyle(SoulColor.fgMuted)
+                Picker("", selection: $appearancePref) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 320, alignment: .leading)
             }
 
             VStack(spacing: 0) {

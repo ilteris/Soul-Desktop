@@ -34,6 +34,11 @@ struct SoulSession: Identifiable, Hashable {
     var status: String?
     var eventCount: Int = 0        // hooks.jsonl line count (kernel events)
     var promptCount: Int = 0       // Claude transcript "type":"user" count
+    /// Fallback turn count derived from the provider's transcript when the
+    /// kernel ledger has no UserPrompt events. Rendered with a `~` prefix
+    /// in the sidebar so users can still gauge session length on rows the
+    /// kernel didn't instrument (terminal-origin Codex, ledger-less Gemini).
+    var transcriptTurns: Int = 0
     /// True when the kernel wrote a `<uuid>/hooks.jsonl` ledger but no sibling
     /// `<uuid>.json` finalize summary exists yet. These rows stay visible
     /// under their project until /finalize promotes them to Chats.
@@ -41,20 +46,38 @@ struct SoulSession: Identifiable, Hashable {
     /// Finalized but has activity since: hooks.jsonl mtime > json mtime. The
     /// summary in the Chats row is stale; user should /finalize again to refresh.
     var isDirty: Bool = false
-    /// Where this live session was started from. Only meaningful for live
-    /// rows; finalized sessions leave this at `.unknown`.
+    /// Where this session was started from. Drives `AppShell.loadSession`
+    /// routing — terminal-origin live rows go to Replay because the kernel
+    /// and the agent occupy different UUID namespaces.
     var origin: SessionOrigin = .unknown
     /// Absolute path of the git worktree the session was started in, when
     /// the kernel detected one. Null for main-tree sessions and pre-007
     /// sessions. Read from hooks.jsonl `SESSION_START` (live) or the
     /// finalized session JSON top-level field. Drives sidebar sub-grouping.
     var worktreePath: String? = nil
-    /// Which agent has a persistence file for this UUID. Set only for live
-    /// rows by `liveSessions` (derived from agentHasSession). Used by
-    /// `AppShell.loadSession` to pick the right harness on click — without
-    /// this, a Claude session clicked while the harness is Gemini would
-    /// spawn gemini and fail `session/load`.
+    /// Which agent owns this session's persistence file. Set by `allSessions`
+    /// via `agentMatch`. Used by `AppShell.loadSession` to pick the right
+    /// harness on click so a Claude session clicked while the harness is
+    /// Gemini auto-switches instead of dead-ending in `session/load`.
     var liveProvider: String? = nil
+    /// True iff a provider transcript file (Claude `.jsonl` under
+    /// `~/.claude/projects/...` or a content-bearing gemini chat file under
+    /// `~/.gemini/tmp/.../chats/`) resolves for this id. Drives the default
+    /// "is this row resumable?" filter — non-loadable rows can still appear
+    /// when `replayable`, just with a Replay-only affordance.
+    var loadable: Bool = true
+    /// True iff `<uuid>/hooks.jsonl` exists. The replay surface only needs
+    /// the kernel ledger, so finalized rows whose provider transcript has
+    /// rotated out are still replay-able.
+    var replayable: Bool = true
+    /// True iff this row reflects a real conversation (finalized with
+    /// summary, or live with ≥ 4 hook events or a UserPrompt). Used to drop
+    /// crash residue without an age heuristic.
+    var substantive: Bool = true
+    /// First hook-event timestamp (the moment the session was started).
+    /// Pairs with `timestamp` (most-recent activity) to compute duration —
+    /// e.g. "23m" / "1h 4m" / "2d 3h" — rendered under the row title.
+    var startedAt: Date? = nil
 }
 
 enum SoulRegistry {
@@ -62,30 +85,29 @@ enum SoulRegistry {
     nonisolated(unsafe) static var soulPath: String = homePath + "/dotfiles/soul"
     nonisolated(unsafe) static var registryPath: String = homePath + "/soul_registry"
 
-    /// Per-project cache for the heavy scan (sessions + live). Keyed by
-    /// project id; refresh when the sessions/<key> directory mtime advances.
-    /// Lives at class-level so it survives view rebuilds.
+    /// Per-project cache for the unified `allSessions` scan. Keyed by project
+    /// id; refresh when the sessions/<key> directory mtime advances. Lives at
+    /// class-level so it survives view rebuilds.
     private struct ProjectCache {
         var dirMtime: Date
         var sessions: [SoulSession]
-        var live: [SoulSession]
     }
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var cache: [String: ProjectCache] = [:]
 
     /// Read cached scan results if the registry directory hasn't changed.
     /// Returns nil on miss / stale. Callers should fall back to a fresh scan.
-    static func cachedSessions(forProject key: String) -> (sessions: [SoulSession], live: [SoulSession])? {
+    static func cachedSessions(forProject key: String) -> [SoulSession]? {
         let now = projectStamp(key: key)
         cacheLock.lock(); defer { cacheLock.unlock() }
         guard let hit = cache[key], hit.dirMtime == now else { return nil }
-        return (hit.sessions, hit.live)
+        return hit.sessions
     }
 
-    static func warmCache(forProject key: String, sessions: [SoulSession], live: [SoulSession]) {
+    static func warmCache(forProject key: String, sessions: [SoulSession]) {
         let m = projectStamp(key: key)
         cacheLock.lock(); defer { cacheLock.unlock() }
-        cache[key] = ProjectCache(dirMtime: m, sessions: sessions, live: live)
+        cache[key] = ProjectCache(dirMtime: m, sessions: sessions)
     }
 
     /// Cache-validity stamp for a project's sessions tree. Combines the
@@ -139,23 +161,26 @@ enum SoulRegistry {
             )
         }
 
-        // Sort by recent activity: mtime of the sessions dir wins, then project path mtime.
-        // Falls back alphabetic when both are missing (fresh project, no sessions yet).
+        // Sort by project creation time (oldest first) so the sidebar order
+        // is STABLE — doesn't reshuffle as you send prompts or files get
+        // touched. Creation time = the birth date of the project's
+        // sessions/ directory, falling back to the project's source path,
+        // then alphabetical for projects without either timestamp yet.
         return mapped.sorted { lhs, rhs in
-            let la = lastActivity(for: lhs)
-            let ra = lastActivity(for: rhs)
-            if la != ra { return la > ra }
+            let la = createdAt(for: lhs)
+            let ra = createdAt(for: rhs)
+            if la != ra { return la < ra }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
-    private static func lastActivity(for p: SoulProject) -> Date {
+    private static func createdAt(for p: SoulProject) -> Date {
         let sessionsDir = "\(registryPath)/sessions/\(p.id)"
-        if let m = (try? FileManager.default.attributesOfItem(atPath: sessionsDir)[.modificationDate]) as? Date {
+        if let m = (try? FileManager.default.attributesOfItem(atPath: sessionsDir)[.creationDate]) as? Date {
             return m
         }
         if !p.path.isEmpty,
-           let m = (try? FileManager.default.attributesOfItem(atPath: p.path)[.modificationDate]) as? Date {
+           let m = (try? FileManager.default.attributesOfItem(atPath: p.path)[.creationDate]) as? Date {
             return m
         }
         return Date.distantPast
@@ -167,22 +192,211 @@ enum SoulRegistry {
 
     // MARK: - Sessions
 
-    static func sessions(forProject key: String, limit: Int = 50, projectPath: String? = nil) -> [SoulSession] {
+    /// Count of distinct session UUIDs on disk for a project. A finalize
+    /// JSON (`<uuid>.json` or `<ts>_<uuid>.json`) and a live dir (`<uuid>/`)
+    /// for the same UUID count once. No parsing, no size filters — just the
+    /// authoritative on-disk session set. Cheap enough to call for every
+    /// project at startup, so sidebar badges paint instantly without
+    /// triggering the heavier `sessions(forProject:)` parse pass.
+    static func sessionCount(forProject key: String) -> Int {
+        let dir = "\(registryPath)/sessions/\(key)"
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return 0 }
+        var ids: Set<String> = []
+        for name in entries {
+            if name.hasSuffix(".json") {
+                let stem = String(name.dropLast(5))
+                if UUID(uuidString: stem) != nil {
+                    ids.insert(stem)
+                } else if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
+                    ids.insert(String(tail))
+                }
+            } else if UUID(uuidString: name) != nil {
+                ids.insert(name)
+            }
+        }
+        return ids.count
+    }
+
+    /// Unified producer: every `<uuid>` for a project, finalized and live
+    /// alike, in one pass. Each row carries derived flags (`isLive`,
+    /// `isDirty`, `loadable`, `replayable`, `substantive`, `origin`) so
+    /// callers can filter on intent ("show resumable", "show replayable",
+    /// "hide crash residue") without reaching back into the registry.
+    ///
+    /// Replaces the prior `sessions(forProject:)` + `liveSessions(forProject:)`
+    /// split, which conflated lifecycle state (finalized vs live) with
+    /// visibility heuristics (24h maxAge, origin-must-be-desktop, separate
+    /// limits) and required downstream dedup. Lifecycle becomes a field, not
+    /// a code path. The age cap is gone — staleness was always a proxy for
+    /// "probably unresumable," and `loadable`/`replayable` now answer that
+    /// directly.
+    ///
+    /// Cheap mtime pre-sort, parse top `limit * 2` for full enrichment, return
+    /// top `limit` by activity. Loadability uses `SessionLoadability` so
+    /// gemini sessions are matched via chat-file content rather than UUID
+    /// prefix alone.
+    /// Single-pass metadata pulled from one read of a session's hooks.jsonl.
+    /// Replaces five separate file reads (`hooksLineCount` +
+    /// `worktreePathFromHooks` + `firstUserPromptFromHooks` + `findTitle` +
+    /// `detectOrigin`) per session — the dominant cost when expanding a
+    /// project with dozens of finalized sessions.
+    private struct HooksMetadata {
+        var eventCount: Int = 0
+        var promptCount: Int = 0
+        var worktreePath: String? = nil
+        var firstUserPrompt: String? = nil
+        var titleHook: String? = nil
+        var hasNativeOrUserPrompt: Bool = false
+        var hasTerminalSignal: Bool = false
+        var firstEventTimestamp: Date? = nil
+        var lastEventTimestamp: Date? = nil
+        /// SOUL-SOUL_DESKTOP-061: parent PID stamped on SESSION_START. When
+        /// it equals 1 (launchd) and no UserPrompt ever lands, this row is
+        /// residue from the `com.soul.app-server` daemon making single-shot
+        /// LLM calls for housekeeping — not a human conversation. The
+        /// sidebar uses this to flip `substantive = false` so daemon
+        /// sessions stop crowding project rows.
+        var sessionStartPpid: Int? = nil
+    }
+
+    private static func readHooksMetadata(path: String) -> HooksMetadata {
+        var meta = HooksMetadata()
+        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return meta }
+        // Full scan: every line gets parsed so promptCount + last-event
+        // timestamp + terminal signal flags are accurate even on long
+        // sessions. The early-exit-after-80-lines optimization broke prompt
+        // counting (it stopped counting after the first 80 events, so a
+        // 200-turn session reported as 6 turns).
+        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        meta.eventCount = lines.count
+
+        for line in lines {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            let event = (obj["event"] as? String) ?? ""
+
+            if event == "SESSION_START", meta.worktreePath == nil {
+                meta.worktreePath = obj["worktree_path"] as? String
+            }
+            if event == "SESSION_START", meta.sessionStartPpid == nil {
+                if let p = obj["ppid"] as? Int { meta.sessionStartPpid = p }
+            }
+            if event == "Title", meta.titleHook == nil {
+                meta.titleHook = (obj["text"] as? String) ?? (obj["title"] as? String)
+            }
+            if event == "UserPrompt" || event == "UserMessage" {
+                meta.promptCount += 1
+                if meta.firstUserPrompt == nil {
+                    let text = (obj["text"] as? String)
+                        ?? (obj["content"] as? String)
+                        ?? (obj["prompt"] as? String)
+                    let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let t = trimmed, !t.isEmpty {
+                        meta.firstUserPrompt = String(t.prefix(120))
+                    }
+                }
+            }
+            if event == "NativeSessionID" || event == "UserPrompt" {
+                meta.hasNativeOrUserPrompt = true
+            }
+            if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
+                meta.hasTerminalSignal = true
+            }
+
+            // Capture first/last event timestamps to compute session
+            // duration. First-event is always seen in the first loop tick
+            // (lines are in disk order); last-event keeps updating until
+            // the loop ends. We cap the scan at `maxLinesScanned`, so for
+            // sessions with >80 events the last-event timestamp is the
+            // 80th hook rather than the very last — acceptable for a
+            // sidebar duration chip, doesn't pretend to be authoritative.
+            if let ts = parseTimestamp(obj["timestamp"] as? String) {
+                if meta.firstEventTimestamp == nil {
+                    meta.firstEventTimestamp = ts
+                }
+                meta.lastEventTimestamp = ts
+            }
+        }
+        return meta
+    }
+
+    /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
+    /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
+    /// Building the index once per scan turns N×M per-session matching
+    /// (`for each session, iterate every chat file looking for suffix`)
+    /// into N O(1) lookups. With 99 sessions in `soul` × ~50 chat files in
+    /// `soul-1/chats/` that's ~5000 fewer suffix checks per project expand.
+    /// Also caches the `isResumableGeminiChatFile` content check so we
+    /// don't open the same file twice.
+    private final class GeminiDirCache {
+        var listings: [String: [String]] = [:]    // chatsDir path → filenames
+        /// Reverse index: `<first8>` → `(chatsDirPath, fileName)`. First
+        /// hit per first8 wins (largest-file disambiguation isn't needed
+        /// at index-build time — the per-session loadability check still
+        /// validates first-line sessionId for ambiguity).
+        var firstEightIndex: [String: (chatsDir: String, fileName: String)] = [:]
+        /// Memoized resumable-file check by absolute path.
+        var resumableCache: [String: Bool] = [:]
+        /// Per-scan set of session UUIDs found under
+        /// `~/.pi/agent/sessions/<encoded-cwd>/`. Populated lazily on the
+        /// first Pi probe per project so subsequent rows hit a set lookup
+        /// instead of re-listing the directory.
+        var piSessionsByDir: [String: Set<String>] = [:]
+        private var built: Set<String> = []
+
+        func entries(at dir: String, fm: FileManager) -> [String] {
+            if let hit = listings[dir] { return hit }
+            let entries = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+            listings[dir] = entries
+            indexFirstEights(chatsDir: dir, entries: entries)
+            return entries
+        }
+
+        private func indexFirstEights(chatsDir: String, entries: [String]) {
+            guard !built.contains(chatsDir) else { return }
+            built.insert(chatsDir)
+            // Filenames look like `session-<ts>-<first8>.jsonl(.bak-<n>|.corrupt-<n>)?`.
+            // Extract `<first8>` from each and remember the first match.
+            for name in entries {
+                guard name.hasSuffix(".jsonl") || name.hasSuffix(".json")
+                      || name.contains(".jsonl.bak-") || name.contains(".jsonl.corrupt-")
+                else { continue }
+                // Find the 8-hex segment before the extension. The kernel
+                // filename shape is stable enough that "last 8 hex chars
+                // before .jsonl" finds it; we also accept the
+                // "-<first8>." pattern that gemini-cli emits.
+                let stem = (name as NSString).deletingPathExtension
+                let parts = stem.split(separator: "-")
+                if let candidate = parts.last, candidate.count == 8,
+                   candidate.allSatisfy({ $0.isHexDigit }) {
+                    if firstEightIndex[String(candidate)] == nil {
+                        firstEightIndex[String(candidate)] = (chatsDir, name)
+                    }
+                }
+            }
+        }
+    }
+
+    static func allSessions(forProject key: String, limit: Int = 100, projectPath: String? = nil) -> [SoulSession] {
         let dir = "\(registryPath)/sessions/\(key)"
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
 
-        // Fast path: sort filenames by file mtime first, parse only the top N.
-        // For projects with hundreds of finalized sessions this turns an O(n)
-        // parse+sort into ~5 parses regardless of total session count.
-        let candidates = entries
-            .filter { $0.hasSuffix(".json") }
-            .compactMap { name -> (name: String, id: String, mtime: Date)? in
-                // Finalize files come in two shapes:
-                //   <uuid>.json
-                //   <timestamp>_<uuid>.json    (kernel-prefixed, the common case)
-                // Extract whichever UUID-looking trailing component we can find.
-                let stem = name.replacingOccurrences(of: ".json", with: "")
+        // Pass 1: collect every distinct UUID and its on-disk shape. A UUID
+        // can appear as a finalize JSON, a live dir, or both (finalized then
+        // resumed without re-finalizing).
+        struct Shape {
+            var finalizeName: String?    // filename under sessions/<key>/ (may be timestamp-prefixed)
+            var finalizePath: String?
+            var hooksPath: String?       // sessions/<key>/<uuid>/hooks.jsonl
+            var jsonMtime: Date?
+            var hooksMtime: Date?
+        }
+        var shapes: [String: Shape] = [:]
+        for name in entries {
+            if name.hasSuffix(".json") {
+                let stem = String(name.dropLast(5))
                 let id: String? = {
                     if UUID(uuidString: stem) != nil { return stem }
                     if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
@@ -190,152 +404,358 @@ enum SoulRegistry {
                     }
                     return nil
                 }()
-                guard let id else { return nil }
+                guard let id else { continue }
                 let path = "\(dir)/\(name)"
-                return (name, id, mtime(path))
+                let m = mtime(path)
+                var s = shapes[id] ?? Shape()
+                // Prefer the most recent finalize JSON when two siblings exist
+                // (rare, but the kernel occasionally writes both shapes).
+                if s.jsonMtime.map({ m > $0 }) ?? true {
+                    s.finalizeName = name
+                    s.finalizePath = path
+                    s.jsonMtime = m
+                }
+                shapes[id] = s
+            } else if UUID(uuidString: name) != nil {
+                let hooks = "\(dir)/\(name)/hooks.jsonl"
+                guard fm.fileExists(atPath: hooks) else { continue }
+                let m = mtime(hooks)
+                var s = shapes[name] ?? Shape()
+                s.hooksPath = hooks
+                s.hooksMtime = m
+                shapes[name] = s
             }
-            .sorted { $0.mtime > $1.mtime }
-            .prefix(limit * 2)   // tiny overshoot so dedupe doesn't underfill
+        }
+        if shapes.isEmpty { return [] }
 
-        let parsed: [SoulSession] = candidates.compactMap { entry in
-            let path = "\(dir)/\(entry.name)"
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            let id = obj["session_id"] as? String ?? entry.id
-            let ts = parseTimestamp(obj["timestamp"] as? String) ?? entry.mtime
-            return SoulSession(
-                id: id,
-                project: key,
-                timestamp: ts,
-                intent: stringOrNil(obj["intent"]),
-                summary: stringOrNil(obj["summary"]),
-                source: obj["source"] as? String,
-                status: obj["status"] as? String,
-                worktreePath: stringOrNil(obj["worktree_path"])
-            )
+        // Pass 2: rank candidates by most-recent activity (max of json/hooks
+        // mtimes). Only the top `limit * 2` get full parse + loadability;
+        // this keeps the scan O(constant) for projects with hundreds of dirs.
+        let ranked = shapes.map { (id, shape) -> (id: String, shape: Shape, recency: Date) in
+            let m = max(shape.jsonMtime ?? .distantPast, shape.hooksMtime ?? .distantPast)
+            return (id, shape, m)
+        }
+        .sorted { $0.recency > $1.recency }
+        .prefix(limit * 2)
+
+        // Pass 3: enrich + classify. Single-pass hooks read per session +
+        // shared gemini dir cache so re-listing the chats dir 91 times
+        // (one per candidate) collapses to once per sibling. This is the
+        // dominant performance win for projects with many sessions —
+        // dropped expand time from ~5s to under 200ms on a 91-row project.
+        let dirCache = GeminiDirCache()
+        var out: [SoulSession] = []
+        for cand in ranked {
+            let id = cand.id
+            let shape = cand.shape
+            var s = SoulSession(id: id, project: key, timestamp: cand.recency)
+
+            // Finalize side: source of truth for intent/summary/source/status
+            // when present.
+            if let path = shape.finalizePath,
+               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let ts = parseTimestamp(obj["timestamp"] as? String) {
+                    s.timestamp = max(s.timestamp, ts)
+                }
+                s.intent = stringOrNil(obj["intent"])
+                s.summary = stringOrNil(obj["summary"])
+                s.source = obj["source"] as? String
+                s.status = obj["status"] as? String
+                s.worktreePath = stringOrNil(obj["worktree_path"])
+            }
+
+            // Single hooks.jsonl read for ALL live-side metadata (event
+            // count, worktree path, first prompt, title hook, origin signals).
+            // Title precedence: Title hook → finalize intent → firstUserPrompt.
+            var sessionStartPpid: Int? = nil
+            if let hooks = shape.hooksPath {
+                let meta = readHooksMetadata(path: hooks)
+                s.eventCount = meta.eventCount
+                s.promptCount = meta.promptCount
+                sessionStartPpid = meta.sessionStartPpid
+                if s.worktreePath == nil { s.worktreePath = meta.worktreePath }
+                if let t = meta.titleHook, !t.isEmpty {
+                    s.intent = t
+                } else if s.intent == nil {
+                    s.intent = meta.firstUserPrompt
+                }
+                if s.summary == nil { s.summary = s.intent }
+                // Origin derived from the same single-read signals.
+                if meta.hasNativeOrUserPrompt {
+                    s.origin = .desktop
+                } else if meta.hasTerminalSignal {
+                    s.origin = .terminal
+                } else {
+                    s.origin = .unknown
+                }
+                s.startedAt = meta.firstEventTimestamp
+            }
+
+            s.isLive = (shape.finalizePath == nil)
+            // Staleness: hooks advanced past the finalize JSON. 5s grace
+            // covers the finalize's own paired-write tick.
+            if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
+                s.isDirty = true
+            }
+            s.replayable = (shape.hooksPath != nil)
+            // Provider mapping: prefer the recorded `source` from a finalize;
+            // fall back to whichever agent owns the chat file on disk. Uses
+            // the per-scan directory cache so we don't `contentsOfDirectory`
+            // the same gemini chats dir 91 times. Codex fallback: a sibling
+            // `transcript.jsonl` in the session's registry dir is the
+            // codex marker (codex writes its own per-session transcript
+            // there). Without this, codex rows without a NativeSessionID
+            // hook show the dotted-circle "unknown" glyph even though the
+            // dropdown identifies them correctly via `Provider.icon`.
+            if s.source == nil {
+                if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache) {
+                    s.liveProvider = live
+                } else {
+                    let transcriptPath = "\(dir)/\(id)/transcript.jsonl"
+                    if FileManager.default.fileExists(atPath: transcriptPath) {
+                        s.liveProvider = Provider.codex.rawValue
+                    }
+                }
+            }
+
+            // Substantive: finalize record (always counts) OR a real
+            // conversation in the live ledger (≥ 4 hook events or a recorded
+            // UserPrompt). This is the gate that filters crash residue —
+            // empty <uuid>/hooks.jsonl dirs the kernel leaves behind when a
+            // spawn is cancelled before the first turn.
+            let hasFinalize = (shape.finalizePath != nil)
+            let hasPrompt = (s.intent?.isEmpty == false)
+            s.substantive = hasFinalize || s.eventCount >= 4 || hasPrompt
+
+            // SOUL-SOUL_DESKTOP-061: headless app-server daemon spawns.
+            // `com.soul.app-server` (a LaunchAgent) makes single-shot LLM
+            // calls for housekeeping — pattern distillation, /pulse,
+            // scheduled audits. They fire AfterModel/AfterAgent hooks
+            // (passing the eventCount >= 4 substantive gate) but never
+            // capture a UserPrompt because no human typed anything. Detect
+            // by the launchd signature: SESSION_START.ppid == 1 plus zero
+            // UserPrompts. Flip substantive=false so the sidebar hides
+            // them as the noise they are. Finalize records are exempted —
+            // if a daemon-spawned session was later finalized by hand,
+            // keep it visible.
+            if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
+                s.substantive = false
+            }
+
+            // Loadable: does a provider transcript exist that
+            // `hydrateFromDisk` can actually render? Uses the same cache as
+            // agentMatchCached so the gemini sibling walk happens at most
+            // once per scan.
+            if let path = projectPath {
+                s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache)
+            } else {
+                s.loadable = false
+            }
+
+            // Transcript-turn fallback: only run when the kernel ledger had
+            // no UserPrompt events. Reads the provider's own transcript file
+            // (Claude jsonl / Gemini chats json / Codex sibling jsonl) and
+            // counts user-role entries. Cheap because most rows skip it —
+            // anything Soul-Desktop spawned has promptCount > 0 already.
+            if s.promptCount == 0 {
+                s.transcriptTurns = countTranscriptTurns(
+                    sessionId: id,
+                    projectKey: key,
+                    projectPath: projectPath,
+                    sessionDir: "\(dir)/\(id)",
+                    cache: dirCache
+                )
+            }
+
+            out.append(s)
         }
 
-        var deduped: [String: SoulSession] = [:]
-        for s in parsed {
-            if let existing = deduped[s.id], existing.timestamp >= s.timestamp { continue }
-            deduped[s.id] = s
-        }
-        let sorted = deduped.values
+        return out
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(limit)
             .map { $0 }
-
-        // Enrich each row with event count (cheap line count on small files).
-        // Prompt count is deliberately skipped here — it requires reading the
-        // entire Claude transcript (often megabytes) and was the dominant cost
-        // when switching projects. The sidebar chip falls back to eventCount.
-        _ = projectPath   // kept for API compat; reintroduce if we async-load promptCount later
-        return sorted.map { session in
-            var s = session
-            s.eventCount = hooksLineCount(projectKey: key, sessionId: s.id)
-            // Staleness: hooks ledger advanced past the last finalize. The
-            // displayed summary in the row is no longer authoritative — user
-            // resumed and added turns without re-running /finalize.
-            let hooksPath = "\(registryPath)/sessions/\(key)/\(s.id)/hooks.jsonl"
-            let jsonPath = "\(registryPath)/sessions/\(key)/\(s.id).json"
-            if FileManager.default.fileExists(atPath: hooksPath) {
-                let h = mtime(hooksPath)
-                let j = mtime(jsonPath)
-                // 5s grace: finalize writes both files in succession; tiny
-                // mtime jitter shouldn't flag the row.
-                if h.timeIntervalSince(j) > 5 { s.isDirty = true }
-            }
-            return s
-        }
     }
 
-    /// Live, un-finalized sessions for a project. Detection rule (matches the
-    /// kernel layout): a directory `<uuid>/` containing `hooks.jsonl` with no
-    /// sibling `<uuid>.json` file. Returned newest-first by hooks.jsonl mtime.
-    ///
-    /// Filters to keep the row count sane:
-    ///   - Drop dirs where hooks.jsonl has fewer than `minEvents` lines (those
-    ///     are usually crashes / spawned-then-cancelled spawns the kernel
-    ///     leaves behind, not real conversations).
-    ///   - Drop anything older than `maxAge` (default: 24h) — anything that
-    ///     old should have been finalized; treating it as "live" lies.
-    ///   - Optionally cap the return at `limit` (default 5) so a chatty
-    ///     project doesn't flood the sidebar.
-    static func liveSessions(
-        forProject key: String,
-        minEvents: Int = 4,
-        maxAge: TimeInterval = 24 * 60 * 60,
-        limit: Int = 5,
-        projectPath: String? = nil,
-        currentProvider: String? = nil
-    ) -> [SoulSession] {
-        let dir = "\(registryPath)/sessions/\(key)"
+    /// Cached variant of `agentMatch`: walks every `~/.gemini/tmp/<basename>(-N)`
+    /// sibling using the shared `GeminiDirCache`. Equivalent semantics — same
+    /// "biggest content-bearing file wins" rule — just without re-listing.
+    private static func agentMatchCached(sessionId: String, projectPath: String?, cache: GeminiDirCache) -> String? {
+        let first8 = String(sessionId.prefix(8))
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
 
-        let jsonNames = Set(entries.filter { $0.hasSuffix(".json") }
-                                    .map { $0.replacingOccurrences(of: ".json", with: "") })
-        let now = Date()
-
-        // Phase 1: cheap pre-sort by hooks.jsonl mtime, no file reads yet.
-        let candidates: [(id: String, mtime: Date, path: String)] = entries
-            .compactMap { entry in
-                guard UUID(uuidString: entry) != nil else { return nil }
-                if jsonNames.contains(entry) { return nil }
-                let hooks = "\(dir)/\(entry)/hooks.jsonl"
-                guard fm.fileExists(atPath: hooks) else { return nil }
-                let ts = mtime(hooks)
-                if now.timeIntervalSince(ts) > maxAge { return nil }
-                return (entry, ts, hooks)
+        if let projectPath {
+            // O(1) gemini lookup via the per-scan first-8 index. The first
+            // call to `cache.entries(at:)` for each sibling dir populates
+            // the index automatically; subsequent sessions skip the scan.
+            // Warm the index by listing all sibling chats dirs once.
+            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
+            let base = (trimmed as NSString).lastPathComponent
+            let geminiBase = "\(homePath)/.gemini/tmp"
+            if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
+                for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
+                    _ = cache.entries(at: "\(geminiBase)/\(proj)/chats", fm: fm)
+                }
             }
-            .sorted { $0.mtime > $1.mtime }
+            if let hit = cache.firstEightIndex[first8] {
+                let path = "\(hit.chatsDir)/\(hit.fileName)"
+                let resumable: Bool = {
+                    if let cached = cache.resumableCache[path] { return cached }
+                    let r = isResumableGeminiChatFile(path)
+                    cache.resumableCache[path] = r
+                    return r
+                }()
+                if resumable { return "geminiCLI" }
+            }
 
-        // Phase 2: only read & parse the top candidates. We over-fetch a bit
-        // so the filter doesn't underfill the limit. Two qualifying shapes:
-        //   - kernel-rich ledgers (≥ `minEvents` lines) — real terminal/kernel
-        //     sessions that wrote SESSION_START + a few tool/agent rows
-        //   - Soul-Desktop-thin ledgers — sessions Soul-Desktop spawned where
-        //     the kernel hooks bridge didn't fire (no SOUL_SESSION_ID env),
-        //     so the ledger only has a UserPrompt + maybe a Title +
-        //     NativeSessionID. The presence of a UserPrompt is the actual
-        //     signal that this is a real conversation, not a crash residue.
-        var out: [SoulSession] = []
-        for c in candidates.prefix(limit * 2) {
-            let events = hooksLineCount(projectKey: key, sessionId: c.id)
-            let firstPrompt = firstUserPromptFromHooks(path: c.path)
-            if events < minEvents && firstPrompt == nil { continue }
-            let origin = detectOrigin(path: c.path, projectPath: projectPath, sessionId: c.id)
-            // Hide un-hydratable rows. Without an agent-side chat file the
-            // row can't `session/load`, so surfacing it as "live" misleads —
-            // clicking it dead-ends. We still keep these on disk for the
-            // legacy correlate-and-remap path (SOUL-SOUL_DESKTOP-020).
-            if origin != .desktop { continue }
-            // No further provider/cwd filtering: hiding rows was producing
-            // "where did my session go?" without a clear upside. The
-            // `agentHasSession` check above already gates to rows whose
-            // chat file lives in this project's cwd-basename gemini dir,
-            // and `loadSession` will auto-switch the harness on click.
-            // If load eventually fails for a same-basename cwd collision,
-            // the user sees the error and can act — better than silent drop.
-            out.append(SoulSession(
-                id: c.id,
-                project: key,
-                timestamp: c.mtime,
-                intent: firstPrompt,
-                summary: firstPrompt,
-                source: nil,
-                status: "live",
-                eventCount: events,
-                promptCount: 0,
-                isLive: true,
-                origin: origin,
-                worktreePath: worktreePathFromHooks(path: c.path),
-                liveProvider: agentMatch(sessionId: c.id, projectPath: projectPath)
-            ))
-            if out.count >= limit { break }
+            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
+            let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(sessionId).jsonl"
+            if fm.fileExists(atPath: claudePath) {
+                return "claude"
+            }
+
+            // Pi: ~/.pi/agent/sessions/<encoded>/<timestamp>_<sid>.jsonl.
+            // Encoding shape from pi-acp's session-map.json is `--<a-b-c>--`
+            // (leading + trailing double-dash around the dash-joined parts).
+            // List the dir once per project (cached in piSessionsByDir) and
+            // extract the trailing UUID from every filename so subsequent
+            // rows hit an O(1) set lookup.
+            let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+            let piEncoded = "--" + parts.joined(separator: "-") + "--"
+            let piDir = "\(homePath)/.pi/agent/sessions/\(piEncoded)"
+            let piSet: Set<String> = {
+                if let hit = cache.piSessionsByDir[piDir] { return hit }
+                var ids = Set<String>()
+                if let entries = try? fm.contentsOfDirectory(atPath: piDir) {
+                    for name in entries where name.hasSuffix(".jsonl") {
+                        // Filename: <iso-ts>_<sid>.jsonl  →  parse last segment.
+                        let stem = (name as NSString).deletingPathExtension
+                        if let underscore = stem.lastIndex(of: "_") {
+                            let sid = String(stem[stem.index(after: underscore)...])
+                            if !sid.isEmpty { ids.insert(sid) }
+                        }
+                    }
+                }
+                cache.piSessionsByDir[piDir] = ids
+                return ids
+            }()
+            if piSet.contains(sessionId) { return "pi" }
         }
-        return out
+        return nil
+    }
+
+    /// Cached variant of `SessionLoadability.canLoadFromDisk` for the
+    /// `allSessions` hot loop. Same provider-aware NSID lookup, but the
+    /// gemini chats dir listing is shared with `agentMatchCached`.
+    private static func canLoadCached(sessionId sid: String, projectKey: String, projectPath: String, cache: GeminiDirCache) -> Bool {
+        let fm = FileManager.default
+        let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
+        let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
+
+        // Claude path probe with provider-filtered NSID lookup.
+        let claudeId = findNativeSessionID(projectKey: projectKey, sessionId: sid, provider: "claude") ?? sid
+        if fm.fileExists(atPath: "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl") {
+            return true
+        }
+
+        // Gemini probe via the cached first-8 index — O(1) per session.
+        // `agentMatchCached` already warmed the index for every sibling
+        // chats dir at this point in the scan.
+        let geminiId = findNativeSessionID(projectKey: projectKey, sessionId: sid, provider: "geminiCLI") ?? sid
+        let shortId = String(geminiId.prefix(8))
+        if let hit = cache.firstEightIndex[shortId] {
+            return Self.geminiChatHasContent(
+                at: "\(hit.chatsDir)/\(hit.fileName)",
+                expectedSessionId: geminiId
+            )
+        }
+        return false
+    }
+
+    /// Count user-role entries in whichever provider transcript backs this
+    /// session. Returns 0 when no transcript is reachable. Used to surface
+    /// "~N turns" in the sidebar for rows whose kernel ledger never wrote
+    /// `UserPrompt` events (terminal-origin sessions, ledger-less Gemini).
+    /// Reads the file as `Data` (memory-mapped when possible) and counts
+    /// needle byte ranges; avoids allocating a full Swift `String` for
+    /// multi-MB Claude transcripts.
+    private static func countTranscriptTurns(
+        sessionId sid: String,
+        projectKey key: String,
+        projectPath: String?,
+        sessionDir: String,
+        cache: GeminiDirCache
+    ) -> Int {
+        let fm = FileManager.default
+
+        // Claude: count `"type":"user"` occurrences in the transcript jsonl.
+        if let projectPath {
+            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
+            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
+            let claudeId = findNativeSessionID(projectKey: key, sessionId: sid, provider: "claude") ?? sid
+            let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
+            if fm.fileExists(atPath: claudePath) {
+                let n = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
+                if n > 0 { return n }
+            }
+
+            // Gemini: chat-file `"role":"user"` count. Path comes from the
+            // first-8 reverse index the loadability check already populated.
+            let geminiId = findNativeSessionID(projectKey: key, sessionId: sid, provider: "geminiCLI") ?? sid
+            let shortId = String(geminiId.prefix(8))
+            if let hit = cache.firstEightIndex[shortId] {
+                let path = "\(hit.chatsDir)/\(hit.fileName)"
+                let n = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: path)
+                if n > 0 { return n }
+            }
+        }
+
+        // Codex: sibling transcript jsonl inside the kernel ledger dir.
+        let codexPath = "\(sessionDir)/transcript.jsonl"
+        if fm.fileExists(atPath: codexPath) {
+            let byType = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: codexPath)
+            if byType > 0 { return byType }
+            let byRole = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: codexPath)
+            if byRole > 0 { return byRole }
+        }
+
+        return 0
+    }
+
+    /// Count non-overlapping occurrences of `needle` in the file at `path`.
+    /// Memory-maps when the OS allows, falls back to a regular read, and
+    /// uses `Data.range(of:in:)` which is significantly faster than naive
+    /// byte loops for the small (~13–14 byte) needles we pass here.
+    private static func countNeedle(_ needle: Data, inFileAt path: String) -> Int {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe, .uncached]) else {
+            return 0
+        }
+        var n = 0
+        var range = 0..<data.count
+        while let r = data.range(of: needle, in: range) {
+            n += 1
+            range = r.upperBound..<data.count
+        }
+        return n
+    }
+
+    /// Lightweight first-line sessionId + content check shared with
+    /// `canLoadCached`. Mirrors `SessionLoadability.hasContent` but inlined
+    /// to keep all probes pointing at the same cache.
+    private static func geminiChatHasContent(at path: String, expectedSessionId sid: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let head = handle.readData(ofLength: 1024)
+        guard let s = String(data: head, encoding: .utf8) else { return false }
+        let lines = s.split(separator: "\n", omittingEmptySubsequences: true)
+        guard lines.count >= 2 else { return false }
+        guard let data = String(lines[0]).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let firstSid = obj["sessionId"] as? String,
+              firstSid == sid
+        else { return false }
+        return true
     }
 
     /// Classify a live session by whether an agent-side persistence file
@@ -550,40 +970,108 @@ enum SoulRegistry {
     /// UTC) and `session_id` are injected if the caller didn't set them, so
     /// the row flows through the same finalize / replay pipelines as
     /// kernel-emitted rows.
-    static func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
-        let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: dir) {
-            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        }
-        let path = "\(dir)/hooks.jsonl"
+    /// Serial queue that owns every kernel-ledger write. Single queue (not
+    /// concurrent) so appends preserve the order callers submit them in —
+    /// important because Replay merges by timestamp + arrival order and a
+    /// scrambled UserPrompt/AfterAgent pair would render out of sequence.
+    /// SOUL-SOUL_DESKTOP-063: moved off the main actor to unblock the UI
+    /// during heavy turns (every UserPrompt + AfterAgent used to do a
+    /// synchronous open()/write()/close() on whatever actor called it).
+    private static let hookWriteQueue = DispatchQueue(
+        label: "soul.registry.hook-write",
+        qos: .utility
+    )
 
+    /// Cached timestamp formatter — DateFormatter allocation is non-trivial
+    /// and we hit appendHook on every prompt + reply + tool call.
+    private static let hookTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    static func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
+        // Snapshot the wall-clock at call time. The dispatch below may run a
+        // few ms later; we want the timestamp to reflect when the caller
+        // logged the event, not when the file write actually landed.
+        let capturedAt = Date()
         var fullEvent = event
         if fullEvent["timestamp"] == nil {
-            // Emit with an explicit 'Z' suffix so downstream readers — notably
-            // HooksReader.parseTimestamp, which treats no-TZ strings as local —
-            // interpret the timestamp as UTC and don't shift desktop hooks by
-            // the local offset during replay merge-sort.
-            let f = DateFormatter()
-            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.timeZone = TimeZone(identifier: "UTC")
-            fullEvent["timestamp"] = f.string(from: Date())
+            fullEvent["timestamp"] = hookTimestampFormatter.string(from: capturedAt)
         }
         if fullEvent["session_id"] == nil {
             fullEvent["session_id"] = sessionId
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: fullEvent),
-              let line = String(data: data, encoding: .utf8),
-              let payload = (line + "\n").data(using: .utf8)
-        else { return }
+        hookWriteQueue.async {
+            let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: dir) {
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            }
+            let path = "\(dir)/hooks.jsonl"
 
-        let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-        guard fd >= 0 else { return }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        try? handle.write(contentsOf: payload)
-        try? handle.close()
+            guard let data = try? JSONSerialization.data(withJSONObject: fullEvent),
+                  let line = String(data: data, encoding: .utf8),
+                  let payload = (line + "\n").data(using: .utf8)
+            else { return }
+
+            let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            guard fd >= 0 else { return }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try? handle.write(contentsOf: payload)
+            try? handle.close()
+        }
+    }
+
+    /// SOUL-SOUL_DESKTOP-065: stream-time capture of agent reply chunks.
+    /// Every `agent_message_chunk` notification appends one line here so
+    /// that if the provider child dies before its checkpoint flush AND
+    /// before Soul-Desktop's end-of-turn `AfterAgent` write, the reply
+    /// text still survives on disk and Replay can stitch it.
+    ///
+    /// Schema: `{ "ts": ISO-UTC, "bubble_id": <UUID>, "chunk": "<text>" }`.
+    /// One line per chunk; the reader coalesces by `bubble_id` order to
+    /// reconstruct each agent reply. Bounded growth: `retireChunks` empties
+    /// the file at end-of-turn once `AfterAgent` has landed authoritatively
+    /// in hooks.jsonl.
+    static func appendAgentChunk(projectKey: String, sessionId: String, bubbleId: UUID, chunk: String) {
+        let capturedAt = Date()
+        let entry: [String: Any] = [
+            "ts": hookTimestampFormatter.string(from: capturedAt),
+            "bubble_id": bubbleId.uuidString,
+            "chunk": chunk,
+        ]
+        hookWriteQueue.async {
+            let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: dir) {
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            }
+            let path = "\(dir)/agent_chunks.jsonl"
+            guard let data = try? JSONSerialization.data(withJSONObject: entry),
+                  let line = String(data: data, encoding: .utf8),
+                  let payload = (line + "\n").data(using: .utf8)
+            else { return }
+            let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            guard fd >= 0 else { return }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try? handle.write(contentsOf: payload)
+            try? handle.close()
+        }
+    }
+
+    /// Drop the per-session chunk file once the turn's `AfterAgent` row has
+    /// been authoritatively written to hooks.jsonl. Called at end of every
+    /// successful turn so the chunk file doesn't grow unbounded across a
+    /// long session. Idempotent.
+    static func retireAgentChunks(projectKey: String, sessionId: String) {
+        hookWriteQueue.async {
+            let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/agent_chunks.jsonl"
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     /// Read the most-recent NativeSessionID event for a session and return
@@ -608,7 +1096,7 @@ enum SoulRegistry {
     /// Outcome of a backfill attempt. Callers that only need a UUID for retry
     /// can read `.uuid`; callers that surface state to the user (sidebar
     /// Repair menu) switch on the cases.
-    enum BackfillResult {
+    enum BackfillResult: Equatable {
         case hit(String)                       // newly written mapping
         case alreadyMapped(String)             // existing NativeSessionID on file
         case miss                              // no needle or no matching candidate
@@ -744,7 +1232,7 @@ enum SoulRegistry {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             let event = (obj["event"] as? String) ?? ""
-            if event == "UserPrompt" || event == "UserMessage" || event == "session/prompt" {
+            if event == "UserPrompt" || event == "UserMessage" || event == "session/prompt" || event == "BeforeAgent" {
                 let content = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
                 if let text = content, !text.isEmpty { return text }
             }
@@ -910,24 +1398,131 @@ enum SoulRegistry {
     }
 
     /// Search for a `NativeSessionID` event in the session's hooks.jsonl.
-    static func findNativeSessionID(projectKey: String, sessionId: String) -> String? {
+    /// Read the recorded provider for a session from its hooks ledger. Any
+    /// kernel event line that carries a `provider` field counts; we take the
+    /// first non-empty one we see. Returns the raw provider string ("claude",
+    /// "geminiCLI", "pi", "codex") so the caller can map it to a Provider
+    /// enum case. nil if the session has no ledger or no provider field was
+    /// written.
+    ///
+    /// SOUL-SOUL_DESKTOP-043: AppShell.loadSession uses this to override the
+    /// active harness when the user opens an archived row from a different
+    /// provider than what's currently active. Without it, a Gemini session
+    /// clicked while Claude is the active harness spawns the wrong agent and
+    /// fails session/load against a UUID it never minted.
+    static func findProvider(projectKey: String, sessionId: String) -> String? {
+        let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
+
+        // Primary signal: NativeSessionID hook (any provider that
+        // Soul-Desktop spawned writes one in `ensureSession`).
+        let hooksPath = "\(dir)/hooks.jsonl"
+        if FileManager.default.fileExists(atPath: hooksPath),
+           let blob = try? String(contentsOfFile: hooksPath, encoding: .utf8) {
+            for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let data = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let prov = obj["provider"] as? String,
+                      !prov.isEmpty
+                else { continue }
+                return prov
+            }
+        }
+
+        // Codex fallback: codex sessions are the only ones that get a
+        // sibling `transcript.jsonl` file in the registry directory
+        // (codex writes its own per-session transcript there). Before the
+        // NativeSessionID hook landed for codex spawns, legacy codex
+        // sessions had no marker — this fallback lets those rows still
+        // route correctly. New codex sessions will hit the NSID branch
+        // above first.
+        if FileManager.default.fileExists(atPath: "\(dir)/transcript.jsonl") {
+            return Provider.codex.rawValue
+        }
+        return nil
+    }
+
+    /// Resolve the agent-side UUID Soul-Desktop recorded for this session.
+    ///
+    /// When `provider` is supplied, only return NSIDs whose recorded provider
+    /// matches. This matters when the same kernel UUID has been touched by
+    /// more than one provider over its lifetime (e.g. Claude finalize + later
+    /// Gemini resume): the most-recent NSID hook would otherwise misroute a
+    /// Claude resume into Gemini's UUID namespace, and `session/load` falls
+    /// through to a fresh-session spawn.
+    ///
+    /// `provider` is the canonical Soul-Desktop key — `"claude"` / `"geminiCLI"`
+    /// / `"pi"` / `"codex"` — matching `Provider.rawValue` and the value the
+    /// kernel writes into the hook record. Pass `nil` to keep the legacy
+    /// "any provider, most recent wins" behavior (only callers that don't
+    /// know the provider, e.g. read-only loadability checks pre-route, should
+    /// do this).
+    static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
 
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        // Scan backwards: if there are multiple, the most recent one is the
-        // current native session we should resume.
+        // Scan backwards: most recent matching NSID wins. Provider filter
+        // applied per-record so a stale opposite-provider mapping at the
+        // bottom of the ledger doesn't shadow the right one above it.
         for line in lines.reversed() {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   (obj["event"] as? String) == "NativeSessionID",
                   let nativeId = obj["nativeId"] as? String
             else { continue }
+            if let want = provider {
+                guard (obj["provider"] as? String) == want else { continue }
+            }
             return nativeId
         }
         return nil
+    }
+
+    /// Structured Quad pulled from the most-recent `<ts>_<sid>.json` finalize
+    /// record for a session. Returns nil if no finalize file exists. Used by
+    /// `ThreadController.hydrateFromDisk` to render a finalize summary card
+    /// in the canvas so the user can see what a session accomplished without
+    /// reading the JSON directly.
+    struct FinalizeRecord: Hashable {
+        var intent: String?
+        var summary: String?
+        var rationale: String?
+        var fixed: String?
+        var nextStep: String?
+        var timestamp: Date?
+    }
+
+    static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
+        let dir = "\(registryPath)/sessions/\(projectKey)"
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        // Filename shapes the kernel writes:
+        //   <uuid>.json
+        //   <ts>_<uuid>.json   (the common case; multiple per session as the
+        //                       user re-finalizes)
+        let matches = entries.filter { name in
+            guard name.hasSuffix(".json") else { return false }
+            let stem = String(name.dropLast(5))
+            if stem == sessionId { return true }
+            if let tail = stem.split(separator: "_").last, String(tail) == sessionId { return true }
+            return false
+        }
+        // Most recent finalize wins — `<ts>_<uuid>` filenames sort
+        // lexicographically by timestamp prefix.
+        guard let latest = matches.sorted().last else { return nil }
+        let path = "\(dir)/\(latest)"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return FinalizeRecord(
+            intent: stringOrNil(obj["intent"]),
+            summary: stringOrNil(obj["summary"]),
+            rationale: stringOrNil(obj["rationale"]),
+            fixed: stringOrNil(obj["fixed"]),
+            nextStep: stringOrNil(obj["next_step"]) ?? stringOrNil(obj["next"]),
+            timestamp: parseTimestamp(obj["timestamp"] as? String)
+        )
     }
 
     /// Search for a `Title` event in the session's hooks.jsonl.

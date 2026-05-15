@@ -42,14 +42,14 @@ enum SoulFont {
 }
 
 enum SoulColor {
-    static let bg            = Color(hex: 0xEFF1F5)
-    static let bgElevated    = Color(hex: 0xFFFFFF)
-    static let sidebar       = Color(hex: 0xE6E9EF).opacity(0.6)
-    static let surface       = Color(hex: 0xE6E9EF)
-    static let border        = Color(hex: 0xCCD0DA)
-    static let fg            = Color(hex: 0x1E1E2E)
-    static let fgMuted       = Color(hex: 0x5C5F77)
-    static let fgSubtle      = Color(hex: 0x8C8FA1)
+    static let bg            = dynamic(light: 0xF1EEE7, dark: 0x181818)
+    static let bgElevated    = dynamic(light: 0xFBF9F5, dark: 0x222222)
+    static let sidebar       = dynamic(light: 0xE8E4DB, dark: 0x1F1F1F, alpha: 0.6)
+    static let surface       = dynamic(light: 0xE8E4DB, dark: 0x2A2A2A)
+    static let border        = dynamic(light: 0xD5CFC3, dark: 0x333333)
+    static let fg            = dynamic(light: 0x1E1E2E, dark: 0xE6E6E6)
+    static let fgMuted       = dynamic(light: 0x5C5F77, dark: 0xA6A6A6)
+    static let fgSubtle      = dynamic(light: 0x8C8FA1, dark: 0x6E6E6E)
 
     /// Default Catppuccin purple — used when the user hasn't picked one.
     static let defaultAccentHex: UInt32 = 0x8839EF
@@ -60,23 +60,26 @@ enum SoulColor {
         return Color(hex: stored == 0 ? defaultAccentHex : stored)
     }
     static var accentMuted: Color { accent.opacity(0.12) }
+    /// Soft green tint used for "active project" selection in the sidebar.
+    static let success       = Color(hex: 0x40A02B)
+    static let successMuted  = Color(hex: 0x40A02B).opacity(0.18)
 
-    enum Dark {
-        static let bg          = Color(hex: 0x181818)
-        static let bgElevated  = Color(hex: 0x222222)
-        static let sidebar     = Color(hex: 0x1F1F1F).opacity(0.6)
-        static let surface     = Color(hex: 0x2A2A2A)
-        static let border      = Color(hex: 0x333333)
-        static let fg          = Color(hex: 0xFFFFFF)
-        static let fgMuted     = Color(hex: 0xA6A6A6)
-        static let fgSubtle    = Color(hex: 0x6E6E6E)
-        static let accent      = Color(hex: 0x339CFF)
-        static let accentMuted = Color(hex: 0x339CFF).opacity(0.18)
+    /// Returns a SwiftUI Color that resolves to `light` or `dark` based on
+    /// the system appearance. Driven by NSColor's dynamicProvider so it
+    /// flips live when the user toggles system appearance — no app restart.
+    private static func dynamic(light: UInt32, dark: UInt32, alpha: Double = 1.0) -> Color {
+        let lightNS = NSColor(hex: light, alpha: alpha)
+        let darkNS = NSColor(hex: dark, alpha: alpha)
+        let ns = NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastVibrantDark]) != nil
+            return isDark ? darkNS : lightNS
+        }
+        return Color(nsColor: ns)
     }
 }
 
 enum SoulMetric {
-    static let sidebarWidth: CGFloat = 240
+    static let sidebarWidth: CGFloat = 320
     static let radiusS: CGFloat = 6
     static let radiusM: CGFloat = 10
     static let radiusL: CGFloat = 14
@@ -100,10 +103,10 @@ enum SoulType {
     static let code          = SoulFont.code(14, weight: .regular)
 
     // Headings — semibold, descending.
-    static let h1            = SoulFont.ui(24, weight: .semibold)
-    static let h2            = SoulFont.ui(19, weight: .semibold)
-    static let h3            = SoulFont.ui(16, weight: .semibold)
-    static let h4            = SoulFont.ui(14, weight: .semibold)
+    static let h1            = SoulFont.ui(19, weight: .semibold)
+    static let h2            = SoulFont.ui(16, weight: .semibold)
+    static let h3            = SoulFont.ui(14, weight: .semibold)
+    static let h4            = SoulFont.ui(13, weight: .semibold)
 
     // Meta — timestamps, footers, badges, sub-headers.
     static let caption       = SoulFont.ui(12, weight: .regular)
@@ -113,6 +116,15 @@ enum SoulType {
     static let composerSize: CGFloat = 14
     static let composer      = SoulFont.ui(composerSize, weight: .regular)
     static var composerNS: NSFont { SoulFont.nsFont(composerSize, weight: .regular) }
+}
+
+extension NSColor {
+    convenience init(hex: UInt32, alpha: Double = 1.0) {
+        let r = CGFloat((hex >> 16) & 0xFF) / 255.0
+        let g = CGFloat((hex >> 8) & 0xFF) / 255.0
+        let b = CGFloat(hex & 0xFF) / 255.0
+        self.init(srgbRed: r, green: g, blue: b, alpha: CGFloat(alpha))
+    }
 }
 
 extension Color {
@@ -129,6 +141,49 @@ extension Color {
         let g = UInt32(round(ns.greenComponent * 255)) & 0xFF
         let b = UInt32(round(ns.blueComponent * 255)) & 0xFF
         return (r << 16) | (g << 8) | b
+    }
+}
+
+/// Reaches up to the hosting NSWindow once the view is in a window. Used at
+/// app startup to flip the window to non-opaque + clear background so the
+/// `NSVisualEffectView` sidebar can actually show behind-window content
+/// (desktop wallpaper, other apps) instead of blending into an opaque pane.
+struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window else { return }
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Native macOS vibrancy backdrop. Wraps `NSVisualEffectView` so the sidebar
+/// can opt into the true `.sidebar` material — picks up window-behind colors
+/// (desktop wallpaper, other app chrome) the way Finder / Mail / Xcode do.
+/// SwiftUI's `.ultraThinMaterial` is a close approximation but doesn't blend
+/// behind-window content; use this anywhere the real sidebar look is needed.
+struct VisualEffectBlur: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        view.isEmphasized = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
     }
 }
 

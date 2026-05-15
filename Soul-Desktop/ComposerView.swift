@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Binding var prompt: String
@@ -30,6 +31,9 @@ struct ComposerView: View {
     /// Claude to avoid double-instruction confusion. Pi/gemini-cli need the
     /// expansion because their TUI command system isn't exposed over ACP.
     var provider: Provider = .geminiCLI
+    /// Called when the user changes harness from the inline picker. Routes
+    /// through AppShell which handles new-chat-on-switch semantics.
+    var onPickHarness: (Provider) -> Void = { _ in }
 
     @State private var showingCommandPalette = false
     @State private var activeCommand: SlashCommand? = nil
@@ -38,6 +42,12 @@ struct ComposerView: View {
     /// composer. Drives the dashed accent overlay so the user knows the
     /// drop will be accepted before they release.
     @State private var isImageDropTargeted = false
+    /// Files dropped onto the composer. Rendered as a row of chips above the
+    /// text field; converted to markdown links at submit time. Storing them
+    /// out-of-band keeps the textarea clean (no inline `[name](file://…)`
+    /// noise the user has to scroll past) and lets the user remove a single
+    /// attachment without surgical text editing.
+    @State private var droppedAttachments: [String] = []
     /// Last submitted prompt, persisted across launches. Up-arrow recalls it
     /// when the field is empty (shell-history convention; single-entry).
     @AppStorage("soul.composer.lastSent") private var lastSent: String = ""
@@ -72,10 +82,18 @@ struct ComposerView: View {
             display = trimmedArgs
             agent = trimmedArgs
         }
-        guard !display.isEmpty else { return }
-        onSend(display, agent)
-        lastSent = display
+        let attachmentSuffix: String = {
+            guard !droppedAttachments.isEmpty else { return "" }
+            let links = droppedAttachments.map { Self.markdownLink(forPath: $0) }
+            return (display.isEmpty ? "" : "\n\n") + links.joined(separator: " ")
+        }()
+        let finalDisplay = display + attachmentSuffix
+        let finalAgent = agent + attachmentSuffix
+        guard !finalDisplay.isEmpty else { return }
+        onSend(finalDisplay, finalAgent)
+        lastSent = finalDisplay
         prompt = ""
+        droppedAttachments = []
         activeCommand = nil
         showingCommandPalette = false
     }
@@ -107,55 +125,151 @@ struct ComposerView: View {
 
     /// Handle a drop of one or more file URLs onto the composer. Copies any
     /// image files into `<projectPath>/.soul/attachments/` (created on
-    /// demand) and appends each new path to the prompt so the user can hit
-    /// Return to send. Non-image URLs are silently dropped — they'd just
-    /// confuse the agent if shipped as paths it can't actually read.
-    private func handleImageDrop(_ urls: [URL]) -> Bool {
-        let imageURLs = urls.filter { Self.isImageURL($0) }
-        guard !imageURLs.isEmpty, let project = projectPath, !project.isEmpty else {
-            return false
-        }
-        let attachmentsDir = "\(project)/.soul/attachments"
-        try? FileManager.default.createDirectory(
-            atPath: attachmentsDir,
-            withIntermediateDirectories: true
-        )
-        // Filename collisions across drops are real — Cmd-Shift-4 always
-        // names screenshots the same way. Prefix with epoch ms to keep them
-        // ordered and unique without parsing existing filenames.
+    /// demand) and appends a markdown link `[name](file:///abs/path)` for
+    /// each dropped file. Images get copied into the per-project
+    /// `.soul/attachments` dir so they survive if the source moves; other
+    /// files are referenced in place. The MarkdownView in the user bubble
+    /// renders the inserted tokens as clickable links.
+    private func handleFileDrop(_ urls: [URL]) -> Bool {
+        guard !urls.isEmpty else { return false }
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        var copied: [String] = []
-        for (i, src) in imageURLs.enumerated() {
-            let name = src.lastPathComponent
-            let dst = "\(attachmentsDir)/\(stamp)-\(i)-\(name)"
-            do {
-                try FileManager.default.copyItem(atPath: src.path, toPath: dst)
-                copied.append(dst)
-            } catch {
-                // Swallow: a single bad file shouldn't block the rest. The
-                // user will notice the missing path in the prompt.
-                continue
+        var attachmentsDir: String? = nil
+        if let project = projectPath, !project.isEmpty,
+           urls.contains(where: { Self.isImageURL($0) }) {
+            let dir = "\(project)/.soul/attachments"
+            try? FileManager.default.createDirectory(
+                atPath: dir, withIntermediateDirectories: true
+            )
+            attachmentsDir = dir
+        }
+        var added = 0
+        for (i, src) in urls.enumerated() {
+            let finalPath: String
+            if Self.isImageURL(src), let dir = attachmentsDir {
+                let dst = "\(dir)/\(stamp)-\(i)-\(src.lastPathComponent)"
+                do {
+                    try FileManager.default.copyItem(atPath: src.path, toPath: dst)
+                    finalPath = dst
+                } catch {
+                    finalPath = src.path
+                }
+            } else {
+                finalPath = src.path
+            }
+            if !droppedAttachments.contains(finalPath) {
+                droppedAttachments.append(finalPath)
+                added += 1
             }
         }
-        guard !copied.isEmpty else { return false }
+        return added > 0
+    }
 
-        // Insert the absolute paths into the prompt. Newline-separated so
-        // they don't run into existing text; agent grounding is sharper when
-        // each path is on its own line.
-        let joined = copied.joined(separator: "\n")
-        if prompt.isEmpty {
-            prompt = joined
-        } else if prompt.hasSuffix("\n") {
-            prompt += joined
-        } else {
-            prompt += "\n" + joined
-        }
-        return true
+    /// `[file.ext](file:///abs/path)` — file URLs need percent-encoding for
+    /// spaces and other path characters or the markdown link will only
+    /// capture up to the first space.
+    private static func markdownLink(forPath path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        let url = URL(fileURLWithPath: path).absoluteString
+        return "[\(name)](\(url))"
     }
 
     private static func isImageURL(_ url: URL) -> Bool {
         let exts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif"]
         return exts.contains(url.pathExtension.lowercased())
+    }
+
+    /// Handle a mixed-payload drop. Each provider may carry a file URL
+    /// (Finder, Cmd-Shift-4 to disk) or raw image bytes (Messages, Mail,
+    /// browser drag-from-page, screenshot drag-from-Preview). File URLs go
+    /// through the existing path; raw image bytes are written into the
+    /// per-project attachments dir then appended as an attachment chip.
+    private func handleProviderDrop(_ providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        let group = DispatchGroup()
+        var fileURLs: [URL] = []
+        var dataDrops: [(Data, String?)] = []
+        for provider in providers {
+            if provider.canLoadObject(ofClass: URL.self) {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    if let u = url, u.isFileURL { fileURLs.append(u) }
+                    group.leave()
+                }
+                continue
+            }
+            // Probe image type identifiers in order of fidelity (PNG → JPEG
+            // → TIFF → GIF → generic). Whichever responds first wins; we
+            // stop after one to avoid loading the same bytes twice.
+            let imageTypes = ["public.png", "public.jpeg", "public.tiff", "com.compuserve.gif", "public.image"]
+            for type in imageTypes where provider.hasItemConformingToTypeIdentifier(type) {
+                group.enter()
+                provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                    if let data { dataDrops.append((data, Self.extHint(forType: type))) }
+                    group.leave()
+                }
+                break
+            }
+        }
+        // The drop callback is called on the main thread; we need to wait
+        // for the async provider loads before mutating state. Caller cares
+        // about the return Bool so we synchronously wait — bounded by the
+        // OS's drop timeout anyway.
+        _ = group.wait(timeout: .now() + 2.0)
+        if !fileURLs.isEmpty {
+            accepted = handleFileDrop(fileURLs) || accepted
+        }
+        for (data, hint) in dataDrops {
+            if let path = writeImageDataAsAttachment(data, hint: hint),
+               !droppedAttachments.contains(path) {
+                droppedAttachments.append(path)
+                accepted = true
+            }
+        }
+        return accepted
+    }
+
+    private static func extHint(forType uti: String) -> String? {
+        switch uti {
+        case "public.png":          return "png"
+        case "public.jpeg":         return "jpg"
+        case "public.tiff":         return "tiff"
+        case "com.compuserve.gif":  return "gif"
+        default:                    return nil
+        }
+    }
+
+    /// Persist raw image bytes (from a non-file drag — Messages, Mail, web
+    /// browsers all flatten an image to a Transferable image payload, not a
+    /// file URL) into the project's attachments dir and return the on-disk
+    /// path. Returns nil if the bytes couldn't be decoded or there's no
+    /// project to write into.
+    private func writeImageDataAsAttachment(_ data: Data, hint: String?) -> String? {
+        guard let project = projectPath, !project.isEmpty else { return nil }
+        let dir = "\(project)/.soul/attachments"
+        try? FileManager.default.createDirectory(
+            atPath: dir, withIntermediateDirectories: true
+        )
+        let ext: String = {
+            if let h = hint?.lowercased(), !h.isEmpty,
+               ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp"].contains(h) {
+                return h
+            }
+            // Sniff by magic header — cheaper than NSImage round-trip, and
+            // we keep the original encoding so the agent sees the original
+            // bytes rather than a re-encoded PNG.
+            if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
+            if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
+            if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "gif" }
+            return "png"
+        }()
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let dst = "\(dir)/\(stamp)-drag.\(ext)"
+        do {
+            try data.write(to: URL(fileURLWithPath: dst))
+            return dst
+        } catch {
+            return nil
+        }
     }
 
     var body: some View {
@@ -183,6 +297,14 @@ struct ComposerView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
+                if !droppedAttachments.isEmpty {
+                    AttachmentChipRow(
+                        paths: droppedAttachments,
+                        onRemove: { p in droppedAttachments.removeAll { $0 == p } }
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                }
                 HStack(alignment: .top, spacing: 8) {
                     if let cmd = activeCommand {
                         CommandChip(command: cmd, onClear: clearCommand)
@@ -252,6 +374,7 @@ struct ComposerView: View {
 
                 HStack(spacing: 10) {
                     ToolbarChip(icon: "plus", label: nil)
+                    HarnessPicker(selection: provider, onSelect: onPickHarness)
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
                     SoulIcon(name: "mic", color: SoulColor.fgMuted)
@@ -303,13 +426,11 @@ struct ComposerView: View {
                     .opacity(isImageDropTargeted ? 1 : 0)
                     .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
             )
-            .dropDestination(for: URL.self) { urls, _ in
-                handleImageDrop(urls)
-            } isTargeted: { hovered in
-                // Only highlight when at least one image URL is present so
-                // dragging a random file (.txt, .swift, etc.) over the
-                // composer doesn't flash a misleading accept-state.
-                isImageDropTargeted = hovered
+            .onDrop(
+                of: [.fileURL, .image, .png, .jpeg, .tiff, .gif],
+                isTargeted: $isImageDropTargeted
+            ) { providers in
+                handleProviderDrop(providers)
             }
 
             HStack(spacing: 14) {
@@ -524,15 +645,16 @@ private final class BackspaceInterceptingTextView: NSTextView {
     var placeholderString: String = "" { didSet { needsDisplay = true } }
 
     private let lineHeight: CGFloat = 20
-    private let maxLines: CGFloat = 6
+    private let minLines: CGFloat = 3
+    private let maxLines: CGFloat = 10
 
     override var intrinsicContentSize: NSSize {
         guard let lm = layoutManager, let tc = textContainer else {
-            return NSSize(width: NSView.noIntrinsicMetric, height: lineHeight)
+            return NSSize(width: NSView.noIntrinsicMetric, height: minLines * lineHeight)
         }
         lm.ensureLayout(for: tc)
         let used = lm.usedRect(for: tc).height
-        let height = min(maxLines * lineHeight, max(lineHeight, ceil(used) + 2))
+        let height = min(maxLines * lineHeight, max(minLines * lineHeight, ceil(used) + 2))
         return NSSize(width: NSView.noIntrinsicMetric, height: height)
     }
 
@@ -594,6 +716,71 @@ private final class BackspaceInterceptingTextView: NSTextView {
         let inset = textContainerInset
         let origin = NSPoint(x: inset.width, y: inset.height)
         (placeholderString as NSString).draw(at: origin, withAttributes: attrs)
+    }
+}
+
+private struct AttachmentChipRow: View {
+    let paths: [String]
+    let onRemove: (String) -> Void
+    @Environment(\.openFilePreview) private var openFilePreview
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(paths, id: \.self) { path in
+                    AttachmentChip(path: path,
+                                   onOpen: { openFilePreview(path) },
+                                   onRemove: { onRemove(path) })
+                }
+            }
+        }
+    }
+}
+
+private struct AttachmentChip: View {
+    let path: String
+    let onOpen: () -> Void
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    private var name: String { (path as NSString).lastPathComponent }
+    private var icon: String {
+        let ext = (path as NSString).pathExtension.lowercased()
+        let images: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif"]
+        if images.contains(ext) { return "photo" }
+        if ext == "pdf" { return "doc.richtext" }
+        return "doc"
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundStyle(SoulColor.accent)
+            Button(action: onOpen) {
+                Text(name)
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(SoulColor.fg)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(SoulColor.fgMuted)
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0.5)
+            .help("Remove attachment")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(SoulColor.accentMuted, in: Capsule())
+        .overlay(
+            Capsule().strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 0.5)
+        )
+        .onHover { hovering = $0 }
+        .help(path)
     }
 }
 

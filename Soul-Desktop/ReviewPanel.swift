@@ -3,6 +3,9 @@ import SwiftUI
 struct ReviewPanel: View {
     let projectPath: String?
     var onClose: () -> Void
+    /// When true, suppress this panel's internal title-bar header — the
+    /// host (right-pane tab strip) is providing the identity/close affordance.
+    var embedded: Bool = false
 
     @StateObject private var model = GitReviewModel()
     @State private var collapsed: Set<UUID> = []
@@ -32,8 +35,10 @@ struct ReviewPanel: View {
 
     private var panelStack: some View {
         VStack(spacing: 0) {
-            header
-            Divider().background(SoulColor.border.opacity(0.5))
+            if !embedded {
+                header
+                Divider().background(SoulColor.border.opacity(0.5))
+            }
             branchBar
             Divider().background(SoulColor.border.opacity(0.5))
             content

@@ -25,14 +25,155 @@ enum HooksReader {
     static func events(forSession sid: String, project: SoulProject) -> [ReplayEvent] {
         let hooks = readHooks(projectKey: project.id, sessionId: sid)
         let prompts = readClaudePrompts(sessionId: sid, cwd: project.path)
+        // Gemini sessions: the kernel hooks ledger doesn't carry agent reply
+        // text (only prompts + decisions), so without reading the chat file
+        // Replay would render the prompts but no responses. The locator
+        // falls back to `.bak-*` and `.corrupt-*` siblings if the live file
+        // is missing or stubbed.
+        let geminiTurns = readGeminiTurns(sessionId: sid, projectKey: project.id)
+        // SOUL-SOUL_DESKTOP-065: recovered agent reply bodies from a
+        // stream-time chunk file that survived an abrupt child teardown
+        // (the AfterAgent rollup never landed). Skipped per-bubble when
+        // hooks.jsonl already has the matching AfterAgent.
+        let recoveredAgentTurns = readAgentChunks(
+            projectKey: project.id,
+            sessionId: sid,
+            hooks: hooks
+        )
 
         // Interleave by timestamp. ThreadItem ids are fresh UUIDs per item.
         var merged: [ReplayEvent] = hooks
         merged.append(contentsOf: prompts)
+        merged.append(contentsOf: geminiTurns)
+        merged.append(contentsOf: recoveredAgentTurns)
+        // De-dup user prompts: hooks `UserPrompt` and gemini chat `user`
+        // turns describe the same event from two writers. Prefer the gemini
+        // version when text matches within 2s, since it carries the full
+        // content (hooks sometimes only get the slash-command prefix).
+        merged = dedupeUserPrompts(merged)
         merged.sort(by: { (a: ReplayEvent, b: ReplayEvent) -> Bool in
             a.timestamp < b.timestamp
         })
+        if merged.isEmpty,
+           let finalize = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) {
+            let ts = finalize.timestamp ?? Date()
+            merged.append(ReplayEvent(
+                id: UUID(),
+                timestamp: ts,
+                item: .finalize(
+                    id: UUID(),
+                    intent: finalize.intent,
+                    summary: finalize.summary,
+                    rationale: finalize.rationale,
+                    fixed: finalize.fixed,
+                    nextStep: finalize.nextStep,
+                    timestamp: ts
+                )
+            ))
+        }
         return merged
+    }
+
+    /// SOUL-SOUL_DESKTOP-065: stitch any agent_chunks.jsonl entries that
+    /// have no corresponding AfterAgent row in the hooks ledger into
+    /// synthetic agent message events. The chunk file is the stream-time
+    /// capture path; AfterAgent is the end-of-turn rollup. If the rollup
+    /// happened the chunks were retired, and this is a no-op. If the
+    /// rollup didn't (child crashed / Soul-Desktop force-quit / OS sleep
+    /// mid-turn), the chunk file survived and we reconstruct the reply
+    /// here so Replay still shows it.
+    private static func readAgentChunks(projectKey: String, sessionId: String, hooks: [ReplayEvent]) -> [ReplayEvent] {
+        let path = (("~/soul_registry/sessions/\(projectKey)/\(sessionId)/agent_chunks.jsonl" as NSString))
+            .expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return [] }
+
+        // Aggregate chunks by bubble id, preserving first-seen timestamp.
+        struct Accum { var firstTs: Date; var text: String }
+        var byBubble: [String: Accum] = [:]
+        var order: [String] = []
+        for raw in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = raw.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let bubbleId = obj["bubble_id"] as? String,
+                  let chunk = obj["chunk"] as? String
+            else { continue }
+            let ts = parseTimestamp(obj["ts"] as? String) ?? Date()
+            if byBubble[bubbleId] == nil {
+                byBubble[bubbleId] = Accum(firstTs: ts, text: chunk)
+                order.append(bubbleId)
+            } else {
+                byBubble[bubbleId]!.text += chunk
+            }
+        }
+
+        // Skip any bubble whose text already lives in hooks as an AfterAgent.
+        // Match by first-256-chars prefix to allow for trailing trace
+        // envelopes etc.; close-enough dedupe for the recovery path.
+        let afterAgentPrefixes: Set<String> = Set(hooks.compactMap { e in
+            if case .agentMessage(_, let text, _, _) = e.item {
+                return String(text.prefix(256))
+            }
+            return nil
+        })
+
+        var out: [ReplayEvent] = []
+        for bid in order {
+            guard let acc = byBubble[bid] else { continue }
+            let prefix = String(acc.text.prefix(256))
+            if afterAgentPrefixes.contains(prefix) { continue }
+            out.append(ReplayEvent(
+                id: UUID(),
+                timestamp: acc.firstTs,
+                item: .agentMessage(id: UUID(), text: acc.text, complete: true, timestamp: acc.firstTs)
+            ))
+        }
+        return out
+    }
+
+    private static func readGeminiTurns(sessionId sid: String, projectKey: String) -> [ReplayEvent] {
+        guard let items = GeminiTranscriptReader.transcript(forSession: sid, projectKey: projectKey) else {
+            return []
+        }
+        return items.compactMap { item in
+            switch item {
+            case .userMessage(_, _, let ts):
+                return ReplayEvent(id: UUID(), timestamp: ts, item: item)
+            case .agentMessage(_, _, _, let ts):
+                return ReplayEvent(id: UUID(), timestamp: ts, item: item)
+            case .toolCall(_, _, _, _, let location, _):
+                // Tool calls from the chat file carry no kernel timestamp;
+                // approximate with the nearest message timestamp if needed.
+                // For now drop them — they'd land at distantPast and pollute
+                // chapter ordering.
+                _ = location
+                return nil
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// Remove duplicate user-prompt events that appear in both the hooks
+    /// ledger and the gemini chat file. Same text + within 2s = same turn.
+    /// Keeps the FIRST occurrence (which, after the sort, will be whichever
+    /// timestamp lands earlier). Two-pass: index by normalized text, then
+    /// filter.
+    private static func dedupeUserPrompts(_ events: [ReplayEvent]) -> [ReplayEvent] {
+        var seen: [(text: String, ts: Date)] = []
+        var out: [ReplayEvent] = []
+        for e in events {
+            if case .userMessage(_, let text, let ts) = e.item {
+                let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if seen.contains(where: { $0.text == key && abs($0.ts.timeIntervalSince(ts)) < 2 }) {
+                    continue
+                }
+                seen.append((key, ts))
+            }
+            out.append(e)
+        }
+        return out
     }
 
     // MARK: - hooks.jsonl
@@ -79,8 +220,34 @@ enum HooksReader {
                         reward: obj["reward"] as? Double
                     ))
                 }
-            case "SESSION_START":
-                continue   // metadata, skip
+            case "UserPrompt", "UserMessage":
+                // Soul-Desktop writes the user's literal prompt into hooks
+                // when it owns the session (no terminal-side Claude transcript
+                // to read from). Without this case, a gemini session whose
+                // only artifact is the kernel hooks ledger replays as empty
+                // even though it contains the full prompt log.
+                let text = (obj["text"] as? String)
+                    ?? (obj["content"] as? String)
+                    ?? (obj["prompt"] as? String)
+                    ?? ""
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    out.append(ReplayEvent(
+                        id: UUID(),
+                        timestamp: ts,
+                        item: .userMessage(id: UUID(), text: trimmed, timestamp: ts)
+                    ))
+                }
+            case "CodexApproval":
+                let op = obj["op"] as? String ?? "APPROVAL"
+                let intent = obj["intent"] as? String ?? "Codex command approval handled"
+                out.append(ReplayEvent(
+                    id: UUID(),
+                    timestamp: ts,
+                    item: .status(id: UUID(), text: "⌁ \(op) — \(intent)")
+                ))
+            case "SESSION_START", "NativeSessionID", "Title":
+                continue   // metadata / linkage rows, skip from the timeline
             default:
                 // Decision events (op/intent/target) and unknowns — render as a
                 // status row so the timeline shows them but they don't dominate.

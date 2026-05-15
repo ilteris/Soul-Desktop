@@ -25,12 +25,13 @@ struct ACPProviderSpawn {
             // session/load like Claude.
             return .init(executablePath: path, arguments: ["--acp"], environment: env)
         case .pi:
+            // pi-acp 0.0.27 only parses `--terminal-login` from argv —
+            // anything else (including the `--resume <sid>` we used to
+            // pass) is silently ignored. Resume now goes through ACP
+            // `session/load`, which pi-acp does implement and advertises
+            // via `agentCapabilities.loadSession: true`.
             guard let path = which("npx") else { return nil }
-            var args = ["-y", "pi-acp"]
-            if let sid = resumeSessionId {
-                args.append(contentsOf: ["--resume", sid])
-            }
-            return .init(executablePath: path, arguments: args, environment: env)
+            return .init(executablePath: path, arguments: ["-y", "pi-acp"], environment: env)
         case .claude:
             guard let path = which("npx") else { return nil }
             return .init(
@@ -38,6 +39,19 @@ struct ACPProviderSpawn {
                 arguments: ["-y", "@agentclientprotocol/claude-agent-acp"],
                 environment: env,
                 scrubEnvKeys: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"]
+            )
+        case .codex:
+            // Codex app-server speaks JSON-RPC 2.0 over stdio (newline-delimited).
+            // Default `codex app-server` (no flags) uses stdio mode — same
+            // framing model as ACPTransport, so we reuse the transport actor
+            // verbatim from CodexClient. Resume is not modeled at the CLI
+            // level (codex manages threads server-side); the resume flow runs
+            // through the `thread/resume` JSON-RPC method instead.
+            guard let path = which("codex") else { return nil }
+            return .init(
+                executablePath: path,
+                arguments: ["app-server"],
+                environment: env
             )
         }
     }
@@ -49,6 +63,9 @@ private func enrichedEnvironment() -> [String: String] {
         "\(home)/bin",
         "\(home)/.local/bin",
         "\(home)/.bun/bin",
+        // Soul OS kernel CLI — lets spawned agents call `soul pulse`,
+        // `soul task ...`, and friends without a PATH miss.
+        "\(home)/dotfiles/soul/bin",
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
         "/usr/local/bin",
@@ -63,7 +80,31 @@ private func enrichedEnvironment() -> [String: String] {
     for d in (current.split(separator: ":").map(String.init) + extras) {
         if seen.insert(d).inserted { dirs.append(d) }
     }
-    return ["PATH": dirs.joined(separator: ":")]
+    var env: [String: String] = ["PATH": dirs.joined(separator: ":")]
+    // Forward the registry root so spawned agents resolve `~/soul_registry`
+    // (or a custom location) the same way the host process does. Without
+    // this, scripts that read `os.environ["SOUL_REGISTRY"]` fall through to
+    // their own defaults and may diverge from the host's view of state.
+    if let reg = ProcessInfo.processInfo.environment["SOUL_REGISTRY"], !reg.isEmpty {
+        env["SOUL_REGISTRY"] = reg
+    }
+    // Also forward HOME so `~` expansion inside spawned kernel scripts
+    // (pulse.py, soul_log_decision.py, soul_claude_finalize.py) resolves to
+    // the same user the desktop app is running as.
+    if let h = ProcessInfo.processInfo.environment["HOME"], !h.isEmpty {
+        env["HOME"] = h
+    }
+    // Opt the spawned claude-agent-acp into Anthropic's 1M-context beta so
+    // Opus 4.7 / Sonnet 4.x sessions get the full window instead of the
+    // default 200k cap. The Anthropic SDK reads ANTHROPIC_BETAS as a
+    // comma-separated list and forwards each entry as the `anthropic-beta`
+    // header on every API call.
+    if let existing = ProcessInfo.processInfo.environment["ANTHROPIC_BETAS"], !existing.isEmpty {
+        env["ANTHROPIC_BETAS"] = existing.contains("context-1m") ? existing : "\(existing),context-1m-2025-08-07"
+    } else {
+        env["ANTHROPIC_BETAS"] = "context-1m-2025-08-07"
+    }
+    return env
 }
 
 /// Process-wide cache for resolved binary paths. The login-shell fallback
