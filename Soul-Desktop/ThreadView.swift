@@ -18,9 +18,19 @@ struct ThreadView: View {
     @State private var suppressAnchorWrites = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
 
-    /// Track which items are currently in the viewport so we can anchor to the
-    /// top-most visible one when the user scrolls.
-    @State private var visibleIds: Set<UUID> = []
+    /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
+    /// reference-type holder so per-row writes during scroll do NOT
+    /// invalidate `ThreadView.body`. With @State or @Bindable writes
+    /// (the prior shape), every `.onAppear`/`.onDisappear` invalidated
+    /// ThreadView and LazyVStack re-iterated its ForEach over the full
+    /// timeline — measured at 361 ThreadItemRow body evals in a single
+    /// scroll-tick second over a 360-item session. A plain class held
+    /// by `@State` keeps stable identity without dependency tracking:
+    /// mutating `anchor.visibleIds` / `anchor.itemId` updates data
+    /// without triggering body re-evaluation. Restore reads happen at
+    /// `.onAppear`; flush writes happen at `.onDisappear`. Neither runs
+    /// inside `body`.
+    @State private var anchor = ScrollAnchor()
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
@@ -53,11 +63,11 @@ struct ThreadView: View {
                                 .id(item.id)
                                 .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
                                 .onAppear {
-                                    visibleIds.insert(item.id)
+                                    anchor.visibleIds.insert(item.id)
                                     updateAnchor()
                                 }
                                 .onDisappear {
-                                    visibleIds.remove(item.id)
+                                    anchor.visibleIds.remove(item.id)
                                     updateAnchor()
                                 }
                         }
@@ -78,11 +88,11 @@ struct ThreadView: View {
                             .id("__bottom__")
                             .onAppear {
                                 guard !suppressAnchorWrites else { return }
-                                controller.scrollAnchorAtBottom = true
+                                anchor.atBottom = true
                             }
                             .onDisappear {
                                 guard !suppressAnchorWrites else { return }
-                                controller.scrollAnchorAtBottom = false
+                                anchor.atBottom = false
                             }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
@@ -102,8 +112,14 @@ struct ThreadView: View {
                     // the restore window so top-down row instantiation
                     // doesn't clobber the saved position before we restore.
                     suppressAnchorWrites = true
-                    let atBottom = controller.scrollAnchorAtBottom
-                    let anchorId = controller.scrollAnchorItemId
+                    // SOUL-SOUL_DESKTOP-094 + -096: hydrate the local anchor
+                    // holder from controller on (re)attach. After this, all
+                    // anchor writes stay on the holder (no view invalidation);
+                    // flushed back to controller on detach.
+                    anchor.atBottom = controller.scrollAnchorAtBottom
+                    anchor.itemId = controller.scrollAnchorItemId
+                    let atBottom = anchor.atBottom
+                    let anchorId = anchor.itemId
                     DispatchQueue.main.async {
                         if atBottom {
                             proxy.scrollTo("__bottom__", anchor: .bottom)
@@ -122,7 +138,7 @@ struct ThreadView: View {
                     // just sent, they want to see the response land. Outside
                     // of a working turn, only follow if they were already at
                     // the bottom.
-                    guard controller.scrollAnchorAtBottom || controller.isWorking else { return }
+                    guard anchor.atBottom || controller.isWorking else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
                     }
@@ -151,11 +167,18 @@ struct ThreadView: View {
                 )
                 .onChange(of: canvasWidth) { _, _ in
                     guard !suppressAnchorWrites else { return }
-                    if controller.scrollAnchorAtBottom {
+                    if anchor.atBottom {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
-                    } else if let id = controller.scrollAnchorItemId {
+                    } else if let id = anchor.itemId {
                         proxy.scrollTo(id, anchor: .top)
                     }
+                }
+                // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
+                // the controller on view detach (thread switch / app close)
+                // so the next attach can restore the right position.
+                .onDisappear {
+                    controller.scrollAnchorAtBottom = anchor.atBottom
+                    controller.scrollAnchorItemId = anchor.itemId
                 }
             }
 
@@ -202,8 +225,10 @@ struct ThreadView: View {
         guard !suppressAnchorWrites else { return }
         // Find the visible item with the minimum index in the items array.
         // This is our top-most visible item.
-        if let firstVisible = controller.items.first(where: { visibleIds.contains($0.id) }) {
-            controller.scrollAnchorItemId = firstVisible.id
+        if let firstVisible = controller.items.first(where: { anchor.visibleIds.contains($0.id) }) {
+            // SOUL-SOUL_DESKTOP-094 + -096: write the reference-type holder,
+            // not the @Bindable controller — see `anchor` declaration.
+            anchor.itemId = firstVisible.id
             // If the bottom sentinel isn't visible (handled by its own logic),
             // ensure atBottom is false.
         }
@@ -236,6 +261,21 @@ struct ThreadView: View {
 
 }
 
+/// SOUL-SOUL_DESKTOP-096: reference-type holder for scroll-anchor state.
+/// Plain class held by `@State`: SwiftUI tracks the holder's identity (stable
+/// for the view's lifetime) but mutations to the class's stored properties do
+/// NOT invalidate `ThreadView.body`. That lets every per-row
+/// `.onAppear`/`.onDisappear` write to `visibleIds` / `itemId` without
+/// triggering a LazyVStack ForEach rebuild. Reads happen only at view
+/// appearance (restore), `onChange` handlers, and view disappearance (flush)
+/// — none inside `body`.
+@MainActor
+final class ScrollAnchor {
+    var visibleIds: Set<UUID> = []
+    var itemId: UUID? = nil
+    var atBottom: Bool = true
+}
+
 struct ThreadItemRow: View { let projectPath: String?
     let item: ThreadItem
     var isHistorical: Bool = false
@@ -249,7 +289,11 @@ struct ThreadItemRow: View { let projectPath: String?
         case .userMessage(_, let text, let ts):
             UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
         case .agentMessage(_, let text, _, let ts):
+            // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
+            // MarkdownView rebuild when the row's inputs haven't changed
+            // (helpful for rows that stay materialized across re-renders).
             AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+                .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
@@ -420,7 +464,7 @@ private struct FinalizeCard: View {
     }
 }
 
-private struct AgentMessageRow: View {
+private struct AgentMessageRow: View, Equatable {
     let text: String
     let timestamp: Date
     var isHistorical: Bool = false
@@ -428,6 +472,15 @@ private struct AgentMessageRow: View {
     @State private var feedback: Feedback = .none
 
     enum Feedback { case none, up, down }
+
+    // SOUL-SOUL_DESKTOP-096: only body-affecting inputs participate. @State
+    // storage (isHovering, feedback) is identity-tracked by SwiftUI
+    // separately and must NOT be part of the comparison.
+    static func == (lhs: AgentMessageRow, rhs: AgentMessageRow) -> Bool {
+        lhs.text == rhs.text
+            && lhs.timestamp == rhs.timestamp
+            && lhs.isHistorical == rhs.isHistorical
+    }
 
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
 
