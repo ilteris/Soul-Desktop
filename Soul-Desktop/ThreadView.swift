@@ -612,7 +612,6 @@ private struct UserMessageRow: View {
     /// appended to `items` but not yet shipped to the agent. We paint a
     /// dashed, dimmer bubble so it visually reads as "waiting in line."
     var isQueued: Bool = false
-    @State private var isHovering = false
     @State private var copied = false
 
     private var parsed: (commandName: String?, rest: String) {
@@ -682,7 +681,6 @@ private struct UserMessageRow: View {
                 .padding(.trailing, 4)
                 .frame(minHeight: 18)
             }
-            .onHover { isHovering = $0 }
         }
     }
 
