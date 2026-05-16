@@ -484,6 +484,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// fires a ToolCallTimeout + turn cancel when any entry exceeds the
     /// configured threshold. Removed when the call hits a terminal status.
     private var toolCallStartedAt: [String: Date] = [:]
+    /// SOUL-SOUL_DESKTOP-079: last time a tool_call / tool_call_update
+    /// notification arrived for this toolCallId. The watchdog uses THIS
+    /// (not `toolCallStartedAt`) to detect tool-call silence — a tool
+    /// that's still streaming output past the legacy 60s wall-clock from
+    /// start is legitimately working, not stuck. Updated on every non-
+    /// terminal tool_call/tool_call_update apply; cleared on terminal.
+    private var toolCallLastActivityAt: [String: Date] = [:]
     /// IDs we've already fired a timeout for so the watchdog doesn't keep
     /// hammering cancel + writing duplicate hooks every tick after expiry.
     private var toolCallTimedOut: Set<String> = []
@@ -878,6 +885,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // Drop per-tool-call deadlines at end-of-turn so a stray entry from
         // a never-resolved tool call doesn't leak across turns.
         toolCallStartedAt.removeAll()
+        toolCallLastActivityAt.removeAll()
         toolCallTimedOut.removeAll()
         toolCallPreviousLineCount.removeAll()
     }
@@ -920,15 +928,20 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return
         }
 
-        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout sweep. Independent
-        // from the turn-level quiet check — catches the `tail -f` case
-        // where a single tool call sits in_progress forever while still
-        // emitting enough output to keep `lastActivityAt` fresh.
+        // SOUL-SOUL_DESKTOP-079: per-tool-call timeout sweep, NOW driven by
+        // last-activity time instead of start time. A tool call that keeps
+        // receiving `tool_call_update` notifications is legitimately working
+        // (long recursive grep, big build, slow agent) and should NOT be
+        // auto-cancelled. The watchdog only fires when N seconds of silence
+        // pass with no update for the toolCallId. Still catches the original
+        // -033 target (`tail -f`-style commands that emit no per-update
+        // signal once started) because those don't tick lastActivityAt
+        // after the initial in_progress notification.
         let toolTimeout = StallPolicy.toolCallTimeoutSeconds
         let now = Date()
         var expired: [String] = []
-        for (toolId, startedAt) in toolCallStartedAt where !toolCallTimedOut.contains(toolId) {
-            if Int(now.timeIntervalSince(startedAt)) >= toolTimeout {
+        for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
+            if Int(now.timeIntervalSince(lastSeen)) >= toolTimeout {
                 expired.append(toolId)
             }
         }
@@ -2946,6 +2959,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         }
         guard queueDepth == 0 else { return }
         toolCallStartedAt.removeAll()
+        toolCallLastActivityAt.removeAll()
         toolCallTimedOut.removeAll()
         toolCallPreviousLineCount.removeAll()
     }
@@ -3192,16 +3206,23 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return nil
         }()
 
-        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout bookkeeping. Record the
-        // first time we see a toolCallId in a non-terminal state; clear on
-        // any terminal transition so the watchdog stops watching it.
+        // SOUL-SOUL_DESKTOP-033 + -079: per-tool-call timeout bookkeeping.
+        // Record the first time we see a toolCallId in a non-terminal state
+        // AND refresh `lastActivityAt` on every subsequent non-terminal
+        // notification — the watchdog at line ~937 keys off lastActivityAt,
+        // not startedAt, so any tool that keeps emitting updates is treated
+        // as live and never timed out.
         let isTerminal = (status == "completed" || status == "failed" || status == "stopped")
         if isTerminal {
             toolCallStartedAt.removeValue(forKey: toolId)
+            toolCallLastActivityAt.removeValue(forKey: toolId)
             toolCallTimedOut.remove(toolId)
             toolCallPreviousLineCount.removeValue(forKey: toolId)
-        } else if !isReplayingLoad, toolCallStartedAt[toolId] == nil {
-            toolCallStartedAt[toolId] = Date()
+        } else if !isReplayingLoad {
+            if toolCallStartedAt[toolId] == nil {
+                toolCallStartedAt[toolId] = Date()
+            }
+            toolCallLastActivityAt[toolId] = Date()
         }
 
         if let existingId = seenToolCallIds[toolId],
