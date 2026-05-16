@@ -655,7 +655,14 @@ private struct UserMessageRow: View {
                             .foregroundStyle(SoulColor.fgSubtle)
                             .padding(.trailing, 4)
                     }
-                    if isHovering && !isHistorical && !isQueued {
+                    // SOUL-SOUL_DESKTOP-109: always show the copy button next
+                    // to the timestamp instead of gating on bubble hover. The
+                    // hover gate created a "moving target" problem — as soon
+                    // as the cursor left the bubble heading toward the button,
+                    // the hover state flipped false and the button vanished
+                    // before it could be clicked. Always-on is the standard
+                    // chat-UI pattern and cheap visually (12pt icon, muted).
+                    if !isHistorical && !isQueued {
                         FooterButton(
                             systemName: copied ? "checkmark" : "doc.on.doc",
                             help: "Copy as Markdown"
