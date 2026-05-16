@@ -3071,6 +3071,19 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             if let oldS, let newS {
                 return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS), startLine: startLine)
             }
+            // SOUL-SOUL_DESKTOP-080: Pi's edit shape — `edits: [{oldText, newText}]`
+            // wrapped in an array, camelCase keys. Without this branch every Pi
+            // edit fell through to nil details → no +/- counts, no diff card.
+            // For now we render the first edit; multi-edit grouping is a
+            // follow-up (Pi sometimes batches several edits into one tool call).
+            if case .array(let edits)? = rawInput["edits"],
+               let first = edits.first {
+                let oldT = first["oldText"]?.stringValue ?? first["old_string"]?.stringValue
+                let newT = first["newText"]?.stringValue ?? first["new_string"]?.stringValue
+                if let oldT, let newT {
+                    return ToolCallDetails(kind: .edit(oldString: oldT, newString: newT), startLine: startLine)
+                }
+            }
             // Write-body field name varies by provider: Claude uses `content`
             // or `new_str`, Gemini-CLI's write_file uses `file_text`, and some
             // ACP servers use plain `text`. Check all four so the diff card

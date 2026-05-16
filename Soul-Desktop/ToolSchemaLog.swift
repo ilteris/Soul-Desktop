@@ -45,8 +45,13 @@ enum ToolSchemaLog {
             for (k, v) in obj {
                 rawInputShape[k] = .string(Self.previewValue(v))
             }
-        } else if rawInput != nil {
-            rawInputShape["__rawInput_type__"] = .string("non-object")
+        } else if let rawInput {
+            // SOUL-SOUL_DESKTOP-080: previously this logged a bare
+            // "non-object" string with no further detail, which masked the
+            // fact that Pi's rawInput IS an object (just under different
+            // keys than the extractor expected). Dump the actual JSONValue
+            // case + a short preview so the trace is honest about shape.
+            rawInputShape["__rawInput_type__"] = .string(Self.previewValue(rawInput))
         } else {
             rawInputShape["__rawInput__"] = .string("nil")
         }
