@@ -2879,6 +2879,12 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         switch update {
         case .agentMessageChunk(let block):
             if case .text(let chunk) = block {
+                // SOUL-SOUL_DESKTOP-108: skip empty-text chunks so they don't
+                // ghost-append a bubble with no body. Most empty chunks come
+                // from non-text ACP content types the old decoder collapsed
+                // to "" — the new decoder produces visible surrogates, but
+                // legacy hooks.jsonl entries can still replay empty strings.
+                guard !chunk.isEmpty else { break }
                 if silentCapture != nil {
                     silentCapture? += chunk
                 } else {
