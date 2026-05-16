@@ -18,6 +18,12 @@ struct ComposerView: View {
     /// if they change their mind.
     var queuedCount: Int = 0
     var onClearQueue: () -> Void = {}
+    /// Cancel the in-flight ACP turn and dispatch the next queued prompt as
+    /// a fresh turn. Surfaced as a "Steer" button on the queue chip alongside
+    /// the clear-X. Shares the underlying `cancelActiveProviderTurn()` path
+    /// with the composer's Stop button (`onCancel`) — Stop drops the queue,
+    /// Steer flushes it.
+    var onSteer: () -> Void = {}
     var currentProjectID: String = ""
     var onSelectProject: (String) -> Void = { _ in }
     var onNewProject: () -> Void = {}
@@ -283,6 +289,20 @@ struct ComposerView: View {
                         .font(SoulFont.ui(11))
                         .foregroundStyle(SoulColor.fgMuted)
                     Spacer(minLength: 0)
+                    Button(action: onSteer) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Steer")
+                                .font(SoulFont.ui(10, weight: .semibold))
+                        }
+                        .foregroundStyle(SoulColor.fg)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(SoulColor.fg.opacity(0.08), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel the current turn and send the next queued prompt now")
                     Button(action: onClearQueue) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .semibold))

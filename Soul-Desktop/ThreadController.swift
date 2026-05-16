@@ -487,17 +487,27 @@ final class ThreadController {
 
         // First turn dispatches immediately; subsequent queued turns are
         // drained from `queuedPrompts` while we still hold `isWorking`.
+        // `isFirstTurn` toggles after the initial iteration so popped turns
+        // can take the queue-consumption path (relocate bubble, skip the
+        // dispatch-time UserPrompt hook since it was already logged at
+        // queue time at line ~471).
         var current: QueuedPrompt? = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent)
+        var isFirstTurn = true
         do {
             try await ensureSession()
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
                 guard let sid = sessionId else { return }
                 while let turn = current {
-                    SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-                        "event": "UserPrompt",
-                        "text": turn.display,
-                    ])
+                    if isFirstTurn {
+                        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                            "event": "UserPrompt",
+                            "text": turn.display,
+                        ])
+                    } else {
+                        relocateQueuedBubbleToEnd(turn)
+                    }
+                    isFirstTurn = false
                     try await sendCodex(text: turn.agent)
 
                     // Persist the codex agent's final reply text to the
@@ -530,10 +540,15 @@ final class ThreadController {
             let nid = nativeSessionId ?? sid
 
             while let turn = current {
-                SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-                    "event": "UserPrompt",
-                    "text": turn.display,
-                ])
+                if isFirstTurn {
+                    SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                        "event": "UserPrompt",
+                        "text": turn.display,
+                    ])
+                } else {
+                    relocateQueuedBubbleToEnd(turn)
+                }
+                isFirstTurn = false
                 _ = try await client.prompt(sessionId: nid, text: turn.agent)
 
                 // Persist the agent's full reply text to the kernel hooks
@@ -659,6 +674,49 @@ final class ThreadController {
             return
         }
         items.append(.status(id: UUID(), text: "■ cancel sent"))
+    }
+
+    /// Move a queued user bubble out of its insertion position (mid-prior-turn
+    /// in `items[]`, where it was appended at queue time) to the end of
+    /// `items[]` with a fresh timestamp. Without this, the bubble re-renders
+    /// wedged between the previous turn's agent chunks once it's popped from
+    /// `queuedItemIDs` — the "vanished queue" rendering bug in
+    /// SOUL-SOUL_DESKTOP-066. Keeps the original `itemId` so the QueuedPrompt
+    /// → ThreadItem linkage stays intact.
+    private func relocateQueuedBubbleToEnd(_ turn: QueuedPrompt) {
+        if let oldIdx = items.firstIndex(where: { $0.id == turn.itemId }) {
+            items.remove(at: oldIdx)
+        }
+        items.append(.userMessage(id: turn.itemId, text: turn.display, timestamp: Date()))
+    }
+
+    /// Cancel the in-flight ACP turn over the wire and let the outer send()'s
+    /// while-loop pop the queue and dispatch the next prompt on the *same*
+    /// provider process. Shares `cancelActiveProviderTurn()` with Stop
+    /// (`cancel()`) — the difference is Stop drops the queue and tears down
+    /// the child, while Steer keeps both. Wired to the Steer button on the
+    /// composer's queue chip.
+    ///
+    /// Why no `resetProviderProcessAfterInterruptedTurn` here: ACP's
+    /// `session/cancel` resolves the in-flight `client.prompt` with
+    /// stopReason=cancelled, leaving the session alive. Killing the child
+    /// (as Stop and recoverStalledTurn do) would force the next queued
+    /// prompt's send() to spawn a new process and call `session/load` —
+    /// which fails with "invalid session identifier" on a fresh session
+    /// whose session file the agent hasn't had time to persist yet.
+    /// The teardown is appropriate for Stop (user wants out) and for
+    /// recoverStalledTurn (agent is unresponsive). Steer is neither.
+    func steerToNextQueued() async {
+        guard isWorking, !queuedPrompts.isEmpty else { return }
+        suppressNextInterruptedTurnError = true
+        await cancelActiveProviderTurn()
+        markInFlightToolCallsStopped()
+        items.append(.status(id: UUID(), text: "↪ steered to next prompt"))
+        SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
+            "event": "TurnSteered",
+            "provider": provider.rawValue,
+            "queued_count": queuedPrompts.count,
+        ])
     }
 
     /// Drop any queued-but-not-yet-sent prompts. Wired into `cancel()` and

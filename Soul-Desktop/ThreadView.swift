@@ -142,6 +142,7 @@ struct ThreadView: View {
                     isWorking: controller.isWorking,
                     queuedCount: controller.queuedPrompts.count,
                     onClearQueue: { controller.clearQueue() },
+                    onSteer: { Task { await controller.steerToNextQueued() } },
                     permissionMode: Binding(
                         get: { controller.permissionMode },
                         set: { controller.permissionMode = $0 }
@@ -793,9 +794,11 @@ private struct FileChipRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            Text(status)
-                .font(SoulFont.ui(13, weight: .regular))
-                .foregroundStyle(SoulColor.fgSubtle)
+            if status != "completed" {
+                Text(status)
+                    .font(SoulFont.ui(13, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
 
             trailing()
 
@@ -871,9 +874,11 @@ private struct DefaultToolRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            Text(status)
-                .font(SoulFont.ui(13, weight: .regular))
-                .foregroundStyle(SoulColor.fgSubtle)
+            if status != "completed" {
+                Text(status)
+                    .font(SoulFont.ui(13, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
 
             trailing()
 
