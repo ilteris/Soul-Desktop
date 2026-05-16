@@ -101,11 +101,30 @@ enum StallPolicy {
     /// deadline; when exceeded, ThreadController flips the row to `.stopped`,
     /// writes a `ToolCallTimeout` hook, and cancels the turn (ACP has no
     /// per-toolCallId cancel today).
+    ///
+    /// SOUL-SOUL_DESKTOP-110: bumped 2026-05-16 from 60s to 300s. The 60s
+    /// default killed legitimately-thinking tool calls — `delegate_to_specialist`
+    /// and other think-heavy tools don't emit `tool_call_update` notifications
+    /// while reasoning, so activity-based extension can't help them. 5 minutes
+    /// is still aggressive enough to catch real hangs but lets reasoning
+    /// complete. User can override via Settings → Advanced.
     static let toolCallTimeoutKey = "soul.toolCallTimeout.seconds"
-    static let toolCallTimeoutDefault: Int = 60
+    static let toolCallTimeoutDefault: Int = 300
 
     static var toolCallTimeoutSeconds: Int {
         let v = UserDefaults.standard.integer(forKey: toolCallTimeoutKey)
         return v > 0 ? v : toolCallTimeoutDefault
+    }
+
+    /// SOUL-SOUL_DESKTOP-110: percentage of the timeout at which we emit a
+    /// "still working" signpost so the user sees the tool is alive and how
+    /// close it is to cancellation. Default 0.5 → at 150s of a 300s budget.
+    /// Set to 0 to disable signposts entirely.
+    static let toolCallSignpostFractionKey = "soul.toolCallTimeout.signpostFraction"
+    static let toolCallSignpostFractionDefault: Double = 0.5
+
+    static var toolCallSignpostFraction: Double {
+        let v = UserDefaults.standard.double(forKey: toolCallSignpostFractionKey)
+        return v > 0 ? v : toolCallSignpostFractionDefault
     }
 }

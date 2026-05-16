@@ -536,6 +536,11 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// IDs we've already fired a timeout for so the watchdog doesn't keep
     /// hammering cancel + writing duplicate hooks every tick after expiry.
     private var toolCallTimedOut: Set<String> = []
+    /// SOUL-SOUL_DESKTOP-110: IDs we've already emitted a "still working"
+    /// signpost for, so the watchdog tick doesn't keep spamming the canvas
+    /// with the same warning. Cleared at end-of-turn alongside the other
+    /// per-tool tracking sets.
+    private var toolCallSignposted: Set<String> = []
     /// For Write tool calls: line count of the target file the first time
     /// we saw the toolCallId, captured before the agent's actual disk write
     /// lands. Lets the diff chip show `+N -M` for Writes against existing
@@ -959,6 +964,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         toolCallStartedAt.removeAll()
         toolCallLastActivityAt.removeAll()
         toolCallTimedOut.removeAll()
+        toolCallSignposted.removeAll()
         toolCallPreviousLineCount.removeAll()
     }
 
@@ -1005,17 +1011,65 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // where a single tool call sits in_progress forever while still
         // emitting enough output to keep `lastActivityAt` fresh.
         let toolTimeout = StallPolicy.toolCallTimeoutSeconds
+        let signpostThreshold = Int(Double(toolTimeout) * StallPolicy.toolCallSignpostFraction)
         let now = Date()
         var expired: [String] = []
+        var toSignpost: [(toolId: String, quietFor: Int)] = []
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
-            if Int(now.timeIntervalSince(lastSeen)) >= toolTimeout {
+            let quietFor = Int(now.timeIntervalSince(lastSeen))
+            if quietFor >= toolTimeout {
                 expired.append(toolId)
+                continue
             }
+            // SOUL-SOUL_DESKTOP-110: midway signpost — surface that the tool
+            // is still working and how far from cancellation we are. Once per
+            // tool per turn; toolCallSignposted dedupes.
+            if signpostThreshold > 0,
+               quietFor >= signpostThreshold,
+               !toolCallSignposted.contains(toolId) {
+                toSignpost.append((toolId, quietFor))
+            }
+        }
+        for entry in toSignpost {
+            emitToolCallSignpost(toolId: entry.toolId, quietFor: entry.quietFor, threshold: toolTimeout)
         }
         for toolId in expired {
             await fireToolCallTimeout(toolId: toolId, threshold: toolTimeout)
         }
+    }
+
+    /// SOUL-SOUL_DESKTOP-110: emit a one-time "tool still working" status row
+    /// when an in_progress tool call has been quiet for half the timeout
+    /// budget. Lets the user see the tool is alive and how close it is to
+    /// auto-cancel before we yank the turn. Idempotent per (toolId, turn)
+    /// via toolCallSignposted; cleared at end-of-turn.
+    private func emitToolCallSignpost(toolId: String, quietFor: Int, threshold: Int) {
+        toolCallSignposted.insert(toolId)
+        var label = "tool call"
+        if let uuid = seenToolCallIds[toolId],
+           let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .toolCall(_, let k, let t, _, _, _) = items[idx] {
+            let kindPart = k.isEmpty ? "tool" : k
+            let titlePart = t.isEmpty ? "" : " \(t)"
+            label = "\(kindPart)\(titlePart)"
+        }
+        let remaining = max(0, threshold - quietFor)
+        items.append(.status(
+            id: UUID(),
+            text: "⏳ \(label) quiet for \(quietFor)s — will auto-cancel in \(remaining)s if no activity"
+        ))
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            event: [
+                "event": "ToolCallSignpost",
+                "provider": provider.rawValue,
+                "tool_call_id": toolId,
+                "quiet_seconds": quietFor,
+                "threshold": threshold,
+            ]
+        )
     }
 
     /// Mark a stuck tool call timed out, flip its row to stopped, write the
