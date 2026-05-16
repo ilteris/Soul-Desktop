@@ -66,4 +66,59 @@ struct ThreadControllerTests {
         controller.items.append(ThreadItem.agentMessage(id: id4, text: "Here is the list of files:\n- index.ts\n- package.json", complete: true, timestamp: Date()))
         #expect(controller.displayTitle == "Here is the list of files:")
     }
+
+    @Test func testPiReplayToolCallsDoNotArmTimeoutWatchdog() async throws {
+        let controller = ThreadController(provider: .pi, project: Self.testProject())
+
+        controller._testSetReplayingLoad(true)
+        controller._testApplyUpdate(.toolCall(.object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("replayed-tool"),
+            "kind": .string("other"),
+            "title": .string("bash"),
+            "status": .string("in_progress"),
+        ])))
+        controller._testSetReplayingLoad(false)
+
+        #expect(controller._testTrackedToolCallCount == 0)
+    }
+
+    @Test func testPiIdleTelemetryClearsStaleToolTimeouts() async throws {
+        let controller = ThreadController(provider: .pi, project: Self.testProject())
+
+        controller._testApplyUpdate(.toolCall(.object([
+            "sessionUpdate": .string("tool_call"),
+            "toolCallId": .string("live-tool"),
+            "kind": .string("other"),
+            "title": .string("bash"),
+            "status": .string("in_progress"),
+        ])))
+        #expect(controller._testTrackedToolCallCount == 1)
+
+        controller._testApplyUpdate(.unknown(kind: "session_info_update", payload: .object([
+            "_meta": .object([
+                "piAcp": .object([
+                    "running": .bool(false),
+                    "queueDepth": .int(0),
+                ]),
+            ]),
+            "sessionUpdate": .string("session_info_update"),
+        ])))
+
+        #expect(controller._testTrackedToolCallCount == 0)
+    }
+
+    private static func testProject() -> SoulProject {
+        SoulProject(
+            id: "test",
+            name: "Test Project",
+            path: "/tmp",
+            pillar: "test",
+            tier: 1,
+            status: "active",
+            primaryHost: nil,
+            devCommand: nil,
+            devURL: nil
+        )
+    }
 }

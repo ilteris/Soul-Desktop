@@ -1379,22 +1379,23 @@ private struct AgentLogChip: View {
 
     var body: some View {
         Button {
+            controller.refreshAgentLogCount()
             showing.toggle()
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "scroll")
                     .font(.system(size: 10))
                     .foregroundStyle(SoulColor.fgMuted)
-                Text("\(controller.agentLog.count)")
+                Text("\(controller.agentLogCount)")
                     .font(SoulFont.code(11))
-                    .foregroundStyle(controller.agentLog.isEmpty ? SoulColor.fgSubtle : SoulColor.fg)
+                    .foregroundStyle(controller.agentLogCount == 0 ? SoulColor.fgSubtle : SoulColor.fg)
             }
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(SoulColor.surface, in: Capsule())
         }
         .buttonStyle(.plain)
-        .help("Agent log (\(controller.agentLog.count) lines)")
+        .help("Agent log (\(controller.agentLogCount) lines)")
         .popover(isPresented: $showing, arrowEdge: .top) {
             AgentLogPanel(lines: controller.agentLog + controller.traceLog)
         }

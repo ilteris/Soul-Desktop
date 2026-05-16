@@ -33,9 +33,9 @@ struct ThreadView: View {
                         // part of the agent's actual transcript yet. Filter
                         // them out of the main timeline; they're re-added
                         // below.
-                        let queuedIds = controller.queuedItemIDs
-                        let allGrouped = controller.groupedItems; let mainItems = allGrouped.filter { !queuedIds.contains($0.id) }
-                        let queuedItems = allGrouped.filter { queuedIds.contains($0.id) }
+                        let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                        let mainItems = split.main
+                        let queuedItems = split.queued
                         ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 item: item,
@@ -188,6 +188,22 @@ struct ThreadView: View {
         return true
     }
 
+    private func splitGroupedItems(_ items: [ThreadItem], queuedIds: Set<UUID>) -> (main: [ThreadItem], queued: [ThreadItem]) {
+        guard !queuedIds.isEmpty else { return (items, []) }
+        var main: [ThreadItem] = []
+        var queued: [ThreadItem] = []
+        main.reserveCapacity(items.count)
+        queued.reserveCapacity(queuedIds.count)
+        for item in items {
+            if queuedIds.contains(item.id) {
+                queued.append(item)
+            } else {
+                main.append(item)
+            }
+        }
+        return (main, queued)
+    }
+
 }
 
 struct ThreadItemRow: View {
@@ -226,6 +242,7 @@ struct ThreadItemRow: View {
             FinalizeCard(intent: intent, summary: summary, rationale: rationale, fixed: fixed, nextStep: nextStep)
         }
     }
+
 }
 
 /// Live reasoning bubble fed by `agent_thought_chunk` notifications. Muted

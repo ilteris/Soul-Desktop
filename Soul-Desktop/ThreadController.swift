@@ -85,7 +85,11 @@ final class ThreadController {
     /// opened."
     var startedAt: Date = Date()
 
-    var items: [ThreadItem] = []
+    var items: [ThreadItem] = [] {
+        didSet {
+            itemsVersion &+= 1
+        }
+    }
     var historicalIDs: Set<UUID> = []
     /// Per-thread composer draft text. Lives on the controller (not on
     /// AppShell) so keystrokes don't invalidate the whole app's view tree —
@@ -113,7 +117,9 @@ final class ThreadController {
     /// Rolling capture of the agent's stderr + protocol-level errors. Bounded
     /// so a chatty agent can't bloat memory. Surfaced via the inactivity
     /// popover so the user has somewhere to look when the agent stalls.
-    var agentLog: [String] = []
+    @ObservationIgnored var agentLog: [String] = []
+    var agentLogCount: Int = 0
+    @ObservationIgnored private var lastAgentLogCountPublishAt: Date = .distantPast
     /// Hot-path trace lines from `soul.acp.trace`. Off the observation graph
     /// so per-frame appends during a streaming turn don't invalidate the
     /// toolbar chip on every chunk (which spun the main thread).
@@ -155,6 +161,9 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// message chunks, or non-edit tool calls. Derived from the flat items
     /// list to keep the ledger truth simple.
     var groupedItems: [ThreadItem] {
+        if let cache = groupedItemsCache, cache.version == itemsVersion {
+            return cache.value
+        }
         var result: [ThreadItem] = []
         for item in items {
             if case .toolCall(let id, let kind, let title, _, let loc, _) = item,
@@ -171,6 +180,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                 result.append(item)
             }
         }
+        groupedItemsCache = (itemsVersion, result)
         return result
     }
 
@@ -451,6 +461,8 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// lands. Lets the diff chip show `+N -M` for Writes against existing
     /// files. Keyed by toolCallId. Sentinel `0` means "file did not exist."
     private var toolCallPreviousLineCount: [String: Int] = [:]
+    @ObservationIgnored private var itemsVersion: Int = 0
+    @ObservationIgnored private var groupedItemsCache: (version: Int, value: [ThreadItem])?
     /// Set when Stop / Recover intentionally tears down the provider child to
     /// force an in-flight prompt continuation to unwind. The resulting
     /// childTerminated error is expected and should not render as a red row.
@@ -2677,6 +2689,18 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         if agentLog.count > 400 {
             agentLog.removeFirst(agentLog.count - 400)
         }
+        publishAgentLogCountIfNeeded()
+    }
+
+    func refreshAgentLogCount() {
+        agentLogCount = agentLog.count
+    }
+
+    private func publishAgentLogCountIfNeeded() {
+        let now = Date()
+        guard agentLogCount == 0 || now.timeIntervalSince(lastAgentLogCountPublishAt) >= 1.0 else { return }
+        agentLogCount = agentLog.count
+        lastAgentLogCountPublishAt = now
     }
 
     private func appendTraceLog(_ line: String) {
@@ -2813,12 +2837,32 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             // pi-acp emits `session_info_update` as queue/running telemetry
             // on every turn (depth + running flag). Useful diagnostic data
             // but emitted at high frequency — silently drop so the agent
-            // log doesn't fill up with one entry per pi event. Everything
-            // else gets logged so we catch new provider-specific kinds.
-            if kind == "session_info_update" { break }
+            // log doesn't fill up with one entry per pi event. When Pi says
+            // it is idle, also drain any stale per-tool watchdog entries left
+            // behind by replay/noisy status bursts so they cannot cancel the
+            // next live turn.
+            if kind == "session_info_update" {
+                clearPiToolTimeoutsIfIdle(payload)
+                break
+            }
             let preview = String(describing: payload).prefix(240)
             appendAgentLog("[unknown sessionUpdate] kind=\(kind) payload=\(preview)")
         }
+    }
+
+    private func clearPiToolTimeoutsIfIdle(_ payload: JSONValue) {
+        guard provider == .pi else { return }
+        guard case .bool(false)? = payload["_meta"]?["piAcp"]?["running"] else { return }
+        let queueDepth: Int
+        if case .int(let depth)? = payload["_meta"]?["piAcp"]?["queueDepth"] {
+            queueDepth = depth
+        } else {
+            queueDepth = 0
+        }
+        guard queueDepth == 0 else { return }
+        toolCallStartedAt.removeAll()
+        toolCallTimedOut.removeAll()
+        toolCallPreviousLineCount.removeAll()
     }
 
     private typealias LocalCommandShape = LocalCommandClassifier.Shape
@@ -2990,7 +3034,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             toolCallStartedAt.removeValue(forKey: toolId)
             toolCallTimedOut.remove(toolId)
             toolCallPreviousLineCount.removeValue(forKey: toolId)
-        } else if toolCallStartedAt[toolId] == nil {
+        } else if !isReplayingLoad, toolCallStartedAt[toolId] == nil {
             toolCallStartedAt[toolId] = Date()
         }
 
@@ -3062,6 +3106,20 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             )
         }
     }
+
+#if DEBUG
+    func _testApplyUpdate(_ update: SessionUpdate) {
+        apply(update)
+    }
+
+    var _testTrackedToolCallCount: Int {
+        toolCallStartedAt.count
+    }
+
+    func _testSetReplayingLoad(_ value: Bool) {
+        isReplayingLoad = value
+    }
+#endif
 
     private func updateCommands(_ payload: JSONValue) {
         guard case .array(let raw)? = payload["availableCommands"] ?? payload["commands"] else { return }
