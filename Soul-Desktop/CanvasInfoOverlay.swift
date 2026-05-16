@@ -135,6 +135,16 @@ struct CanvasInfoOverlay: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                if let s = taskStore.status, !s.isEmpty {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Self.statusColor(s))
+                            .frame(width: 6, height: 6)
+                        Text(s)
+                            .font(SoulFont.code(10))
+                            .foregroundStyle(SoulColor.fgSubtle.opacity(0.85))
+                    }
+                }
                 Spacer(minLength: 0)
                 let done = taskStore.criteria.filter { $0.done }.count
                 let total = taskStore.criteria.count
@@ -156,6 +166,16 @@ struct CanvasInfoOverlay: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+    }
+
+    private static func statusColor(_ status: String) -> Color {
+        switch status {
+        case "completed", "done", "closed":          return .green
+        case "in_progress", "active", "in-progress": return SoulColor.accent
+        case "blocked", "stalled":                   return .orange
+        case "pending":                              return SoulColor.fgMuted
+        default:                                     return SoulColor.fgMuted
         }
     }
 

@@ -24,6 +24,7 @@ final class ActiveTaskStore: ObservableObject {
 
     @Published private(set) var taskId: String? = nil
     @Published private(set) var subject: String? = nil
+    @Published private(set) var status: String? = nil
     @Published private(set) var criteria: [Criterion] = []
 
     private var boundProject: String? = nil
@@ -34,6 +35,7 @@ final class ActiveTaskStore: ObservableObject {
         boundProject = projectKey
         taskId = nil
         subject = nil
+        status = nil
         criteria = []
         timer?.invalidate()
         timer = nil
@@ -57,12 +59,14 @@ final class ActiveTaskStore: ObservableObject {
         // body re-evals downstream.
         if taskId != snap.taskId { taskId = snap.taskId }
         if subject != snap.subject { subject = snap.subject }
+        if status != snap.status { status = snap.status }
         if criteria != snap.criteria { criteria = snap.criteria }
     }
 
     private struct Snap {
         var taskId: String? = nil
         var subject: String? = nil
+        var status: String? = nil
         var criteria: [Criterion] = []
     }
 
@@ -81,9 +85,12 @@ final class ActiveTaskStore: ObservableObject {
             return Snap(taskId: id, subject: nil, criteria: [])
         }
         let subject = (obj["subject"] as? String) ?? (obj["title"] as? String)
+        let status = (obj["status"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let dod = (obj["done_criteria"] as? [String]) ?? (obj["definition_of_done"] as? [String]) ?? []
         let done = Set((obj["completed_criteria"] as? [String]) ?? [])
         let criteria = dod.map { Criterion(text: $0, done: done.contains($0)) }
-        return Snap(taskId: id, subject: subject, criteria: criteria)
+        return Snap(taskId: id, subject: subject, status: status, criteria: criteria)
     }
 }
