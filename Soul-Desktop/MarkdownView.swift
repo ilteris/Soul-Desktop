@@ -18,7 +18,11 @@ struct MarkdownView: View {
     @Environment(\.openFilePreview) private var openFilePreview
 
     var body: some View {
-        Group {
+        // SOUL-SOUL_DESKTOP-099: scroll-perf telemetry. MarkdownView is
+        // suspected to dominate AgentMessageRow's body cost during scroll.
+        // Per-body event so we can quantify materialization rate.
+        let _ = SoulSignposts.event("MarkdownView.body")
+        return Group {
             if lazy {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in

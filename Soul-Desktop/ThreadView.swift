@@ -39,6 +39,11 @@ struct ThreadView: View {
     @State private var canvasWidth: CGFloat = 0
 
     var body: some View {
+        // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry. Zero cost
+        // when no Instruments / `log stream --signpost` is attached. Pair
+        // with the per-row signposts below to diagnose the next scroll
+        // regression without rewiring scaffolding (see -094/-096 incident).
+        let _ = SoulSignposts.event("ThreadView.body")
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -282,6 +287,8 @@ struct ThreadItemRow: View { let projectPath: String?
     var isQueued: Bool = false
 
     var body: some View {
+        // SOUL-SOUL_DESKTOP-099: per-item scroll-perf telemetry.
+        let _ = SoulSignposts.event("ThreadItemRow.body")
         // Note: historical dimming is pushed into per-component foreground colors so the row layer
         // stays opaque — Core Animation disables subpixel text AA on translucent layers, which
         // shows up as slightly blurry / shimmering text during fractional-offset trackpad scroll.
@@ -485,6 +492,10 @@ private struct AgentMessageRow: View, Equatable {
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
 
     var body: some View {
+        // SOUL-SOUL_DESKTOP-099: agent-bubble scroll-perf telemetry. The
+        // MarkdownView build inside this row is the suspected cost driver
+        // during scroll-up bursts. Pair with MarkdownView.body to confirm.
+        let _ = SoulSignposts.event("AgentMessageRow.body")
         let mutedFg = SoulColor.fg.opacity(0.62)
         VStack(alignment: .leading, spacing: 4) {
             MarkdownView(
@@ -752,6 +763,8 @@ private struct ToolCallRow: View {
     }
 
     var body: some View {
+        // SOUL-SOUL_DESKTOP-099: tool-call scroll-perf telemetry.
+        let _ = SoulSignposts.event("ToolCallRow.body")
         VStack(alignment: .leading, spacing: 6) {
             if let path = filePath {
                 FileChipRow(
