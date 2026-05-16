@@ -164,21 +164,34 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         if let cache = groupedItemsCache, cache.version == itemsVersion {
             return cache.value
         }
+        // Two grouping flavors share the .toolCallGroup case:
+        //   - edit/write: same kind AND same file (combined-diff card render)
+        //   - other kinds (execute, read, search, fetch, think, …): same kind
+        //     only; renders as a carousel row that crossfades the arg portion.
+        // Singletons are unwrapped at the end so the single-row path stays
+        // untouched for non-clustered tool calls.
         var result: [ThreadItem] = []
         for item in items {
-            if case .toolCall(let id, let kind, let title, _, let loc, _) = item,
-               (kind == "edit" || kind == "write") {
-                if let last = result.last,
-                   case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = last,
-                   gTitle == title, gKind == kind {
-                    gItems.append(item)
-                    result[result.count - 1] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
-                } else {
-                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
-                }
-            } else {
+            guard case .toolCall(let id, let kind, let title, _, let loc, _) = item else {
                 result.append(item)
+                continue
             }
+            let isDiffGroup = (kind == "edit" || kind == "write")
+            if let last = result.last,
+               case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = last,
+               gKind == kind,
+               isDiffGroup ? gTitle == title : true {
+                gItems.append(item)
+                result[result.count - 1] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
+            } else {
+                result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
+            }
+        }
+        result = result.map { entry in
+            if case .toolCallGroup(_, _, _, _, let inner) = entry, inner.count == 1 {
+                return inner[0]
+            }
+            return entry
         }
         groupedItemsCache = (itemsVersion, result)
         return result
@@ -418,6 +431,24 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// first MainActor block lands.
     func assignSessionId(_ sid: String) {
         sessionId = sid
+        startFinalizeWatcher()
+    }
+
+    /// SOUL-SOUL_DESKTOP-075 (b1): watch the project's sessions dir for new
+    /// finalize JSON files so an agent self-invoking `/finalize` (typical
+    /// Gemini-CLI behavior) surfaces a real FinalizeCard instead of just a
+    /// bold "Finalization complete" line of stdout from the tool call.
+    @ObservationIgnored private var finalizeWatcher: FinalizeWatcher?
+
+    private func startFinalizeWatcher() {
+        finalizeWatcher?.stop()
+        let dir = "\(SoulRegistry.registryPath)/sessions/\(project.id)"
+        let watcher = FinalizeWatcher(directoryPath: dir) { [weak self] in
+            guard let self, let sid = self.sessionId else { return }
+            self.injectFinalizeSummaryIfFresh(sessionId: sid)
+        }
+        finalizeWatcher = watcher
+        watcher.start()
     }
     /// Agent-native session id used for ACP calls (session/prompt,
     /// session/cancel, session/load). For Soul-Desktop spawns this equals
@@ -936,6 +967,17 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             )
         }
 
+        // SOUL-SOUL_DESKTOP-078: classify the hang at firing time. If the
+        // kernel ledger already has an AfterTool for this toolCallId, it's
+        // class B (ACP item/completed never delivered). If not, it's class
+        // A (still working — bump helps) or C (app-server stall). Cheap
+        // tail scan; we read at most 256KB off the end of hooks.jsonl.
+        let afterToolInLedger = SoulRegistry.ledgerContainsAfterTool(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            toolId: toolId
+        )
+
         SoulRegistry.appendHook(
             projectKey: project.id,
             sessionId: sessionId ?? id,
@@ -947,6 +989,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                 "tool_title": titleForHook,
                 "elapsed_seconds": elapsed,
                 "threshold": threshold,
+                "afterTool_in_ledger": afterToolInLedger,
             ]
         )
 
@@ -965,8 +1008,12 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
     func loadSession(id sid: String) async {
         guard !hasInitialized else { return }
+        let loadSessionInterval = SoulSignposts.beginInterval("ThreadController.loadSession", id: sid)
         isWorking = true
-        defer { isWorking = false }
+        defer {
+            isWorking = false
+            SoulSignposts.endInterval("ThreadController.loadSession", state: loadSessionInterval)
+        }
         guard Self.looksLikeUUID(sid) else {
             items.append(.error(id: UUID(), text: "session id is not a UUID; cannot resume"))
             return
@@ -1206,6 +1253,8 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// the user is never stuck staring at an empty canvas.
     func hydrateFromDisk(id sid: String) async {
         guard !hasInitialized else { return }
+        let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
+        defer { SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval) }
         // Hydrate handles Claude, Gemini-CLI, AND Codex. Pi still falls
         // through to loadSession (no hydrate reader yet). The earlier
         // guard explicitly skipped codex which bounced every codex click
@@ -1536,6 +1585,8 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
     func teardown() async {
         logLifecycle("teardown", note: "controller torn down (e.g. row deselected)")
+        finalizeWatcher?.stop()
+        finalizeWatcher = nil
         eventTask?.cancel()
         await client?.stop()
         client = nil
@@ -2905,11 +2956,33 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
     private var openAgentThoughtId: UUID? = nil
 
+    /// Inject a paragraph break when a reasoning chunk begins with a bold
+    /// span (`**Header**`) and the prior buffer ends in sentence-terminating
+    /// punctuation. Gemini (and sometimes Pi/Codex) emit reasoning as one
+    /// long run with no linebreaks between section headers, so the renderer's
+    /// inline-only markdown parser ends up gluing headers onto the end of
+    /// the previous sentence. Patching the buffer here is cheaper than
+    /// rewriting the renderer (block-level markdown caused exponential
+    /// SwiftUI layout recursion — see comment in AgentThoughtRow).
+    private func normalizeThoughtJoin(prior: String, incoming: String) -> String {
+        let trimmedIncoming = incoming.drop(while: { $0 == " " || $0 == "\t" })
+        guard trimmedIncoming.hasPrefix("**") else { return prior + incoming }
+        let lastNonSpace = prior.reversed().drop(while: { $0 == " " || $0 == "\t" }).first
+        guard let last = lastNonSpace, last == "." || last == "!" || last == "?" else {
+            return prior + incoming
+        }
+        // Already separated by a newline? Don't double up.
+        let tailNewlines = prior.reversed().prefix(while: { $0 == " " || $0 == "\t" || $0 == "\n" })
+        if tailNewlines.contains("\n") { return prior + incoming }
+        return prior + "\n\n" + incoming
+    }
+
     private func appendAgentThoughtChunk(_ chunk: String) {
         if let openId = openAgentThoughtId,
            let idx = items.firstIndex(where: { $0.id == openId }),
            case .agentThought(let id, let existing, _, let ts) = items[idx] {
-            items[idx] = .agentThought(id: id, text: existing + chunk, complete: false, timestamp: ts)
+            let combined = normalizeThoughtJoin(prior: existing, incoming: chunk)
+            items[idx] = .agentThought(id: id, text: combined, complete: false, timestamp: ts)
         } else {
             // Symmetric to appendAgentChunk: opening a thought bubble closes
             // any open message bubble. Without this, a stream of shape
@@ -3052,9 +3125,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return
         }
 
-        // Closing the open agent message when a tool call arrives keeps subsequent
-        // chunks in a fresh bubble after the call returns.
+        // Closing the open agent message AND thought when a tool call arrives
+        // keeps subsequent chunks in a fresh bubble below the call. Without
+        // closing the thought, a stream of thought → tool → thought re-appends
+        // the second batch into the original thinking card *above* the tool
+        // rows, since openAgentThoughtId still points at it.
         openAgentMessageId = nil
+        openAgentThoughtId = nil
 
         // First time we're seeing this toolCallId. Use structured details
         // when we have them; otherwise leave details = nil and the row

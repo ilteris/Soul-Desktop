@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 struct ThreadView: View {
     @Bindable var controller: ThreadController
@@ -38,6 +39,7 @@ struct ThreadView: View {
                         let queuedItems = split.queued
                         ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
+                                projectPath: controller.project.path,
                                 item: item,
                                 isHistorical: controller.historicalIDs.contains(item.id),
                                 isQueued: false
@@ -58,6 +60,7 @@ struct ThreadView: View {
                         }
                         ForEach(queuedItems, id: \.id) { item in
                             ThreadItemRow(
+                                projectPath: controller.project.path,
                                 item: item,
                                 isHistorical: false,
                                 isQueued: true
@@ -206,7 +209,7 @@ struct ThreadView: View {
 
 }
 
-struct ThreadItemRow: View {
+struct ThreadItemRow: View { let projectPath: String?
     let item: ThreadItem
     var isHistorical: Bool = false
     var isQueued: Bool = false
@@ -223,9 +226,13 @@ struct ThreadItemRow: View {
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
-            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details)
+            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath)
         case .toolCallGroup(_, let kind, let title, let loc, let items):
-            ToolCallGroupRow(kind: kind, title: title, location: loc, items: items, isHistorical: isHistorical)
+            if kind == "edit" || kind == "write" {
+                ToolCallGroupRow(kind: kind, title: title, location: loc, items: items, isHistorical: isHistorical)
+            } else {
+                ToolCallCarouselRow(kind: kind, items: items, isHistorical: isHistorical, projectPath: projectPath)
+            }
         case .plan(_, let entries):
             PlanCard(entries: entries)
         case .status(_, let text):
@@ -642,6 +649,7 @@ private struct ToolCallRow: View {
     let status: String
     let location: String?
     let details: ToolCallDetails?
+    let projectPath: String?
 
     @State private var diffExpanded: Bool = false
 
@@ -649,6 +657,18 @@ private struct ToolCallRow: View {
         if let loc = location, looksLikePath(loc) { return loc }
         if looksLikePath(title) { return title }
         return nil
+    }
+
+    private var resolvedPath: String? {
+        guard let path = filePath else { return nil }
+        if path.hasPrefix("/" ) { return path }
+        guard let projectPath = projectPath else { return path }
+        return (projectPath as NSString).appendingPathComponent(path)
+    }
+
+    private var fileExists: Bool {
+        guard let path = resolvedPath else { return true }
+        return FileManager.default.fileExists(atPath: path)
     }
 
     var body: some View {
@@ -667,7 +687,12 @@ private struct ToolCallRow: View {
                 )
             }
             if diffExpanded, let details {
-                DiffView(details: details)
+                if !fileExists && filePath != nil {
+                    MissingFilePlaceholder(path: filePath!)
+                        .padding(.leading, 12)
+                } else {
+                    DiffView(details: details)
+                }
             }
         }
     }
@@ -756,6 +781,177 @@ private struct ToolCallRow: View {
 
     private func looksLikePath(_ s: String) -> Bool {
         s.contains("/") || s.contains(".")
+    }
+}
+
+private struct MissingFilePlaceholder: View {
+    let path: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "questionmark.folder")
+                .font(.system(size: 11))
+                .foregroundStyle(SoulColor.fgSubtle)
+            Text("File no longer on disk")
+                .font(SoulFont.ui(11))
+                .foregroundStyle(SoulColor.fgMuted)
+            Text((path as NSString).lastPathComponent)
+                .font(SoulFont.code(11))
+                .foregroundStyle(SoulColor.fgSubtle)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5)
+        )
+    }
+}
+
+/// Compact carousel for runs of consecutive same-kind tool calls
+/// (execute/read/search/fetch/…). The kind label stays pinned on the left;
+/// the arg portion crossfades through each call's title. Stops on the last
+/// call once everything is complete and we've cycled through at least once.
+/// Hover pauses; click expands the row into the full list (each inner call
+/// rendered via the normal ToolCallRow path).
+private struct ToolCallCarouselRow: View {
+    let kind: String
+    let items: [ThreadItem]
+    var isHistorical: Bool = false
+    let projectPath: String?
+
+    @State private var index: Int = 0
+    @State private var fullyToured: Bool = false
+    @State private var paused: Bool = false
+    @State private var expanded: Bool = false
+
+    private let cycleSeconds: Double = 0.9
+    private let crossfadeSeconds: Double = 0.25
+    private let timer = Timer.publish(every: 0.9, on: .main, in: .common).autoconnect()
+
+    private func title(of item: ThreadItem) -> String {
+        if case .toolCall(_, _, let t, _, _, _) = item { return t }
+        return ""
+    }
+    private func status(of item: ThreadItem) -> String {
+        if case .toolCall(_, _, _, let s, _, _) = item { return s }
+        return "completed"
+    }
+
+    private var aggregateStatus: String {
+        let s = items.map { status(of: $0) }
+        if s.contains(where: { $0 == "failed" || $0 == "error" }) { return "failed" }
+        if s.contains(where: { $0 == "pending" || $0 == "in_progress" }) { return "in_progress" }
+        if s.contains("stopped") { return "stopped" }
+        return "completed"
+    }
+
+    private var allComplete: Bool { aggregateStatus == "completed" }
+
+    private var statusColor: Color {
+        switch aggregateStatus {
+        case "pending", "in_progress": return .orange
+        case "completed": return .green
+        case "failed": return .red
+        case "stopped": return .gray
+        default: return SoulColor.fgSubtle
+        }
+    }
+
+    private var icon: String {
+        switch kind {
+        case "read": return "📖"
+        case "edit": return "✎"
+        case "delete": return "🗑"
+        case "move": return "→"
+        case "search": return "🔎"
+        case "execute": return ""
+        case "think": return "💭"
+        case "fetch": return "🌐"
+        default: return "⚙️"
+        }
+    }
+
+    private var shouldAdvance: Bool {
+        items.count > 1 && !paused && !expanded && (!allComplete || !fullyToured)
+    }
+
+    private var currentTitle: String {
+        guard !items.isEmpty else { return "" }
+        return title(of: items[min(index, items.count - 1)])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if !icon.isEmpty { Text(icon) }
+                        Text(kind)
+                            .font(SoulFont.code(13, weight: .bold))
+                            .foregroundStyle(SoulColor.fg)
+                        Text(currentTitle)
+                            .font(SoulFont.code(13, weight: .regular))
+                            .foregroundStyle(SoulColor.fg)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: crossfadeSeconds), value: index)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .onHover { paused = $0 }
+
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(aggregateStatus)
+                    .font(SoulFont.ui(13, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+
+                Text("(\(items.count))")
+                    .font(SoulFont.ui(11))
+                    .foregroundStyle(SoulColor.fgSubtle)
+
+                Spacer()
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(items, id: \.id) { item in
+                        ThreadItemRow(projectPath: projectPath, item: item, isHistorical: isHistorical)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+        .onReceive(timer) { _ in
+            guard items.count > 1 else { return }
+            if !shouldAdvance {
+                // Once complete and toured, settle on the last item.
+                if allComplete && fullyToured && index != items.count - 1 {
+                    withAnimation(.easeInOut(duration: crossfadeSeconds)) {
+                        index = items.count - 1
+                    }
+                }
+                return
+            }
+            let next = (index + 1) % items.count
+            index = next
+            if next == items.count - 1 { fullyToured = true }
+        }
     }
 }
 

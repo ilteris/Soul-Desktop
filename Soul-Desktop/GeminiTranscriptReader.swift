@@ -24,6 +24,12 @@ enum GeminiTranscriptReader {
     /// line `sessionId` matches `sid` — Gemini-CLI's filenames include only
     /// a short hex suffix, not the full UUID, so a directory glob is needed.
     static func transcript(forSession sid: String, projectKey: String) -> [ThreadItem]? {
+        SoulSignposts.interval("GeminiTranscriptReader.transcript", id: sid) {
+            _transcript(forSession: sid, projectKey: projectKey)
+        }
+    }
+
+    private static func _transcript(forSession sid: String, projectKey: String) -> [ThreadItem]? {
         guard let url = locateTranscript(sessionId: sid, projectKey: projectKey) else { return nil }
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
 

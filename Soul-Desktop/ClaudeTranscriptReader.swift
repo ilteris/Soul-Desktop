@@ -10,6 +10,12 @@ import Foundation
 /// are skipped — they're internal bookkeeping, not turns.
 enum ClaudeTranscriptReader {
     static func transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
+        SoulSignposts.interval("ClaudeTranscriptReader.transcript", id: sid) {
+            _transcript(forSession: sid, cwd: cwd)
+        }
+    }
+
+    private static func _transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
         let encoded = encodeCwd(cwd)
         let path = NSHomeDirectory() + "/.claude/projects/\(encoded)/\(sid).jsonl"
         guard FileManager.default.fileExists(atPath: path),

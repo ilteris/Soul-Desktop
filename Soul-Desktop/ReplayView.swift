@@ -110,7 +110,7 @@ struct ReplayView: View {
 
             if expanded || chapter.header == nil {
                 ForEach(chapter.body, id: \.id) { item in
-                    ThreadItemRow(item: item, isHistorical: false)
+                    ThreadItemRow(projectPath: controller.project.path, item: item, isHistorical: false)
                         .id(item.id)
                 }
             }

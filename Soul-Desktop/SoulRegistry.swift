@@ -325,8 +325,9 @@ enum SoulRegistry {
     /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
     /// Building the index once per scan turns N×M per-session matching
     /// (`for each session, iterate every chat file looking for suffix`)
-    /// into N O(1) lookups. With 99 sessions in `soul` × ~50 chat files in
-    /// `soul-1/chats/` that's ~5000 fewer suffix checks per project expand.
+    /// into N O(1) lookups. With ~100 sessions in a project × ~50 chat
+    /// files in a sibling `<project>-N/chats/` dir, that's ~5000 fewer
+    /// suffix checks per project expand.
     /// Also caches the `isResumableGeminiChatFile` content check so we
     /// don't open the same file twice.
     private final class GeminiDirCache {
@@ -991,6 +992,40 @@ enum SoulRegistry {
         f.timeZone = TimeZone(identifier: "UTC")
         return f
     }()
+
+    /// SOUL-SOUL_DESKTOP-078: scan the live hooks.jsonl for any AfterTool
+    /// event whose tool_call_id (or "tool_use_id" — Claude shape) matches
+    /// `toolId`. Used by `fireToolCallTimeout` to classify the hang:
+    ///
+    ///   - true  → tool actually completed; ACP just didn't surface
+    ///             `item/completed` to the desktop (class B in -078).
+    ///   - false → tool genuinely never finished, or the kernel writer
+    ///             never landed AfterTool (class A or C).
+    ///
+    /// Reads only the tail of hooks.jsonl (last ~256KB) — enough to find
+    /// any plausibly-recent AfterTool without scanning the full ledger.
+    /// Cheap; safe to call from the stall watchdog tick.
+    static func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool {
+        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        guard let fh = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? fh.close() }
+        let size = (try? fh.seekToEnd()) ?? 0
+        let window: UInt64 = 256 * 1024
+        let start = size > window ? size - window : 0
+        try? fh.seek(toOffset: start)
+        guard let data = try? fh.readToEnd(), !data.isEmpty else { return false }
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        // Match either "AfterTool" + tool_call_id, or AfterTool + tool_use_id
+        // (Claude). Cheap substring check — false-positive risk is essentially
+        // zero because the toolId is a UUID-ish opaque string.
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.contains("AfterTool"),
+               line.contains(toolId) {
+                return true
+            }
+        }
+        return false
+    }
 
     static func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
         // Snapshot the wall-clock at call time. The dispatch below may run a

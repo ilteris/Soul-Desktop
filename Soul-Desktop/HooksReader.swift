@@ -23,14 +23,24 @@ struct ReplayEvent: Identifiable {
 /// against — see kernel/soul_view.py `_merge_with_prompts`.
 enum HooksReader {
     static func events(forSession sid: String, project: SoulProject) -> [ReplayEvent] {
-        let hooks = readHooks(projectKey: project.id, sessionId: sid)
+        return SoulSignposts.interval("HooksReader.events", id: sid) {
+            _events(forSession: sid, project: project)
+        }
+    }
+
+    private static func _events(forSession sid: String, project: SoulProject) -> [ReplayEvent] {
+        let hooks = SoulSignposts.interval("HooksReader.readHooks", id: sid) {
+            readHooks(projectKey: project.id, sessionId: sid)
+        }
         let prompts = readClaudePrompts(sessionId: sid, cwd: project.path)
         // Gemini sessions: the kernel hooks ledger doesn't carry agent reply
         // text (only prompts + decisions), so without reading the chat file
         // Replay would render the prompts but no responses. The locator
         // falls back to `.bak-*` and `.corrupt-*` siblings if the live file
         // is missing or stubbed.
-        let geminiTurns = readGeminiTurns(sessionId: sid, projectKey: project.id)
+        let geminiTurns = SoulSignposts.interval("HooksReader.readGeminiTurns", id: sid) {
+            readGeminiTurns(sessionId: sid, projectKey: project.id)
+        }
         // SOUL-SOUL_DESKTOP-065: recovered agent reply bodies from a
         // stream-time chunk file that survived an abrupt child teardown
         // (the AfterAgent rollup never landed). Skipped per-bubble when
