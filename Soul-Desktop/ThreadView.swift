@@ -34,8 +34,8 @@ struct ThreadView: View {
                         // them out of the main timeline; they're re-added
                         // below.
                         let queuedIds = controller.queuedItemIDs
-                        let mainItems = controller.items.filter { !queuedIds.contains($0.id) }
-                        let queuedItems = controller.items.filter { queuedIds.contains($0.id) }
+                        let allGrouped = controller.groupedItems; let mainItems = allGrouped.filter { !queuedIds.contains($0.id) }
+                        let queuedItems = allGrouped.filter { queuedIds.contains($0.id) }
                         ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 item: item,
@@ -208,6 +208,8 @@ struct ThreadItemRow: View {
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
             ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details)
+        case .toolCallGroup(_, let kind, let title, let loc, let items):
+            ToolCallGroupRow(kind: kind, title: title, location: loc, items: items, isHistorical: isHistorical)
         case .plan(_, let entries):
             PlanCard(entries: entries)
         case .status(_, let text):
@@ -714,7 +716,7 @@ private struct ToolCallRow: View {
     private var icon: String {
         switch kind {
         case "read": return "📖"
-        case "edit": return "✎"
+        case "edit", "write": return "✎"
         case "delete": return "🗑"
         case "move": return "→"
         case "search": return "🔎"
@@ -739,6 +741,184 @@ private struct ToolCallRow: View {
         s.contains("/") || s.contains(".")
     }
 }
+
+private struct ToolCallGroupRow: View {
+    let kind: String
+    let title: String
+    let location: String?
+    let items: [ThreadItem]
+    var isHistorical: Bool = false
+
+    @State private var expanded: Bool = false
+
+    private var filePath: String? {
+        if let loc = location, looksLikePath(loc) { return loc }
+        if looksLikePath(title) { return title }
+        return nil
+    }
+
+    private var status: String {
+        // Use the status of the last item in the group
+        if case .toolCall(_, _, _, let s, _, _) = items.last {
+            return s
+        }
+        return "completed"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let path = filePath {
+                FileChipRow(
+                    kind: kind, status: status, path: path,
+                    statusColor: statusColor, icon: icon,
+                    trailing: { chevron }
+                )
+                .contextMenu {
+                    Button("Copy combined diff") { copyCombinedDiff() }
+                }
+            } else {
+                DefaultToolRow(
+                    kind: kind, title: title, status: status, location: location,
+                    statusColor: statusColor, icon: icon,
+                    trailing: { chevron }
+                )
+                .contextMenu {
+                    Button("Copy combined diff") { copyCombinedDiff() }
+                }
+            }
+            if expanded {
+                let visibleItems = items.prefix(10)
+                let remainingCount = items.count - visibleItems.count
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(visibleItems, id: \.id) { item in
+                        if case .toolCall(_, _, _, _, _, let details) = item, let details = details {
+                            DiffView(details: details)
+                        }
+                    }
+                    
+                    if remainingCount > 0 {
+                        Text("\(remainingCount) more...")
+                            .font(SoulFont.ui(11, weight: .bold))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chevron: some View {
+        HStack(spacing: 6) {
+            diffStats
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(6)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private var diffStats: some View {
+        let (added, removed) = items.reduce((0, 0)) { res, item in
+            if case .toolCall(_, _, _, _, _, let details) = item, let details = details {
+                let (a, r) = countLines(details)
+                return (res.0 + a, res.1 + r)
+            }
+            return res
+        }
+        
+        HStack(spacing: 4) {
+            if added > 0 {
+                Text("+\(added)")
+                    .font(SoulFont.code(13, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+            if removed > 0 {
+                Text("-\(removed)")
+                    .font(SoulFont.code(13, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func countLines(_ details: ToolCallDetails) -> (added: Int, removed: Int) {
+        switch details.kind {
+        case .edit(let oldString, let newString):
+            return (lineCount(newString), lineCount(oldString))
+        case .write(let content):
+            return (lineCount(content), details.previousLineCount ?? 0)
+        }
+    }
+
+    private func lineCount(_ s: String) -> Int {
+        if s.isEmpty { return 0 }
+        var n = s.components(separatedBy: "\n").count
+        if s.hasSuffix("\n") { n -= 1 }
+        return max(n, 1)
+    }
+
+    private var icon: String {
+        switch kind {
+        case "read": return "📖"
+        case "edit", "write": return "✎"
+        case "delete": return "🗑"
+        case "move": return "→"
+        case "search": return "🔎"
+        case "execute": return ""
+        case "think": return "💭"
+        case "fetch": return "🌐"
+        default: return "⚙️"
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case "pending", "in_progress": return .orange
+        case "completed": return .green
+        case "failed": return .red
+        case "stopped": return .gray
+        default: return SoulColor.fgSubtle
+        }
+    }
+
+    private func looksLikePath(_ s: String) -> Bool {
+        s.contains("/") || s.contains(".")
+    }
+
+    private func copyCombinedDiff() {
+        var combined = ""
+        for item in items {
+            if case .toolCall(_, _, let t, _, _, let details) = item,
+               let details = details {
+                let filename = (t as NSString).lastPathComponent
+                switch details.kind {
+                case .edit(let oldS, let newS):
+                    combined += "--- \(filename) (old)\n+++ \(filename) (new)\n"
+                    combined += oldS.components(separatedBy: "\n").map { "-\($0)" }.joined(separator: "\n") + "\n"
+                    combined += newS.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
+                case .write(let content):
+                    combined += "--- /dev/null\n+++ \(filename)\n"
+                    combined += content.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
+                }
+                combined += "\n"
+            }
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(combined.trimmingCharacters(in: .whitespacesAndNewlines), forType: .string)
+    }
+}
+
+
 
 private struct FileChipRow<Trailing: View>: View {
     let kind: String
@@ -794,11 +974,9 @@ private struct FileChipRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            if status != "completed" {
-                Text(status)
-                    .font(SoulFont.ui(13, weight: .regular))
-                    .foregroundStyle(SoulColor.fgSubtle)
-            }
+            Text(status)
+                .font(SoulFont.ui(13, weight: .regular))
+                .foregroundStyle(SoulColor.fgSubtle)
 
             trailing()
 
@@ -874,11 +1052,9 @@ private struct DefaultToolRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            if status != "completed" {
-                Text(status)
-                    .font(SoulFont.ui(13, weight: .regular))
-                    .foregroundStyle(SoulColor.fgSubtle)
-            }
+            Text(status)
+                .font(SoulFont.ui(13, weight: .regular))
+                .foregroundStyle(SoulColor.fgSubtle)
 
             trailing()
 

@@ -34,7 +34,7 @@ struct ToolCallDetails: Hashable {
     var previousLineCount: Int? = nil
 }
 
-enum ThreadItem: Identifiable, Hashable {
+indirect enum ThreadItem: Identifiable, Hashable {
     case userMessage(id: UUID, text: String, timestamp: Date)
     case agentMessage(id: UUID, text: String, complete: Bool, timestamp: Date)
     /// Streaming reasoning text from `agent_thought_chunk` ACP notifications.
@@ -52,6 +52,7 @@ enum ThreadItem: Identifiable, Hashable {
     /// `cat` the JSON. Injected once per hydrate when a finalize record
     /// exists for the session.
     case finalize(id: UUID, intent: String?, summary: String?, rationale: String?, fixed: String?, nextStep: String?, timestamp: Date)
+    case toolCallGroup(id: UUID, kind: String, title: String, locationHint: String?, items: [ThreadItem])
 
     var id: UUID {
         switch self {
@@ -62,6 +63,7 @@ enum ThreadItem: Identifiable, Hashable {
         case .plan(let id, _): return id
         case .status(let id, _): return id
         case .error(let id, _): return id
+        case .toolCallGroup(let id, _, _, _, _): return id
         case .finalize(let id, _, _, _, _, _, _): return id
         }
     }
@@ -146,7 +148,31 @@ final class ThreadController {
     /// but not yet dispatched. ThreadView styles these bubbles with a
     /// "pending" look so the user can tell which prompts are queued vs. the
     /// one the agent is actively chewing on.
-    var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
+var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
+
+    /// Groups consecutive edit/write tool calls on the same file into a single
+    /// .toolCallGroup for compact rendering. Group breaks on turn boundaries,
+    /// message chunks, or non-edit tool calls. Derived from the flat items
+    /// list to keep the ledger truth simple.
+    var groupedItems: [ThreadItem] {
+        var result: [ThreadItem] = []
+        for item in items {
+            if case .toolCall(let id, let kind, let title, _, let loc, _) = item,
+               (kind == "edit" || kind == "write") {
+                if let last = result.last,
+                   case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = last,
+                   gTitle == title, gKind == kind {
+                    gItems.append(item)
+                    result[result.count - 1] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
+                } else {
+                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
+                }
+            } else {
+                result.append(item)
+            }
+        }
+        return result
+    }
 
     /// Per-thread scroll anchor. ThreadView records the top-most visible item
     /// as the user scrolls and restores it on re-appear so switching threads
@@ -317,6 +343,8 @@ final class ThreadController {
                 out += "> 💭 \(text)\n\n"
             case .toolCall(_, let kind, let title, let status, let loc, _):
                 out += "_\(kind): \(title)_ — \(status)\(loc.map { " (\($0))" } ?? "")\n\n"
+            case .toolCallGroup(_, let kind, let title, let loc, let inner):
+                out += "_\(kind): \(title)_ — \(inner.count) edits\(loc.map { " (\($0))" } ?? "")\n\n"
             case .plan(_, let entries):
                 out += "**Plan:**\n"
                 for e in entries {

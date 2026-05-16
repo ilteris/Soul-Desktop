@@ -58,6 +58,11 @@ struct ContextUsage {
             case .toolCall(_, _, let title, _, let loc, _):
                 bytes += title.utf8.count
                 if let loc { bytes += loc.utf8.count }
+            case .toolCallGroup(_, _, let title, let loc, let inner):
+                bytes += title.utf8.count
+                if let loc { bytes += loc.utf8.count }
+                // Recurse — grouped tool calls have their own titles/locations.
+                bytes += Int(estimateFromReplayItems(inner, max: max).tokens) * 4
             case .status(_, let text), .error(_, let text):
                 bytes += text.utf8.count
             case .plan, .finalize:
