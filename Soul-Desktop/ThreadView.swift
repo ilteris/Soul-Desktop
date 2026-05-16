@@ -22,6 +22,12 @@ struct ThreadView: View {
     /// top-most visible one when the user scrolls.
     @State private var visibleIds: Set<UUID> = []
 
+    /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
+    /// scroll-anchor system can re-pin its anchor row when the right side
+    /// panel opens/closes (canvas shrinks/grows, rows re-wrap, absolute pixel
+    /// offset lands on different content).
+    @State private var canvasWidth: CGFloat = 0
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -128,6 +134,27 @@ struct ThreadView: View {
                     guard newValue else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
+                    }
+                }
+                // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
+                // changes (right side panel opens / closes / resizes).
+                // Without this, LazyVStack row remeasurement leaves
+                // ScrollView's absolute offset pointing at different content.
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { canvasWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { _, newWidth in
+                                canvasWidth = newWidth
+                            }
+                    }
+                )
+                .onChange(of: canvasWidth) { _, _ in
+                    guard !suppressAnchorWrites else { return }
+                    if controller.scrollAnchorAtBottom {
+                        proxy.scrollTo("__bottom__", anchor: .bottom)
+                    } else if let id = controller.scrollAnchorItemId {
+                        proxy.scrollTo(id, anchor: .top)
                     }
                 }
             }
