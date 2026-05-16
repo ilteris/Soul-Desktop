@@ -3113,6 +3113,38 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return l
         }()
         let structuredDetails: ToolCallDetails? = {
+            // SOUL-SOUL_DESKTOP-101: ACP DiffContent fallback for providers
+            // that omit `rawInput` entirely (Gemini-CLI's write_file is the
+            // canonical case — payload has only `content[]` with a `type:
+            // "diff"` block carrying { path, oldText, newText }). Try this
+            // shape first; if no diff block matches, fall through to the
+            // rawInput-based extractors below.
+            if case .array(let blocks)? = payload["content"] {
+                for block in blocks {
+                    let isDiff = block["type"]?.stringValue == "diff"
+                    guard isDiff else { continue }
+                    let oldT = block["oldText"]?.stringValue ?? block["old_string"]?.stringValue
+                    let newT = block["newText"]?.stringValue ?? block["new_string"]?.stringValue
+                    guard let newT else { continue }
+                    if let oldT, !oldT.isEmpty {
+                        return ToolCallDetails(kind: .edit(oldString: oldT, newString: newT), startLine: startLine)
+                    }
+                    // Empty oldText → write. Capture previous file size if
+                    // disk still has the pre-write version (gives +N -M
+                    // instead of additions-only).
+                    if toolCallPreviousLineCount[toolId] == nil,
+                       let path = block["path"]?.stringValue {
+                        let abs = path.hasPrefix("/") ? path : (project.path as NSString).appendingPathComponent(path)
+                        toolCallPreviousLineCount[toolId] = previousLineCount(atPath: abs)
+                    }
+                    let prev = toolCallPreviousLineCount[toolId]
+                    return ToolCallDetails(
+                        kind: .write(content: newT),
+                        startLine: startLine,
+                        previousLineCount: (prev ?? 0) > 0 ? prev : nil
+                    )
+                }
+            }
             guard let rawInput else { return nil }
             let oldS = rawInput["old_string"]?.stringValue ?? rawInput["oldString"]?.stringValue
             let newS = rawInput["new_string"]?.stringValue ?? rawInput["newString"]?.stringValue
