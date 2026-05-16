@@ -624,39 +624,59 @@ private struct UserMessageRow: View {
 
     var body: some View {
         let p = parsed
-        VStack(alignment: .trailing, spacing: 2) {
-            bubble(p)
-            HStack(spacing: 4) {
-                if isQueued {
-                    Image(systemName: "hourglass")
-                        .font(.system(size: 9))
-                        .foregroundStyle(SoulColor.fgSubtle)
-                    Text("queued")
-                        .font(SoulFont.ui(10, weight: .medium))
-                        .foregroundStyle(SoulColor.fgSubtle)
-                        .padding(.trailing, 4)
-                }
-                if isHovering && !isHistorical && !isQueued {
-                    FooterButton(
-                        systemName: copied ? "checkmark" : "doc.on.doc",
-                        help: "Copy as Markdown"
-                    ) {
-                        let payload = p.commandName.map { "/\($0)\(p.rest.isEmpty ? "" : " \(p.rest)")" } ?? text
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(payload, forType: .string)
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-                    }
-                }
+        // SOUL-SOUL_DESKTOP-102: a `/cmd` invocation with no body and no args
+        // is a chip-only row. Slash commands logged to hooks.jsonl as bare
+        // `/finalize` / `/pulse` (display text, not the expanded agent prompt)
+        // render as standalone bubbles with empty bodies — visually they read
+        // like a user message that got cut off. Collapse those to a compact
+        // inline event marker so they read as "this command fired" instead of
+        // "here is a message." Live and historical share the same treatment;
+        // the user just typing /finalize sees the chip as a receipt either way.
+        if let cmd = p.commandName, p.rest.isEmpty {
+            HStack(spacing: 6) {
+                Spacer(minLength: 32)
+                SlashCommandChip(command: cmd, args: "", isHistorical: isHistorical)
                 Text(MessageTimestamp.format(timestamp))
                     .font(SoulFont.ui(10))
                     .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
                     .help(MessageTimestamp.absolute(timestamp))
             }
             .padding(.trailing, 4)
-            .frame(minHeight: 18)
+        } else {
+            VStack(alignment: .trailing, spacing: 2) {
+                bubble(p)
+                HStack(spacing: 4) {
+                    if isQueued {
+                        Image(systemName: "hourglass")
+                            .font(.system(size: 9))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                        Text("queued")
+                            .font(SoulFont.ui(10, weight: .medium))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                            .padding(.trailing, 4)
+                    }
+                    if isHovering && !isHistorical && !isQueued {
+                        FooterButton(
+                            systemName: copied ? "checkmark" : "doc.on.doc",
+                            help: "Copy as Markdown"
+                        ) {
+                            let payload = p.commandName.map { "/\($0)\(p.rest.isEmpty ? "" : " \(p.rest)")" } ?? text
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(payload, forType: .string)
+                            copied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                        }
+                    }
+                    Text(MessageTimestamp.format(timestamp))
+                        .font(SoulFont.ui(10))
+                        .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
+                        .help(MessageTimestamp.absolute(timestamp))
+                }
+                .padding(.trailing, 4)
+                .frame(minHeight: 18)
+            }
+            .onHover { isHovering = $0 }
         }
-        .onHover { isHovering = $0 }
     }
 
     @ViewBuilder

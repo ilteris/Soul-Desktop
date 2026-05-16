@@ -667,7 +667,32 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                     relocateQueuedBubbleToEnd(turn)
                 }
                 isFirstTurn = false
-                _ = try await client.prompt(sessionId: nid, text: turn.agent)
+                do {
+                    _ = try await client.prompt(sessionId: nid, text: turn.agent)
+                } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
+                    // SOUL-SOUL_DESKTOP-103: Gemini-CLI rotates / drops the
+                    // session mid-conversation (observed: session loaded fine,
+                    // ran tools, then a later session/prompt fails with
+                    // "Invalid session identifier" on the same sid we just
+                    // used). Same class as SOUL-SOUL_DESKTOP-060 / -022 but at
+                    // the prompt boundary instead of the load boundary. Try a
+                    // transparent recovery: re-issue session/load on the held
+                    // sid (the agent re-registers it in its session map), then
+                    // retry the prompt once. If that also fails we fall through
+                    // to the outer catch and surface the original error.
+                    items.append(.status(
+                        id: UUID(),
+                        text: "ℹ \(rpc.message) — re-registering session and retrying"
+                    ))
+                    suppressLoadReplay = true
+                    isReplayingLoad = true
+                    defer {
+                        suppressLoadReplay = false
+                        isReplayingLoad = false
+                    }
+                    try await client.loadSession(sessionId: nid, cwd: project.path)
+                    _ = try await client.prompt(sessionId: nid, text: turn.agent)
+                }
 
                 // Persist the agent's full reply text to the kernel hooks
                 // ledger. Without this, the conversation only lives in the
@@ -1331,6 +1356,21 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return s.count > 400 ? String(s.prefix(400)) + "…" : s
         }
         return ""
+    }
+
+    /// SOUL-SOUL_DESKTOP-103: matches the "agent doesn't know this sid"
+    /// rpcError surface across providers. Gemini-CLI raises -32602 / -32603
+    /// with messages mentioning "invalid session" or "session id"; Claude
+    /// raises -32002 with "resource not found." Used by both the session/load
+    /// recovery path (SOUL-SOUL_DESKTOP-022) and the mid-conversation
+    /// session/prompt recovery path (SOUL-SOUL_DESKTOP-103).
+    private static func isInvalidSessionRPC(_ rpc: JSONRPCError) -> Bool {
+        let lowerMsg = rpc.message.lowercased()
+        return rpc.code == -32602
+            || rpc.code == -32002
+            || lowerMsg.contains("invalid session")
+            || lowerMsg.contains("session id")
+            || lowerMsg.contains("resource not found")
     }
 
     /// Best-effort snapshot of the agent's chat file before a resume attempt.
