@@ -418,6 +418,11 @@ private struct FinalizeCard: View {
     let nextStep: String?
 
     var body: some View {
+        // SOUL-SOUL_DESKTOP-100: confirm the FinalizeCard actually
+        // materialized in the canvas. If `injectFinalizeSummary` ran but
+        // this event never fires, the card is in `items` but not visible
+        // for some other reason.
+        let _ = SoulSignposts.event("FinalizeCard.body")
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.seal.fill")

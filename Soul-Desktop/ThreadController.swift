@@ -1489,19 +1489,29 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// `hydrateFromDisk`); same session where /finalize ran would never
     /// surface the structured summary.
     private func injectFinalizeSummaryIfFresh(sessionId sid: String) {
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else { return }
+        // SOUL-SOUL_DESKTOP-100: trace each branch so we can pin down why
+        // the FinalizeCard doesn't render for some providers.
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
+            return
+        }
         let hasContent = (rec.intent?.isEmpty == false)
             || (rec.summary?.isEmpty == false)
             || (rec.rationale?.isEmpty == false)
             || (rec.fixed?.isEmpty == false)
             || (rec.nextStep?.isEmpty == false)
-        guard hasContent else { return }
+        guard hasContent else {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.empty", "\(provLabel)")
+            return
+        }
         // Dedup: only inject if this is a NEWER finalize than what we
         // already rendered. First inject after spawn / hydrate always
         // counts (lastFinalizeInjectedAt nil → unconditional first push).
         if let ts = rec.timestamp,
            let prev = lastFinalizeInjectedAt,
            ts <= prev {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.stale", "\(provLabel)")
             return
         }
         lastFinalizeInjectedAt = rec.timestamp ?? Date()
@@ -1514,6 +1524,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             nextStep: rec.nextStep,
             timestamp: rec.timestamp ?? Date()
         ))
+        SoulSignposts.event("injectFinalizeSummaryIfFresh.appended", "\(provLabel)")
     }
 
     /// Append a `.finalize` card to the canvas if a finalize JSON exists for
@@ -1521,13 +1532,21 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// recorded. Marked historical so it gets the muted/read-only styling
     /// alongside the rest of the loaded transcript.
     private func injectFinalizeSummary(sessionId sid: String) {
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else { return }
+        // SOUL-SOUL_DESKTOP-100: trace each branch.
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+            SoulSignposts.event("injectFinalizeSummary.miss", "\(provLabel)")
+            return
+        }
         let hasContent = (rec.intent?.isEmpty == false)
             || (rec.summary?.isEmpty == false)
             || (rec.rationale?.isEmpty == false)
             || (rec.fixed?.isEmpty == false)
             || (rec.nextStep?.isEmpty == false)
-        guard hasContent else { return }
+        guard hasContent else {
+            SoulSignposts.event("injectFinalizeSummary.empty", "\(provLabel)")
+            return
+        }
         let id = UUID()
         historicalIDs.insert(id)
         items.append(.finalize(
@@ -1542,6 +1561,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // Remember this finalize so the post-turn live-injection helper
         // doesn't push a duplicate card after the next turn completes.
         lastFinalizeInjectedAt = rec.timestamp ?? Date()
+        SoulSignposts.event("injectFinalizeSummary.appended", "\(provLabel)")
     }
 
     /// SOUL-SOUL_DESKTOP-038: merge slash-command UserPrompt hooks back into

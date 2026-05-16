@@ -1560,8 +1560,14 @@ enum SoulRegistry {
     }
 
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
+        // SOUL-SOUL_DESKTOP-100: trace each step so we know exactly where
+        // the reader misses for providers whose finalize JSON should exist.
+        let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
         let dir = "\(registryPath)/sessions/\(projectKey)"
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+            SoulSignposts.event("latestFinalize.no_dir", "\(sidLabel)")
+            return nil
+        }
         // Filename shapes the kernel writes:
         //   <uuid>.json
         //   <ts>_<uuid>.json   (the common case; multiple per session as the
@@ -1575,11 +1581,18 @@ enum SoulRegistry {
         }
         // Most recent finalize wins — `<ts>_<uuid>` filenames sort
         // lexicographically by timestamp prefix.
-        guard let latest = matches.sorted().last else { return nil }
+        guard let latest = matches.sorted().last else {
+            SoulSignposts.event("latestFinalize.no_match", "\(sidLabel)")
+            return nil
+        }
         let path = "\(dir)/\(latest)"
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        else {
+            SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(latest)")
+            return nil
+        }
+        SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(latest)")
         return FinalizeRecord(
             intent: stringOrNil(obj["intent"]),
             summary: stringOrNil(obj["summary"]),
