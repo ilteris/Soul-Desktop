@@ -3000,8 +3000,22 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
         let toolId = payload["toolCallId"]?.stringValue ?? UUID().uuidString
-        let kind = payload["kind"]?.stringValue ?? "tool"
+        let rawKind = payload["kind"]?.stringValue ?? "tool"
         let rawTitle = payload["title"]?.stringValue ?? ""
+        // Normalize provider kind quirks: Pi sends kind="other"+title="bash"
+        // for shell invocations; the rest of the codebase (icon, kindForTool,
+        // play-button affordance, carousel grouping) keys off "execute" for
+        // shell tools. Remap so Pi bash renders identically to Claude/Gemini
+        // bash instead of through the generic ⚙️ "other" path.
+        let kind: String = {
+            if rawKind == "other" {
+                let t = rawTitle.lowercased()
+                if t == "bash" || t == "shell" || t == "sh" || t == "command" {
+                    return "execute"
+                }
+            }
+            return rawKind
+        }()
         let status = payload["status"]?.stringValue ?? "pending"
 
         // Claude (and most ACP agents) attach a human-readable description to
