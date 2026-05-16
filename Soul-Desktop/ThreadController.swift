@@ -1341,7 +1341,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // "New chat".
         if let t = result.title, !t.isEmpty { customTitle = t }
         nativeSessionId = result.nativeId
-        for it in history { historicalIDs.insert(it.id) }
+        // SOUL-SOUL_DESKTOP-097: bulk-update the @Observable Set in ONE
+        // mutation instead of N. Per-item .insert in a synchronous loop
+        // fires N tracked-change events, each invalidating ThreadView and
+        // forcing the LazyVStack to re-evaluate its ForEach over the
+        // growing items array — quadratic blowup on long Claude
+        // transcripts (measured: hydrate hung indefinitely on a ~thousand-
+        // item session). formUnion is a single mutation.
+        historicalIDs.formUnion(history.lazy.map(\.id))
         items.append(contentsOf: history)
         // Slash-command UserPrompt hooks (captured by the kernel before the
         // model API ever saw them) don't appear in the Claude transcript —
@@ -1454,7 +1461,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
               !history.isEmpty
         else { return }
 
-        for it in history { historicalIDs.insert(it.id) }
+        // SOUL-SOUL_DESKTOP-097: bulk-update the @Observable Set in ONE
+        // mutation instead of N. Per-item .insert in a synchronous loop
+        // fires N tracked-change events, each invalidating ThreadView and
+        // forcing the LazyVStack to re-evaluate its ForEach over the
+        // growing items array — quadratic blowup on long Claude
+        // transcripts (measured: hydrate hung indefinitely on a ~thousand-
+        // item session). formUnion is a single mutation.
+        historicalIDs.formUnion(history.lazy.map(\.id))
         items.append(contentsOf: history)
         items.append(.status(id: UUID(), text: "─ history above (read-only) ─"))
     }
