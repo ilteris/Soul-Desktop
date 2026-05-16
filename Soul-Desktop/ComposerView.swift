@@ -603,7 +603,7 @@ private struct ComposerTextField: NSViewRepresentable {
     /// the default cursor-move behavior.
     var onUpArrowWhenEmpty: (() -> Bool)? = nil
 
-    func makeNSView(context: Context) -> BackspaceInterceptingTextView {
+    func makeNSView(context: Context) -> ClampedComposerScrollView {
         let tv = BackspaceInterceptingTextView()
         tv.delegate = context.coordinator
         tv.onBackspaceWhenEmpty = onBackspaceWhenEmpty
@@ -626,12 +626,30 @@ private struct ComposerTextField: NSViewRepresentable {
         tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0
         tv.textContainer?.widthTracksTextView = true
+        // SOUL-SOUL_DESKTOP-112: allow the text view to grow to its natural
+        // content height — the surrounding scroll view enforces the clamp
+        // and provides scroll when content exceeds maxLines.
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
-        return tv
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                            height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.containerSize = NSSize(width: 0,
+                                                 height: CGFloat.greatestFiniteMagnitude)
+
+        let scroll = ClampedComposerScrollView()
+        scroll.documentView = tv
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.verticalScrollElasticity = .none
+        scroll.horizontalScrollElasticity = .none
+        return scroll
     }
 
-    func updateNSView(_ tv: BackspaceInterceptingTextView, context: Context) {
+    func updateNSView(_ scroll: ClampedComposerScrollView, context: Context) {
+        guard let tv = scroll.documentView as? BackspaceInterceptingTextView else { return }
         if tv.string != text { tv.string = text }
         tv.placeholderString = placeholder
         tv.onBackspaceWhenEmpty = onBackspaceWhenEmpty
@@ -639,6 +657,7 @@ private struct ComposerTextField: NSViewRepresentable {
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
         tv.invalidateIntrinsicContentSize()
+        scroll.invalidateIntrinsicContentSize()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -650,7 +669,38 @@ private struct ComposerTextField: NSViewRepresentable {
             guard let tv = note.object as? BackspaceInterceptingTextView else { return }
             parent.text = tv.string
             tv.invalidateIntrinsicContentSize()
+            // SOUL-SOUL_DESKTOP-112: propagate to the wrapping ClampedComposerScrollView
+            // so the composer card resizes (or starts scrolling internally) as the
+            // user types/pastes.
+            (tv.enclosingScrollView as? ClampedComposerScrollView)?
+                .invalidateIntrinsicContentSize()
         }
+    }
+}
+
+/// SOUL-SOUL_DESKTOP-112: NSScrollView wrapper around the composer's NSTextView.
+/// The text view's own intrinsic height grows unbounded with content; this
+/// scroll view clamps the *visible* height between min and max lines and
+/// shows an internal scroller when content exceeds the cap. Without this
+/// clamp, a long-paste rendered the text view past the composer card
+/// boundary and overlapped the project/branch footer.
+final class ClampedComposerScrollView: NSScrollView {
+    private let lineHeight: CGFloat = 20
+    private let minLines: CGFloat = 3
+    private let maxLines: CGFloat = 10
+
+    override var intrinsicContentSize: NSSize {
+        let minH = minLines * lineHeight
+        let maxH = maxLines * lineHeight
+        guard let tv = documentView as? NSTextView,
+              let lm = tv.layoutManager,
+              let tc = tv.textContainer else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: minH)
+        }
+        lm.ensureLayout(for: tc)
+        let used = ceil(lm.usedRect(for: tc).height) + 2
+        return NSSize(width: NSView.noIntrinsicMetric,
+                      height: min(maxH, max(minH, used)))
     }
 }
 
@@ -666,16 +716,18 @@ private final class BackspaceInterceptingTextView: NSTextView {
 
     private let lineHeight: CGFloat = 20
     private let minLines: CGFloat = 3
-    private let maxLines: CGFloat = 10
 
+    /// SOUL-SOUL_DESKTOP-112: report the full content height (no maxLines
+    /// cap). The enclosing `ClampedComposerScrollView` applies the clamp on
+    /// its own intrinsic size and uses the document view's natural height
+    /// to drive its scroller.
     override var intrinsicContentSize: NSSize {
         guard let lm = layoutManager, let tc = textContainer else {
             return NSSize(width: NSView.noIntrinsicMetric, height: minLines * lineHeight)
         }
         lm.ensureLayout(for: tc)
-        let used = lm.usedRect(for: tc).height
-        let height = min(maxLines * lineHeight, max(minLines * lineHeight, ceil(used) + 2))
-        return NSSize(width: NSView.noIntrinsicMetric, height: height)
+        let used = ceil(lm.usedRect(for: tc).height) + 2
+        return NSSize(width: NSView.noIntrinsicMetric, height: max(minLines * lineHeight, used))
     }
 
     /// Refuse image-file drops at the NSTextView level so SwiftUI's outer
