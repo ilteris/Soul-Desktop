@@ -242,6 +242,14 @@ private struct DynamicKey: CodingKey {
 }
 
 private extension ContentBlock {
+    /// SOUL-SOUL_DESKTOP-107: ACP defines five ContentBlock types — text,
+    /// image, audio, resource, resource_link. The legacy decoder only kept
+    /// text and silently collapsed every other type to an empty string, so
+    /// any provider that ships a resource_link in agent_message_chunk
+    /// (Pi citing a file it read, for example) dropped the content on the
+    /// floor and rendered an invisible message. Fall back to a textual
+    /// surrogate for non-text types so the user can SEE that something
+    /// arrived even before we wire structured rendering for each shape.
     init(fromUpdate raw: JSONValue) throws {
         guard case .object(let o) = raw,
               case .object(let content)? = o["content"],
@@ -250,10 +258,51 @@ private extension ContentBlock {
             self = .text("")
             return
         }
-        if type == "text", case .string(let t)? = content["text"] {
-            self = .text(t)
-        } else {
-            self = .text("")
+        switch type {
+        case "text":
+            if case .string(let t)? = content["text"] {
+                self = .text(t)
+            } else {
+                self = .text("")
+            }
+        case "resource_link":
+            // ACP shape: { type: "resource_link", uri, name?, mimeType?, description?, title?, size? }
+            let name = (content["name"] ?? content["title"])?.stringValue
+            let uri = content["uri"]?.stringValue ?? ""
+            let desc = content["description"]?.stringValue
+            var label = name ?? uri
+            if label.isEmpty { label = "(unnamed resource)" }
+            var parts = ["📎 \(label)"]
+            if !uri.isEmpty, uri != name { parts.append("(\(uri))") }
+            if let d = desc, !d.isEmpty { parts.append("— \(d)") }
+            self = .text(parts.joined(separator: " "))
+        case "resource":
+            // ACP shape: { type: "resource", resource: { uri, mimeType?, text?, blob? } }
+            // Inline-text resources should render verbatim; binary blobs get a placeholder.
+            if case .object(let res)? = content["resource"] {
+                let uri = res["uri"]?.stringValue ?? ""
+                if case .string(let t)? = res["text"], !t.isEmpty {
+                    let header = uri.isEmpty ? "📄 (inline resource)" : "📄 \(uri)"
+                    self = .text("\(header)\n\n\(t)")
+                } else {
+                    let mime = res["mimeType"]?.stringValue ?? "unknown"
+                    self = .text("📎 \(uri.isEmpty ? "(unnamed resource)" : uri) [\(mime), binary]")
+                }
+            } else {
+                self = .text("📎 (resource block, undecodable)")
+            }
+        case "image":
+            // ACP shape: { type: "image", data: <base64>, mimeType: "image/..." }
+            let mime = content["mimeType"]?.stringValue ?? "image"
+            self = .text("🖼 [image: \(mime)]")
+        case "audio":
+            let mime = content["mimeType"]?.stringValue ?? "audio"
+            self = .text("🔊 [audio: \(mime)]")
+        default:
+            // Unknown block type — surface the type name so we notice it on
+            // canvas rather than silently dropping it. If a provider invents
+            // a new type, we want to see it so we can add real handling.
+            self = .text("[\(type) content block]")
         }
     }
 }
