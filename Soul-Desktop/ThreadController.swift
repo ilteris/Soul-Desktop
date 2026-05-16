@@ -22,6 +22,12 @@ struct ToolCallDetails: Hashable {
         case edit(oldString: String, newString: String)
         case write(content: String)
         case output(text: String)
+        /// SOUL-SOUL_DESKTOP-111: structured payload for delegate_to_specialist
+        /// tool calls so ThreadView can render a SubagentCard instead of the
+        /// generic ToolCallRow. `subagentId` keys into the live.log tailer;
+        /// `colorHex` is the kernel-resolved badge color (nil → palette fallback);
+        /// `findingPath` is set when the agent script writes its final JSON.
+        case subagent(specialist: String, objective: String, subagentId: String, colorHex: UInt32?, findingPath: String?)
 
         var isOutput: Bool {
             if case .output = self { return true }
@@ -3206,6 +3212,42 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return l
         }()
         let structuredDetails: ToolCallDetails? = {
+            // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls carry a
+            // structured payload that the SubagentCard renders against. Match
+            // on the literal tool name from rawTitle / payload["name"]. The
+            // toolCallId doubles as the subagent dir name (kernel contract).
+            let toolName = payload["name"]?.stringValue ?? rawTitle
+            if toolName == "delegate_to_specialist" || rawKind == "delegate_to_specialist" {
+                let specialist = rawInput?["specialist"]?.stringValue
+                    ?? payload["specialist"]?.stringValue
+                    ?? "specialist"
+                let objective = rawInput?["task"]?.stringValue
+                    ?? rawInput?["objective"]?.stringValue
+                    ?? payload["task"]?.stringValue
+                    ?? ""
+                // Server-resolved color from agent frontmatter — parsed as a hex
+                // string ("#RRGGBB" or "RRGGBB") from the tool metadata. Optional;
+                // SpecialistPalette falls back to the built-in roster otherwise.
+                let colorHex: UInt32? = {
+                    let raw = (payload["color"]?.stringValue
+                        ?? rawInput?["color"]?.stringValue
+                        ?? payload["metadata"]?["color"]?.stringValue) ?? ""
+                    let cleaned = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+                    return UInt32(cleaned, radix: 16)
+                }()
+                let findingPath: String? = (payload["finding_path"]?.stringValue
+                    ?? payload["metadata"]?["finding_path"]?.stringValue)
+                return ToolCallDetails(
+                    kind: .subagent(
+                        specialist: specialist,
+                        objective: objective,
+                        subagentId: toolId,
+                        colorHex: colorHex,
+                        findingPath: findingPath
+                    ),
+                    startLine: nil
+                )
+            }
             // SOUL-SOUL_DESKTOP-101: ACP DiffContent fallback. Gemini-CLI
             // write_file omits rawInput entirely; the diff lives in the
             // top-level content[] as { type:"diff", path, oldText, newText }.

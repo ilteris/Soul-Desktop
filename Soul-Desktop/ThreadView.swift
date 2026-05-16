@@ -57,6 +57,7 @@ struct ThreadView: View {
                         ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
                             ThreadItemRow(
                                 projectPath: controller.project.path,
+                                projectKey: controller.project.id,
                                 item: item,
                                 isHistorical: controller.historicalIDs.contains(item.id),
                                 isQueued: false
@@ -78,6 +79,7 @@ struct ThreadView: View {
                         ForEach(queuedItems, id: \.id) { item in
                             ThreadItemRow(
                                 projectPath: controller.project.path,
+                                projectKey: controller.project.id,
                                 item: item,
                                 isHistorical: false,
                                 isQueued: true
@@ -280,6 +282,11 @@ final class ScrollAnchor {
 
 struct ThreadItemRow: View {
     let projectPath: String?
+    /// SOUL-SOUL_DESKTOP-111: project key used by SubagentCard to locate the
+    /// live.log path. Optional so existing call sites (replay, history rows)
+    /// keep compiling without plumbing it everywhere; SubagentCard renders a
+    /// "not tailed" placeholder when projectKey is nil.
+    var projectKey: String? = nil
     let item: ThreadItem
     var isHistorical: Bool = false
     var isQueued: Bool = false
@@ -302,7 +309,23 @@ struct ThreadItemRow: View {
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
-            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath, isGrouped: isGrouped)
+            // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls route to
+            // the dedicated SubagentCard instead of the generic ToolCallRow.
+            // Match on the structured details kind populated by insertToolCall.
+            if case .subagent(let specialist, let objective, let subagentId, let colorHex, let findingPath) = details?.kind {
+                SubagentCard(
+                    specialist: specialist,
+                    objective: objective,
+                    status: status,
+                    subagentId: subagentId,
+                    projectKey: projectKey ?? "",
+                    colorHex: colorHex,
+                    findingPath: findingPath,
+                    isHistorical: isHistorical
+                )
+            } else {
+                ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath, isGrouped: isGrouped)
+            }
         case .toolCallGroup(_, let kind, let title, let loc, let items):
             if kind == "edit" || kind == "write" {
                 ToolCallGroupRow(kind: kind, title: title, location: loc, items: items, isHistorical: isHistorical)
@@ -861,7 +884,7 @@ private struct ToolCallRow: View {
             return (lineCount(newString), lineCount(oldString))
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
-        case .output:
+        case .output, .subagent:
             return (0, 0)
         }
     }
@@ -1222,7 +1245,7 @@ private struct ToolCallGroupRow: View {
             return (lineCount(newString), lineCount(oldString))
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
-        case .output:
+        case .output, .subagent:
             return (0, 0)
         }
     }
@@ -1278,6 +1301,9 @@ private struct ToolCallGroupRow: View {
                     combined += content.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
                 case .output(let text):
                     combined += "--- \(filename) output ---\n\(text)\n"
+                case .subagent:
+                    // Subagent rows aren't part of file-diff aggregation.
+                    continue
                 }
                 combined += "\n"
             }
@@ -1654,6 +1680,11 @@ private struct DiffView: View {
                     .foregroundStyle(SoulColor.fg)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            case .subagent:
+                // Subagent calls render via SubagentCard at the ThreadItemRow
+                // level — they don't reach DiffView. Defensive empty case to
+                // keep the switch exhaustive.
+                EmptyView()
             }
         }
         .padding(.vertical, details.kind.isOutput ? 0 : 6)
