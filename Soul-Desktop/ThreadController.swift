@@ -2839,6 +2839,14 @@ final class ThreadController {
            case .agentThought(let id, let existing, _, let ts) = items[idx] {
             items[idx] = .agentThought(id: id, text: existing + chunk, complete: false, timestamp: ts)
         } else {
+            // Symmetric to appendAgentChunk: opening a thought bubble closes
+            // any open message bubble. Without this, a stream of shape
+            // message-chunk → thought-chunks → message-chunks (observed on
+            // Pi) appends the second batch of message chunks back into the
+            // first bubble — which sits ABOVE the thought bubble in items[],
+            // so the reply text visually grows above the thinking card and
+            // pushes it down. SOUL-SOUL_DESKTOP-070.
+            openAgentMessageId = nil
             let id = UUID()
             openAgentThoughtId = id
             items.append(.agentThought(id: id, text: chunk, complete: false, timestamp: Date()))
