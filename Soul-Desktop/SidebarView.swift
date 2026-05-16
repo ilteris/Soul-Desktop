@@ -502,12 +502,14 @@ struct SidebarView: View {
             let synthetic = SoulSession(
                 id: sid,
                 project: project.id,
-                // Sort anchor for live threads is "last touched", not start.
-                // A resumed-from-disk session inherits `startedAt = 13h ago`,
-                // which would pin it mid-list even though the user is actively
-                // using it. `lastActivityAt` already bumps in send() and on
-                // each assistant stream chunk.
-                timestamp: max(ctrl.lastActivityAt, ctrl.startedAt),
+                // Stable: use the disk row's existing timestamp when merging
+                // (line below), and `startedAt` only as a fallback when the
+                // session has no disk row yet. Previously this was
+                // `max(lastActivityAt, startedAt)`, which made the row pop to
+                // the top of the sidebar every time the user typed — which
+                // shuffled the list mid-conversation. Disabled per user
+                // request: the sort should not reorder on activity.
+                timestamp: ctrl.startedAt,
                 intent: ctrl.displayTitle,
                 source: ctrl.provider.rawValue,
                 isLive: true,
@@ -523,7 +525,9 @@ struct SidebarView: View {
                 var merged = existing
                 let t = ctrl.displayTitle
                 if !t.isEmpty { merged.intent = t }
-                merged.timestamp = max(existing.timestamp, synthetic.timestamp)
+                // Keep the disk row's original timestamp — don't bump it from
+                // the live controller's startedAt / lastActivityAt. Live
+                // activity should NOT reorder the sidebar.
                 merged.isLive = true
                 merged.origin = .desktop
                 merged.liveProvider = ctrl.provider.rawValue
