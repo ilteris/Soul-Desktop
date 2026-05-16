@@ -262,7 +262,7 @@ struct AppShell: View {
         // The "concurrent terminal writer" risk is real but rare in practice
         // — sidebar rows tend to be stale terminal sessions the user moved
         // on from. Accept the trade-off to unlock cross-surface resume.
-        let isResumableGeminiTerminal = (provider == .geminiCLI && session.liveProvider == "geminiCLI")
+        let isResumableGeminiTerminal = (provider == .geminiCLI && session.liveProvider == "geminiCLI" && session.isStale)
         if session.isLive, session.origin == .terminal, !isResumableGeminiTerminal {
             pendingActiveId = nil
             externalLiveSession = session
@@ -1453,7 +1453,14 @@ private struct SessionStatsChip: View {
 
     private var toolCount: Int {
         controller.items.reduce(into: 0) { acc, item in
-            if case .toolCall = item { acc += 1 }
+            switch item {
+            case .toolCall:
+                acc += 1
+            case .toolCallGroup(_, _, _, _, let inner):
+                acc += inner.count
+            default:
+                break
+            }
         }
     }
 
@@ -1489,9 +1496,15 @@ private struct SessionStatsChip: View {
                     .font(SoulFont.code(11))
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1).fixedSize()
+                Text("tools")
+                    .font(SoulFont.ui(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.trailing, 4)
+
                 Text("·")
                     .foregroundStyle(SoulColor.fgSubtle)
                     .lineLimit(1).fixedSize()
+
                 Image(systemName: "text.bubble")
                     .font(.system(size: 10))
                     .foregroundStyle(SoulColor.fgMuted)
@@ -1499,6 +1512,9 @@ private struct SessionStatsChip: View {
                     .font(SoulFont.code(11))
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1).fixedSize()
+                Text("turns")
+                    .font(SoulFont.ui(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
                 Text("·")
                     .foregroundStyle(SoulColor.fgSubtle)
                     .lineLimit(1).fixedSize()

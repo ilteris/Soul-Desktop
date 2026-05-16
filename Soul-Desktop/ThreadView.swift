@@ -20,16 +20,15 @@ struct ThreadView: View {
 
     /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
     /// reference-type holder so per-row writes during scroll do NOT
-    /// invalidate `ThreadView.body`. With @State or @Bindable writes
-    /// (the prior shape), every `.onAppear`/`.onDisappear` invalidated
-    /// ThreadView and LazyVStack re-iterated its ForEach over the full
-    /// timeline — measured at 361 ThreadItemRow body evals in a single
-    /// scroll-tick second over a 360-item session. A plain class held
-    /// by `@State` keeps stable identity without dependency tracking:
-    /// mutating `anchor.visibleIds` / `anchor.itemId` updates data
-    /// without triggering body re-evaluation. Restore reads happen at
-    /// `.onAppear`; flush writes happen at `.onDisappear`. Neither runs
-    /// inside `body`.
+    /// invalidate `ThreadView.body`. With `@State` (-094), every
+    /// `.onAppear`/`.onDisappear` write coalesced into ~13 ThreadView body
+    /// fires per second — each fire still re-iterating the LazyVStack
+    /// ForEach over the full timeline. A plain class held by `@State`
+    /// gives stable identity without dependency tracking: mutating
+    /// `anchor.visibleIds` / `anchor.itemId` updates the data without
+    /// re-evaluating the view. Anchor restore reads `anchor.atBottom` /
+    /// `anchor.itemId` only at `.onAppear`; flush writes them to
+    /// `controller` only at `.onDisappear`.
     @State private var anchor = ScrollAnchor()
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
@@ -39,10 +38,7 @@ struct ThreadView: View {
     @State private var canvasWidth: CGFloat = 0
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry. Zero cost
-        // when no Instruments / `log stream --signpost` is attached. Pair
-        // with the per-row signposts below to diagnose the next scroll
-        // regression without rewiring scaffolding (see -094/-096 incident).
+        // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry.
         let _ = SoulSignposts.event("ThreadView.body")
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -118,9 +114,9 @@ struct ThreadView: View {
                     // doesn't clobber the saved position before we restore.
                     suppressAnchorWrites = true
                     // SOUL-SOUL_DESKTOP-094 + -096: hydrate the local anchor
-                    // holder from controller on (re)attach. After this, all
-                    // anchor writes stay on the holder (no view invalidation);
-                    // flushed back to controller on detach.
+                    // holder from controller on view (re)attach. After this
+                    // point all anchor writes stay on the holder (no view
+                    // invalidation); flushed back on detach.
                     anchor.atBottom = controller.scrollAnchorAtBottom
                     anchor.itemId = controller.scrollAnchorItemId
                     let atBottom = anchor.atBottom
@@ -179,8 +175,8 @@ struct ThreadView: View {
                     }
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
-                // the controller on view detach (thread switch / app close)
-                // so the next attach can restore the right position.
+                // the controller on view detach so the next attach restores
+                // the right position.
                 .onDisappear {
                     controller.scrollAnchorAtBottom = anchor.atBottom
                     controller.scrollAnchorItemId = anchor.itemId
@@ -231,8 +227,9 @@ struct ThreadView: View {
         // Find the visible item with the minimum index in the items array.
         // This is our top-most visible item.
         if let firstVisible = controller.items.first(where: { anchor.visibleIds.contains($0.id) }) {
-            // SOUL-SOUL_DESKTOP-094 + -096: write the reference-type holder,
-            // not the @Bindable controller — see `anchor` declaration.
+            // SOUL-SOUL_DESKTOP-094 + -096: write to the reference-type
+            // holder, not controller and not @State — neither path
+            // invalidates the view. See the `anchor` declaration comment.
             anchor.itemId = firstVisible.id
             // If the bottom sentinel isn't visible (handled by its own logic),
             // ensure atBottom is false.
@@ -267,13 +264,13 @@ struct ThreadView: View {
 }
 
 /// SOUL-SOUL_DESKTOP-096: reference-type holder for scroll-anchor state.
-/// Plain class held by `@State`: SwiftUI tracks the holder's identity (stable
-/// for the view's lifetime) but mutations to the class's stored properties do
-/// NOT invalidate `ThreadView.body`. That lets every per-row
-/// `.onAppear`/`.onDisappear` write to `visibleIds` / `itemId` without
-/// triggering a LazyVStack ForEach rebuild. Reads happen only at view
-/// appearance (restore), `onChange` handlers, and view disappearance (flush)
-/// — none inside `body`.
+/// Plain class held by `@State`: SwiftUI tracks the holder's identity (which
+/// never changes for the view's lifetime), but mutations to the class's
+/// stored properties do NOT invalidate `ThreadView.body`. That lets every
+/// per-row `.onAppear`/`.onDisappear` write to `visibleIds` / `itemId`
+/// without triggering a LazyVStack ForEach rebuild. Reads happen only at
+/// view appearance (restore), `onChange` handlers, and view disappearance
+/// (flush) — none of which run inside `body`.
 @MainActor
 final class ScrollAnchor {
     var visibleIds: Set<UUID> = []
@@ -281,10 +278,12 @@ final class ScrollAnchor {
     var atBottom: Bool = true
 }
 
-struct ThreadItemRow: View { let projectPath: String?
+struct ThreadItemRow: View {
+    let projectPath: String?
     let item: ThreadItem
     var isHistorical: Bool = false
     var isQueued: Bool = false
+    var isGrouped: Bool = false
 
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: per-item scroll-perf telemetry.
@@ -297,14 +296,13 @@ struct ThreadItemRow: View { let projectPath: String?
             UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
         case .agentMessage(_, let text, _, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
-            // MarkdownView rebuild when the row's inputs haven't changed
-            // (helpful for rows that stay materialized across re-renders).
+            // MarkdownView rebuild when the row's inputs haven't changed.
             AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
-            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath)
+            ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath, isGrouped: isGrouped)
         case .toolCallGroup(_, let kind, let title, let loc, let items):
             if kind == "edit" || kind == "write" {
                 ToolCallGroupRow(kind: kind, title: title, location: loc, items: items, isHistorical: isHistorical)
@@ -418,10 +416,7 @@ private struct FinalizeCard: View {
     let nextStep: String?
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-100: confirm the FinalizeCard actually
-        // materialized in the canvas. If `injectFinalizeSummary` ran but
-        // this event never fires, the card is in `items` but not visible
-        // for some other reason.
+        // SOUL-SOUL_DESKTOP-100: confirm the FinalizeCard materialized.
         let _ = SoulSignposts.event("FinalizeCard.body")
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -485,9 +480,9 @@ private struct AgentMessageRow: View, Equatable {
 
     enum Feedback { case none, up, down }
 
-    // SOUL-SOUL_DESKTOP-096: only body-affecting inputs participate. @State
-    // storage (isHovering, feedback) is identity-tracked by SwiftUI
-    // separately and must NOT be part of the comparison.
+    // SOUL-SOUL_DESKTOP-096: only the body-affecting inputs participate in
+    // Equatable. @State storage (isHovering, feedback) is identity-tracked
+    // by SwiftUI separately and must NOT be part of the comparison.
     static func == (lhs: AgentMessageRow, rhs: AgentMessageRow) -> Bool {
         lhs.text == rhs.text
             && lhs.timestamp == rhs.timestamp
@@ -497,9 +492,7 @@ private struct AgentMessageRow: View, Equatable {
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: agent-bubble scroll-perf telemetry. The
-        // MarkdownView build inside this row is the suspected cost driver
-        // during scroll-up bursts. Pair with MarkdownView.body to confirm.
+        // SOUL-SOUL_DESKTOP-099: agent-bubble scroll-perf telemetry.
         let _ = SoulSignposts.event("AgentMessageRow.body")
         let mutedFg = SoulColor.fg.opacity(0.62)
         VStack(alignment: .leading, spacing: 4) {
@@ -746,6 +739,7 @@ private struct ToolCallRow: View {
     let location: String?
     let details: ToolCallDetails?
     let projectPath: String?
+    var isGrouped: Bool = false
 
     @State private var diffExpanded: Bool = false
 
@@ -775,12 +769,14 @@ private struct ToolCallRow: View {
                 FileChipRow(
                     kind: kind, status: status, path: path,
                     statusColor: statusColor, icon: icon,
+                    isGrouped: isGrouped,
                     trailing: { chevron }
                 )
             } else {
                 DefaultToolRow(
                     kind: kind, title: title, status: status, location: location,
                     statusColor: statusColor, icon: icon,
+                    isGrouped: isGrouped,
                     trailing: { chevron }
                 )
             }
@@ -840,6 +836,8 @@ private struct ToolCallRow: View {
             return (lineCount(newString), lineCount(oldString))
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
+        case .output:
+            return (0, 0)
         }
     }
 
@@ -1023,13 +1021,26 @@ private struct ToolCallCarouselRow: View {
                     .font(SoulFont.ui(11))
                     .foregroundStyle(SoulColor.fgSubtle)
 
+                if kind == "execute" || kind == "read" {
+                    Button {
+                        copyAllTitles()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                            .padding(6)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy all \(kind) arguments")
+                }
+
                 Spacer()
             }
 
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(items, id: \.id) { item in
-                        ThreadItemRow(projectPath: projectPath, item: item, isHistorical: isHistorical)
+                        ThreadItemRow(projectPath: projectPath, item: item, isHistorical: isHistorical, isGrouped: true)
                     }
                 }
                 .padding(.leading, 12)
@@ -1050,6 +1061,15 @@ private struct ToolCallCarouselRow: View {
             index = next
             if next == items.count - 1 { fullyToured = true }
         }
+    }
+
+    private func copyAllTitles() {
+        let titles = items.compactMap { item -> String? in
+            if case .toolCall(_, _, let t, _, _, _) = item { return t }
+            return nil
+        }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(titles, forType: .string)
     }
 }
 
@@ -1103,9 +1123,7 @@ private struct ToolCallGroupRow: View {
                 
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(visibleItems, id: \.id) { item in
-                        if case .toolCall(_, _, _, _, _, let details) = item, let details = details {
-                            DiffView(details: details)
-                        }
+                        ThreadItemRow(projectPath: nil, item: item, isHistorical: isHistorical, isGrouped: true)
                     }
                     
                     if remainingCount > 0 {
@@ -1126,6 +1144,17 @@ private struct ToolCallGroupRow: View {
     private var chevron: some View {
         HStack(spacing: 6) {
             diffStats
+            Button {
+                copyCombinedDiff()
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(6)
+            }
+            .buttonStyle(.plain)
+            .help("Copy combined diff")
+
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
             } label: {
@@ -1168,6 +1197,8 @@ private struct ToolCallGroupRow: View {
             return (lineCount(newString), lineCount(oldString))
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
+        case .output:
+            return (0, 0)
         }
     }
 
@@ -1220,6 +1251,8 @@ private struct ToolCallGroupRow: View {
                 case .write(let content):
                     combined += "--- /dev/null\n+++ \(filename)\n"
                     combined += content.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
+                case .output(let text):
+                    combined += "--- \(filename) output ---\n\(text)\n"
                 }
                 combined += "\n"
             }
@@ -1237,6 +1270,7 @@ private struct FileChipRow<Trailing: View>: View {
     let path: String
     let statusColor: Color
     let icon: String
+    var isGrouped: Bool = false
     @ViewBuilder var trailing: () -> Trailing
     /// SOUL-SOUL_DESKTOP-041: AppShell injects this to open the right-side
     /// preview pane instead of the default NSWorkspace fallback. Default is
@@ -1244,12 +1278,14 @@ private struct FileChipRow<Trailing: View>: View {
     @Environment(\.openFilePreview) private var openFilePreview
 
     init(kind: String, status: String, path: String, statusColor: Color, icon: String,
+         isGrouped: Bool = false,
          @ViewBuilder trailing: @escaping () -> Trailing) {
         self.kind = kind
         self.status = status
         self.path = path
         self.statusColor = statusColor
         self.icon = icon
+        self.isGrouped = isGrouped
         self.trailing = trailing
     }
 
@@ -1268,9 +1304,11 @@ private struct FileChipRow<Trailing: View>: View {
                         .foregroundStyle(SoulColor.fg)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 10))
-                        .foregroundStyle(SoulColor.fgSubtle)
+                    if !isGrouped {
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 10))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -1285,9 +1323,12 @@ private struct FileChipRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            Text(status)
-                .font(SoulFont.ui(13, weight: .regular))
-                .foregroundStyle(SoulColor.fgSubtle)
+            
+            if !isGrouped || (status != "completed" && status != "pending") {
+                Text(status)
+                    .font(SoulFont.ui(13, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
 
             trailing()
 
@@ -1303,9 +1344,11 @@ private struct DefaultToolRow<Trailing: View>: View {
     let location: String?
     let statusColor: Color
     let icon: String
+    var isGrouped: Bool = false
     @ViewBuilder var trailing: () -> Trailing
 
     init(kind: String, title: String, status: String, location: String?, statusColor: Color, icon: String,
+         isGrouped: Bool = false,
          @ViewBuilder trailing: @escaping () -> Trailing) {
         self.kind = kind
         self.title = title
@@ -1313,6 +1356,7 @@ private struct DefaultToolRow<Trailing: View>: View {
         self.location = location
         self.statusColor = statusColor
         self.icon = icon
+        self.isGrouped = isGrouped
         self.trailing = trailing
     }
 
@@ -1323,13 +1367,16 @@ private struct DefaultToolRow<Trailing: View>: View {
                 Text(kind)
                     .font(SoulFont.code(13, weight: .bold))
                     .foregroundStyle(SoulColor.fg)
-                Text(title)
-                    .font(SoulFont.code(13, weight: .regular))
-                    .foregroundStyle(SoulColor.fg)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                
+                if title.lowercased() != kind.lowercased() {
+                    Text(title)
+                        .font(SoulFont.code(13, weight: .regular))
+                        .foregroundStyle(SoulColor.fg)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
 
-                if kind == "execute" {
+                if kind == "execute" && !isGrouped {
                     Button {
                         // TODO: Re-run the command in the terminal panel?
                     } label: {
@@ -1363,9 +1410,12 @@ private struct DefaultToolRow<Trailing: View>: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            Text(status)
-                .font(SoulFont.ui(13, weight: .regular))
-                .foregroundStyle(SoulColor.fgSubtle)
+            
+            if !isGrouped || (status != "completed" && status != "pending") {
+                Text(status)
+                    .font(SoulFont.ui(13, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
 
             trailing()
 
@@ -1557,24 +1607,31 @@ private struct DiffView: View {
     let details: ToolCallDetails
 
     var body: some View {
-        HStack(alignment: .top, spacing: 1) {
+        VStack(alignment: .leading, spacing: 0) {
             switch details.kind {
             case .edit(let oldString, let newString):
-                column(text: oldString, sign: "-", tint: .red,
-                       start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
-                column(text: newString, sign: "+", tint: .green,
-                       start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                HStack(alignment: .top, spacing: 1) {
+                    column(text: oldString, sign: "-", tint: .red,
+                           start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                    column(text: newString, sign: "+", tint: .green,
+                           start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
+                }
             case .write(let content):
-                // Write has no "before" — render an empty placeholder column
-                // so the layout stays symmetrical and the eye doesn't have
-                // to re-scan when switching between edits and writes.
-                column(text: "", sign: " ", tint: SoulColor.fgSubtle,
-                       start: nil, gutterWidth: gutterWidth("", content))
-                column(text: content, sign: "+", tint: .green,
-                       start: details.startLine ?? 1, gutterWidth: gutterWidth("", content))
+                HStack(alignment: .top, spacing: 1) {
+                    column(text: "", sign: " ", tint: SoulColor.fgSubtle,
+                           start: nil, gutterWidth: gutterWidth("", content))
+                    column(text: content, sign: "+", tint: .green,
+                           start: details.startLine ?? 1, gutterWidth: gutterWidth("", content))
+                }
+            case .output(let text):
+                Text(text)
+                    .font(SoulFont.code(12))
+                    .foregroundStyle(SoulColor.fg)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, details.kind.isOutput ? 0 : 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         // Single text-selection scope for the whole diff card. Without this
         // each per-line Text would become its own NSTextView; with N lines

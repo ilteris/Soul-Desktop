@@ -15,7 +15,7 @@ struct SoulProject: Identifiable, Hashable {
 /// Where a live session was started from. Derived from the shape of events
 /// in its hooks.jsonl. Drives sidebar styling: terminal-origin rows get a
 /// muted look + different icon + tooltip, because Soul-Desktop can't resume
-/// them (the kernel and the agent are in separate UUID namespaces) until
+/// them (the kernel and the agent CLI mint UUIDs in separate namespaces) until
 /// SOUL-SOUL-004 lands. Desktop-spawned rows resume cleanly via ACP
 /// session/load.
 enum SessionOrigin: String, Hashable {
@@ -78,6 +78,12 @@ struct SoulSession: Identifiable, Hashable {
     /// Pairs with `timestamp` (most-recent activity) to compute duration —
     /// e.g. "23m" / "1h 4m" / "2d 3h" — rendered under the row title.
     var startedAt: Date? = nil
+    /// True iff the agent is currently processing a turn in this session.
+    /// Drives the "working" indicator in the sidebar.
+    var isWorking: Bool = false
+    /// True iff a live session has no activity in the last N minutes.
+    /// Used to distinguish active terminal sessions from abandoned ones.
+    var isStale: Bool = false
 }
 
 enum SoulRegistry {
@@ -217,29 +223,9 @@ enum SoulRegistry {
         return ids.count
     }
 
-    /// Unified producer: every `<uuid>` for a project, finalized and live
-    /// alike, in one pass. Each row carries derived flags (`isLive`,
-    /// `isDirty`, `loadable`, `replayable`, `substantive`, `origin`) so
-    /// callers can filter on intent ("show resumable", "show replayable",
-    /// "hide crash residue") without reaching back into the registry.
-    ///
-    /// Replaces the prior `sessions(forProject:)` + `liveSessions(forProject:)`
-    /// split, which conflated lifecycle state (finalized vs live) with
-    /// visibility heuristics (24h maxAge, origin-must-be-desktop, separate
-    /// limits) and required downstream dedup. Lifecycle becomes a field, not
-    /// a code path. The age cap is gone — staleness was always a proxy for
-    /// "probably unresumable," and `loadable`/`replayable` now answer that
-    /// directly.
-    ///
-    /// Cheap mtime pre-sort, parse top `limit * 2` for full enrichment, return
-    /// top `limit` by activity. Loadability uses `SessionLoadability` so
-    /// gemini sessions are matched via chat-file content rather than UUID
-    /// prefix alone.
     /// Single-pass metadata pulled from one read of a session's hooks.jsonl.
-    /// Replaces five separate file reads (`hooksLineCount` +
-    /// `worktreePathFromHooks` + `firstUserPromptFromHooks` + `findTitle` +
-    /// `detectOrigin`) per session — the dominant cost when expanding a
-    /// project with dozens of finalized sessions.
+    /// Replaces five separate file reads per session — the dominant cost
+    /// when expanding a project with dozens of finalized sessions.
     private struct HooksMetadata {
         var eventCount: Int = 0
         var promptCount: Int = 0
@@ -250,123 +236,139 @@ enum SoulRegistry {
         var hasTerminalSignal: Bool = false
         var firstEventTimestamp: Date? = nil
         var lastEventTimestamp: Date? = nil
-        /// SOUL-SOUL_DESKTOP-061: parent PID stamped on SESSION_START. When
-        /// it equals 1 (launchd) and no UserPrompt ever lands, this row is
-        /// residue from the `com.soul.app-server` daemon making single-shot
-        /// LLM calls for housekeeping — not a human conversation. The
-        /// sidebar uses this to flip `substantive = false` so daemon
-        /// sessions stop crowding project rows.
+        /// Parent PID stamped on SESSION_START. When it equals 1 (launchd)
+        /// and no UserPrompt ever lands, this row is daemon residue.
         var sessionStartPpid: Int? = nil
+        /// Map of provider -> native UUID from NativeSessionID events.
+        var nativeSessionIDs: [String: String] = [:]
     }
 
     private static func readHooksMetadata(path: String) -> HooksMetadata {
         var meta = HooksMetadata()
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return meta }
-        // Full scan: every line gets parsed so promptCount + last-event
-        // timestamp + terminal signal flags are accurate even on long
-        // sessions. The early-exit-after-80-lines optimization broke prompt
-        // counting (it stopped counting after the first 80 events, so a
-        // 200-turn session reported as 6 turns).
-        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        meta.eventCount = lines.count
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else { return meta }
+        if data.isEmpty { return meta }
 
-        for line in lines {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
-            let event = (obj["event"] as? String) ?? ""
+        // 1. eventCount: Count newlines in binary data.
+        let newline = Data([0x0A])
+        meta.eventCount = countNeedle(newline, in: data)
+        // Adjust if the file doesn't end with a newline.
+        if let last = data.last, last != 0x0A { meta.eventCount += 1 }
+        else if meta.eventCount == 0 && !data.isEmpty { meta.eventCount = 1 }
 
-            if event == "SESSION_START", meta.worktreePath == nil {
-                meta.worktreePath = obj["worktree_path"] as? String
-            }
-            if event == "SESSION_START", meta.sessionStartPpid == nil {
-                if let p = obj["ppid"] as? Int { meta.sessionStartPpid = p }
-            }
-            if event == "Title", meta.titleHook == nil {
-                meta.titleHook = (obj["text"] as? String) ?? (obj["title"] as? String)
-            }
-            if event == "UserPrompt" || event == "UserMessage" {
-                meta.promptCount += 1
-                if meta.firstUserPrompt == nil {
-                    let text = (obj["text"] as? String)
-                        ?? (obj["content"] as? String)
-                        ?? (obj["prompt"] as? String)
-                    let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let t = trimmed, !t.isEmpty {
+        // 2. promptCount: Fast binary scan for event markers.
+        let userPromptNeedle = Data("\"event\":\"UserPrompt\"".utf8)
+        let userMessageNeedle = Data("\"event\":\"UserMessage\"".utf8)
+        meta.promptCount = countNeedle(userPromptNeedle, in: data) + countNeedle(userMessageNeedle, in: data)
+
+        // 3. Head metadata: parse first 64KB for title, worktree, start-ppid.
+        let maxHead = min(data.count, 64 * 1024)
+        let head = data.prefix(maxHead)
+        if let headStr = String(data: head, encoding: .utf8) {
+            let lines = headStr.split(separator: "\n", omittingEmptySubsequences: true)
+            for line in lines {
+                guard let ldata = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: ldata) as? [String: Any]
+                else { continue }
+                let event = (obj["event"] as? String) ?? ""
+
+                if event == "SESSION_START", meta.worktreePath == nil {
+                    meta.worktreePath = obj["worktree_path"] as? String
+                    if let p = obj["ppid"] as? Int { meta.sessionStartPpid = p }
+                }
+                if event == "Title", meta.titleHook == nil {
+                    meta.titleHook = (obj["text"] as? String) ?? (obj["title"] as? String)
+                }
+                if (event == "UserPrompt" || event == "UserMessage") && meta.firstUserPrompt == nil {
+                    let text = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
+                    if let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
                         meta.firstUserPrompt = String(t.prefix(120))
                     }
                 }
-            }
-            if event == "NativeSessionID" || event == "UserPrompt" {
-                meta.hasNativeOrUserPrompt = true
-            }
-            if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
-                meta.hasTerminalSignal = true
-            }
-
-            // Capture first/last event timestamps to compute session
-            // duration. First-event is always seen in the first loop tick
-            // (lines are in disk order); last-event keeps updating until
-            // the loop ends. We cap the scan at `maxLinesScanned`, so for
-            // sessions with >80 events the last-event timestamp is the
-            // 80th hook rather than the very last — acceptable for a
-            // sidebar duration chip, doesn't pretend to be authoritative.
-            if let ts = parseTimestamp(obj["timestamp"] as? String) {
-                if meta.firstEventTimestamp == nil {
-                    meta.firstEventTimestamp = ts
+                if event == "NativeSessionID" {
+                    if let prov = obj["provider"] as? String,
+                       let nid = obj["native_session_id"] as? String {
+                        meta.nativeSessionIDs[prov] = nid
+                    }
+                    meta.hasNativeOrUserPrompt = true
                 }
-                meta.lastEventTimestamp = ts
+                if event == "UserPrompt" {
+                    meta.hasNativeOrUserPrompt = true
+                }
+                if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
+                    meta.hasTerminalSignal = true
+                }
+                if let ts = parseTimestamp(obj["timestamp"] as? String) {
+                    if meta.firstEventTimestamp == nil {
+                        meta.firstEventTimestamp = ts
+                    }
+                }
             }
         }
+
+        // 4. Tail metadata: parse last 8KB for the most recent timestamp.
+        let maxTail = min(data.count, 8 * 1024)
+        let tail = data.suffix(maxTail)
+        if let tailStr = String(data: tail, encoding: .utf8) {
+            let lines = tailStr.split(separator: "\n", omittingEmptySubsequences: true)
+            for line in lines.reversed() {
+                guard let ldata = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: ldata) as? [String: Any],
+                      let ts = parseTimestamp(obj["timestamp"] as? String)
+                else { continue }
+                meta.lastEventTimestamp = ts
+                break
+            }
+        }
+
+        // 5. Deep presence fallback: scan whole file only if signals not in head.
+        if !meta.hasNativeOrUserPrompt {
+            let nsidNeedle = Data("\"event\":\"NativeSessionID\"".utf8)
+            if data.range(of: nsidNeedle) != nil || data.range(of: userPromptNeedle) != nil {
+                meta.hasNativeOrUserPrompt = true
+            }
+        }
+        if !meta.hasTerminalSignal {
+            let signals = ["SESSION_START", "AfterTool", "AfterAgent", "AfterModel"]
+            for s in signals {
+                if data.range(of: Data("\"event\":\"\(s)\"".utf8)) != nil {
+                    meta.hasTerminalSignal = true
+                    break
+                }
+            }
+        }
+
         return meta
+    }
+
+    private static func countNeedle(_ needle: Data, in data: Data) -> Int {
+        var n = 0
+        var range = 0..<data.count
+        while let r = data.range(of: needle, in: range) {
+            n += 1
+            range = r.upperBound..<data.count
+        }
+        return n
     }
 
     /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
     /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
-    /// Building the index once per scan turns N×M per-session matching
-    /// (`for each session, iterate every chat file looking for suffix`)
-    /// into N O(1) lookups. With ~100 sessions in a project × ~50 chat
-    /// files in a sibling `<project>-N/chats/` dir, that's ~5000 fewer
-    /// suffix checks per project expand.
-    /// Also caches the `isResumableGeminiChatFile` content check so we
-    /// don't open the same file twice.
     private final class GeminiDirCache {
         var listings: [String: [String]] = [:]    // chatsDir path → filenames
-        /// Reverse index: `<first8>` → `(chatsDirPath, fileName)`. First
-        /// hit per first8 wins (largest-file disambiguation isn't needed
-        /// at index-build time — the per-session loadability check still
-        /// validates first-line sessionId for ambiguity).
         var firstEightIndex: [String: (chatsDir: String, fileName: String)] = [:]
-        /// Memoized resumable-file check by absolute path.
         var resumableCache: [String: Bool] = [:]
-        /// Per-scan set of session UUIDs found under
-        /// `~/.pi/agent/sessions/<encoded-cwd>/`. Populated lazily on the
-        /// first Pi probe per project so subsequent rows hit a set lookup
-        /// instead of re-listing the directory.
         var piSessionsByDir: [String: Set<String>] = [:]
         private var built: Set<String> = []
+        /// Cached list of Gemini project directories that match the current
+        /// projectPath. Populated once per scan.
+        var matchedGeminiChatsDirs: [String]? = nil
 
-        func entries(at dir: String, fm: FileManager) -> [String] {
-            if let hit = listings[dir] { return hit }
-            let entries = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
-            listings[dir] = entries
-            indexFirstEights(chatsDir: dir, entries: entries)
-            return entries
-        }
-
-        private func indexFirstEights(chatsDir: String, entries: [String]) {
+        func indexFirstEights(chatsDir: String, entries: [String]) {
             guard !built.contains(chatsDir) else { return }
             built.insert(chatsDir)
-            // Filenames look like `session-<ts>-<first8>.jsonl(.bak-<n>|.corrupt-<n>)?`.
-            // Extract `<first8>` from each and remember the first match.
             for name in entries {
                 guard name.hasSuffix(".jsonl") || name.hasSuffix(".json")
                       || name.contains(".jsonl.bak-") || name.contains(".jsonl.corrupt-")
                 else { continue }
-                // Find the 8-hex segment before the extension. The kernel
-                // filename shape is stable enough that "last 8 hex chars
-                // before .jsonl" finds it; we also accept the
-                // "-<first8>." pattern that gemini-cli emits.
                 let stem = (name as NSString).deletingPathExtension
                 let parts = stem.split(separator: "-")
                 if let candidate = parts.last, candidate.count == 8,
@@ -384,13 +386,10 @@ enum SoulRegistry {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
 
-        // Pass 1: collect every distinct UUID and its on-disk shape. A UUID
-        // can appear as a finalize JSON, a live dir, or both (finalized then
-        // resumed without re-finalizing).
         struct Shape {
-            var finalizeName: String?    // filename under sessions/<key>/ (may be timestamp-prefixed)
+            var finalizeName: String?
             var finalizePath: String?
-            var hooksPath: String?       // sessions/<key>/<uuid>/hooks.jsonl
+            var hooksPath: String?
             var jsonMtime: Date?
             var hooksMtime: Date?
         }
@@ -409,8 +408,6 @@ enum SoulRegistry {
                 let path = "\(dir)/\(name)"
                 let m = mtime(path)
                 var s = shapes[id] ?? Shape()
-                // Prefer the most recent finalize JSON when two siblings exist
-                // (rare, but the kernel occasionally writes both shapes).
                 if s.jsonMtime.map({ m > $0 }) ?? true {
                     s.finalizeName = name
                     s.finalizePath = path
@@ -429,9 +426,6 @@ enum SoulRegistry {
         }
         if shapes.isEmpty { return [] }
 
-        // Pass 2: rank candidates by most-recent activity (max of json/hooks
-        // mtimes). Only the top `limit * 2` get full parse + loadability;
-        // this keeps the scan O(constant) for projects with hundreds of dirs.
         let ranked = shapes.map { (id, shape) -> (id: String, shape: Shape, recency: Date) in
             let m = max(shape.jsonMtime ?? .distantPast, shape.hooksMtime ?? .distantPast)
             return (id, shape, m)
@@ -439,11 +433,6 @@ enum SoulRegistry {
         .sorted { $0.recency > $1.recency }
         .prefix(limit * 2)
 
-        // Pass 3: enrich + classify. Single-pass hooks read per session +
-        // shared gemini dir cache so re-listing the chats dir 91 times
-        // (one per candidate) collapses to once per sibling. This is the
-        // dominant performance win for projects with many sessions —
-        // dropped expand time from ~5s to under 200ms on a 91-row project.
         let dirCache = GeminiDirCache()
         var out: [SoulSession] = []
         for cand in ranked {
@@ -451,8 +440,6 @@ enum SoulRegistry {
             let shape = cand.shape
             var s = SoulSession(id: id, project: key, timestamp: cand.recency)
 
-            // Finalize side: source of truth for intent/summary/source/status
-            // when present.
             if let path = shape.finalizePath,
                let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -466,15 +453,14 @@ enum SoulRegistry {
                 s.worktreePath = stringOrNil(obj["worktree_path"])
             }
 
-            // Single hooks.jsonl read for ALL live-side metadata (event
-            // count, worktree path, first prompt, title hook, origin signals).
-            // Title precedence: Title hook → finalize intent → firstUserPrompt.
             var sessionStartPpid: Int? = nil
+            var nativeSessionIDs: [String: String] = [:]
             if let hooks = shape.hooksPath {
                 let meta = readHooksMetadata(path: hooks)
                 s.eventCount = meta.eventCount
                 s.promptCount = meta.promptCount
                 sessionStartPpid = meta.sessionStartPpid
+                nativeSessionIDs = meta.nativeSessionIDs
                 if s.worktreePath == nil { s.worktreePath = meta.worktreePath }
                 if let t = meta.titleHook, !t.isEmpty {
                     s.intent = t
@@ -482,7 +468,6 @@ enum SoulRegistry {
                     s.intent = meta.firstUserPrompt
                 }
                 if s.summary == nil { s.summary = s.intent }
-                // Origin derived from the same single-read signals.
                 if meta.hasNativeOrUserPrompt {
                     s.origin = .desktop
                 } else if meta.hasTerminalSignal {
@@ -494,23 +479,17 @@ enum SoulRegistry {
             }
 
             s.isLive = (shape.finalizePath == nil)
-            // Staleness: hooks advanced past the finalize JSON. 5s grace
-            // covers the finalize's own paired-write tick.
+            // Stale: live session with no activity in 1 hour.
+            if s.isLive {
+                let lastActive = cand.recency
+                s.isStale = Date().timeIntervalSince(lastActive) > 3600
+            }
             if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
                 s.isDirty = true
             }
             s.replayable = (shape.hooksPath != nil)
-            // Provider mapping: prefer the recorded `source` from a finalize;
-            // fall back to whichever agent owns the chat file on disk. Uses
-            // the per-scan directory cache so we don't `contentsOfDirectory`
-            // the same gemini chats dir 91 times. Codex fallback: a sibling
-            // `transcript.jsonl` in the session's registry dir is the
-            // codex marker (codex writes its own per-session transcript
-            // there). Without this, codex rows without a NativeSessionID
-            // hook show the dotted-circle "unknown" glyph even though the
-            // dropdown identifies them correctly via `Provider.icon`.
             if s.source == nil {
-                if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache) {
+                if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache, nativeSessionIDs: nativeSessionIDs) {
                     s.liveProvider = live
                 } else {
                     let transcriptPath = "\(dir)/\(id)/transcript.jsonl"
@@ -520,53 +499,44 @@ enum SoulRegistry {
                 }
             }
 
-            // Substantive: finalize record (always counts) OR a real
-            // conversation in the live ledger (≥ 4 hook events or a recorded
-            // UserPrompt). This is the gate that filters crash residue —
-            // empty <uuid>/hooks.jsonl dirs the kernel leaves behind when a
-            // spawn is cancelled before the first turn.
             let hasFinalize = (shape.finalizePath != nil)
             let hasPrompt = (s.intent?.isEmpty == false)
             s.substantive = hasFinalize || s.eventCount >= 4 || hasPrompt
 
-            // SOUL-SOUL_DESKTOP-061: headless app-server daemon spawns.
-            // `com.soul.app-server` (a LaunchAgent) makes single-shot LLM
-            // calls for housekeeping — pattern distillation, /pulse,
-            // scheduled audits. They fire AfterModel/AfterAgent hooks
-            // (passing the eventCount >= 4 substantive gate) but never
-            // capture a UserPrompt because no human typed anything. Detect
-            // by the launchd signature: SESSION_START.ppid == 1 plus zero
-            // UserPrompts. Flip substantive=false so the sidebar hides
-            // them as the noise they are. Finalize records are exempted —
-            // if a daemon-spawned session was later finalized by hand,
-            // keep it visible.
             if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
                 s.substantive = false
             }
 
-            // Loadable: does a provider transcript exist that
-            // `hydrateFromDisk` can actually render? Uses the same cache as
-            // agentMatchCached so the gemini sibling walk happens at most
-            // once per scan.
             if let path = projectPath {
-                s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache)
+                s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
             } else {
                 s.loadable = false
             }
 
-            // Transcript-turn fallback: only run when the kernel ledger had
-            // no UserPrompt events. Reads the provider's own transcript file
-            // (Claude jsonl / Gemini chats json / Codex sibling jsonl) and
-            // counts user-role entries. Cheap because most rows skip it —
-            // anything Soul-Desktop spawned has promptCount > 0 already.
             if s.promptCount == 0 {
                 s.transcriptTurns = countTranscriptTurns(
                     sessionId: id,
                     projectKey: key,
                     projectPath: projectPath,
                     sessionDir: "\(dir)/\(id)",
-                    cache: dirCache
+                    cache: dirCache,
+                    nativeSessionIDs: nativeSessionIDs
                 )
+
+                // Title fallback for terminal-origin sessions. If the kernel
+                // ledger has no UserPrompt events, s.intent will be nil (no
+                // Title hook). reach into the native transcript to sniff the
+                // first prompt for the sidebar title.
+                if s.intent == nil || s.intent!.isEmpty {
+                    s.intent = findFirstTranscriptPrompt(
+                        sessionId: id,
+                        projectKey: key,
+                        projectPath: projectPath,
+                        cache: dirCache,
+                        nativeSessionIDs: nativeSessionIDs
+                    )
+                    if s.summary == nil { s.summary = s.intent }
+                }
             }
 
             out.append(s)
@@ -578,57 +548,48 @@ enum SoulRegistry {
             .map { $0 }
     }
 
-    /// Cached variant of `agentMatch`: walks every `~/.gemini/tmp/<basename>(-N)`
-    /// sibling using the shared `GeminiDirCache`. Equivalent semantics — same
-    /// "biggest content-bearing file wins" rule — just without re-listing.
-    private static func agentMatchCached(sessionId: String, projectPath: String?, cache: GeminiDirCache) -> String? {
-        let first8 = String(sessionId.prefix(8))
+    private static func agentMatchCached(sessionId: String, projectPath: String?, cache: GeminiDirCache, nativeSessionIDs: [String: String]) -> String? {
         let fm = FileManager.default
 
         if let projectPath {
-            // O(1) gemini lookup via the per-scan first-8 index. The first
-            // call to `cache.entries(at:)` for each sibling dir populates
-            // the index automatically; subsequent sessions skip the scan.
-            // Warm the index by listing all sibling chats dirs once.
-            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
-            let base = (trimmed as NSString).lastPathComponent
-            let geminiBase = "\(homePath)/.gemini/tmp"
-            if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
-                // SOUL-SOUL_DESKTOP-083: marker-first match. Read
-                // `<tmp>/.project_root` — gemini-cli's own ground truth —
-                // and compare its resolved realpath to the project's
-                // resolved realpath. This handles `-N` collision siblings,
-                // duplicate-basename projects in different parents, and
-                // any future slug normalization gemini-cli applies.
-                // Fallback to case-insensitive basename match (SOUL-084)
-                // for legacy dirs that pre-date the marker — APFS is
-                // case-insensitive, so a `Soul-Desktop` project may show
-                // up as `soul-desktop` in `contentsOfDirectory`.
-                let projectRealpath = URL(fileURLWithPath: trimmed)
-                    .resolvingSymlinksInPath().path
+            if cache.matchedGeminiChatsDirs == nil {
+                var matched: [String] = []
+                let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
+                let base = (trimmed as NSString).lastPathComponent
+                let geminiBase = "\(homePath)/.gemini/tmp"
+                let projectRealpath = URL(fileURLWithPath: trimmed).resolvingSymlinksInPath().path
                 let baseLC = base.lowercased()
                 let prefixLC = "\(baseLC)-"
-                for proj in projects {
-                    let markerPath = "\(geminiBase)/\(proj)/.project_root"
-                    let matchedByMarker: Bool? = {
-                        guard let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) else {
-                            return nil
+
+                if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
+                    for proj in projects {
+                        let markerPath = "\(geminiBase)/\(proj)/.project_root"
+                        let matchedByMarker: Bool? = {
+                            guard let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) else { return nil }
+                            let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+                                .resolvingSymlinksInPath().path
+                            return resolved == projectRealpath
+                        }()
+                        let match: Bool = {
+                            if let m = matchedByMarker { return m }
+                            let projLC = proj.lowercased()
+                            return projLC == baseLC || projLC.hasPrefix(prefixLC)
+                        }()
+                        if match {
+                            let chatsDir = "\(geminiBase)/\(proj)/chats"
+                            matched.append(chatsDir)
+                            let entries = (try? fm.contentsOfDirectory(atPath: chatsDir)) ?? []
+                            cache.listings[chatsDir] = entries
+                            cache.indexFirstEights(chatsDir: chatsDir, entries: entries)
                         }
-                        let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
-                            .resolvingSymlinksInPath().path
-                        return resolved == projectRealpath
-                    }()
-                    let match: Bool = {
-                        if let m = matchedByMarker { return m }
-                        let projLC = proj.lowercased()
-                        return projLC == baseLC || projLC.hasPrefix(prefixLC)
-                    }()
-                    if match {
-                        _ = cache.entries(at: "\(geminiBase)/\(proj)/chats", fm: fm)
                     }
                 }
+                cache.matchedGeminiChatsDirs = matched
             }
-            if let hit = cache.firstEightIndex[first8] {
+
+            let geminiId = nativeSessionIDs["geminiCLI"] ?? sessionId
+            let shortId = String(geminiId.prefix(8))
+            if let hit = cache.firstEightIndex[shortId] {
                 let path = "\(hit.chatsDir)/\(hit.fileName)"
                 let resumable: Bool = {
                     if let cached = cache.resumableCache[path] { return cached }
@@ -639,18 +600,14 @@ enum SoulRegistry {
                 if resumable { return "geminiCLI" }
             }
 
+            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
             let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-            let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(sessionId).jsonl"
+            let claudeId = nativeSessionIDs["claude"] ?? sessionId
+            let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
             if fm.fileExists(atPath: claudePath) {
                 return "claude"
             }
 
-            // Pi: ~/.pi/agent/sessions/<encoded>/<timestamp>_<sid>.jsonl.
-            // Encoding shape from pi-acp's session-map.json is `--<a-b-c>--`
-            // (leading + trailing double-dash around the dash-joined parts).
-            // List the dir once per project (cached in piSessionsByDir) and
-            // extract the trailing UUID from every filename so subsequent
-            // rows hit an O(1) set lookup.
             let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
             let piEncoded = "--" + parts.joined(separator: "-") + "--"
             let piDir = "\(homePath)/.pi/agent/sessions/\(piEncoded)"
@@ -659,7 +616,6 @@ enum SoulRegistry {
                 var ids = Set<String>()
                 if let entries = try? fm.contentsOfDirectory(atPath: piDir) {
                     for name in entries where name.hasSuffix(".jsonl") {
-                        // Filename: <iso-ts>_<sid>.jsonl  →  parse last segment.
                         let stem = (name as NSString).deletingPathExtension
                         if let underscore = stem.lastIndex(of: "_") {
                             let sid = String(stem[stem.index(after: underscore)...])
@@ -675,64 +631,77 @@ enum SoulRegistry {
         return nil
     }
 
-    /// Cached variant of `SessionLoadability.canLoadFromDisk` for the
-    /// `allSessions` hot loop. Same provider-aware NSID lookup, but the
-    /// gemini chats dir listing is shared with `agentMatchCached`.
-    private static func canLoadCached(sessionId sid: String, projectKey: String, projectPath: String, cache: GeminiDirCache) -> Bool {
+    private static func canLoadCached(sessionId sid: String, projectKey: String, projectPath: String, cache: GeminiDirCache, nativeSessionIDs: [String: String]) -> Bool {
         let fm = FileManager.default
         let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
         let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
 
-        // Claude path probe with provider-filtered NSID lookup.
-        let claudeId = findNativeSessionID(projectKey: projectKey, sessionId: sid, provider: "claude") ?? sid
+        let claudeId = nativeSessionIDs["claude"] ?? sid
         if fm.fileExists(atPath: "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl") {
             return true
         }
 
-        // Gemini probe via the cached first-8 index — O(1) per session.
-        // `agentMatchCached` already warmed the index for every sibling
-        // chats dir at this point in the scan.
-        let geminiId = findNativeSessionID(projectKey: projectKey, sessionId: sid, provider: "geminiCLI") ?? sid
+        let geminiId = nativeSessionIDs["geminiCLI"] ?? sid
         let shortId = String(geminiId.prefix(8))
         if let hit = cache.firstEightIndex[shortId] {
-            return Self.geminiChatHasContent(
-                at: "\(hit.chatsDir)/\(hit.fileName)",
-                expectedSessionId: geminiId
-            )
+            return geminiChatHasContent(at: "\(hit.chatsDir)/\(hit.fileName)", expectedSessionId: geminiId)
         }
         return false
     }
 
-    /// Count user-role entries in whichever provider transcript backs this
-    /// session. Returns 0 when no transcript is reachable. Used to surface
-    /// "~N turns" in the sidebar for rows whose kernel ledger never wrote
-    /// `UserPrompt` events (terminal-origin sessions, ledger-less Gemini).
-    /// Reads the file as `Data` (memory-mapped when possible) and counts
-    /// needle byte ranges; avoids allocating a full Swift `String` for
-    /// multi-MB Claude transcripts.
+    private static func findFirstTranscriptPrompt(
+        sessionId sid: String,
+        projectKey key: String,
+        projectPath: String?,
+        cache: GeminiDirCache,
+        nativeSessionIDs: [String: String]
+    ) -> String? {
+        let fm = FileManager.default
+        if let projectPath {
+            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
+
+            // Claude
+            let claudeId = nativeSessionIDs["claude"] ?? sid
+            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
+            let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
+            if fm.fileExists(atPath: claudePath), let p = readClaudeFirstUserPrompt(path: claudePath) {
+                return p
+            }
+
+            // Gemini
+            let geminiId = nativeSessionIDs["geminiCLI"] ?? sid
+            let shortId = String(geminiId.prefix(8))
+            if let hit = cache.firstEightIndex[shortId] {
+                let path = "\(hit.chatsDir)/\(hit.fileName)"
+                if let header = readGeminiChatHeader(path: path) {
+                    return header.firstPrompt
+                }
+            }
+        }
+        return nil
+    }
+
     private static func countTranscriptTurns(
         sessionId sid: String,
         projectKey key: String,
         projectPath: String?,
         sessionDir: String,
-        cache: GeminiDirCache
+        cache: GeminiDirCache,
+        nativeSessionIDs: [String: String]
     ) -> Int {
         let fm = FileManager.default
 
-        // Claude: count `"type":"user"` occurrences in the transcript jsonl.
         if let projectPath {
             let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
             let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-            let claudeId = findNativeSessionID(projectKey: key, sessionId: sid, provider: "claude") ?? sid
+            let claudeId = nativeSessionIDs["claude"] ?? sid
             let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
             if fm.fileExists(atPath: claudePath) {
                 let n = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
                 if n > 0 { return n }
             }
 
-            // Gemini: chat-file `"role":"user"` count. Path comes from the
-            // first-8 reverse index the loadability check already populated.
-            let geminiId = findNativeSessionID(projectKey: key, sessionId: sid, provider: "geminiCLI") ?? sid
+            let geminiId = nativeSessionIDs["geminiCLI"] ?? sid
             let shortId = String(geminiId.prefix(8))
             if let hit = cache.firstEightIndex[shortId] {
                 let path = "\(hit.chatsDir)/\(hit.fileName)"
@@ -741,7 +710,6 @@ enum SoulRegistry {
             }
         }
 
-        // Codex: sibling transcript jsonl inside the kernel ledger dir.
         let codexPath = "\(sessionDir)/transcript.jsonl"
         if fm.fileExists(atPath: codexPath) {
             let byType = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: codexPath)
@@ -753,26 +721,13 @@ enum SoulRegistry {
         return 0
     }
 
-    /// Count non-overlapping occurrences of `needle` in the file at `path`.
-    /// Memory-maps when the OS allows, falls back to a regular read, and
-    /// uses `Data.range(of:in:)` which is significantly faster than naive
-    /// byte loops for the small (~13–14 byte) needles we pass here.
     private static func countNeedle(_ needle: Data, inFileAt path: String) -> Int {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe, .uncached]) else {
             return 0
         }
-        var n = 0
-        var range = 0..<data.count
-        while let r = data.range(of: needle, in: range) {
-            n += 1
-            range = r.upperBound..<data.count
-        }
-        return n
+        return countNeedle(needle, in: data)
     }
 
-    /// Lightweight first-line sessionId + content check shared with
-    /// `canLoadCached`. Mirrors `SessionLoadability.hasContent` but inlined
-    /// to keep all probes pointing at the same cache.
     private static func geminiChatHasContent(at path: String, expectedSessionId sid: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
@@ -789,30 +744,10 @@ enum SoulRegistry {
         return true
     }
 
-    /// Classify a live session by whether an agent-side persistence file
-    /// exists for this UUID. Ledger-shape heuristics are unreliable here
-    /// (a kernel-only ledger can still be resumable if the agent persisted
-    /// the chat under the same UUID, and a ledger with leftover NativeSessionID
-    /// stubs can be un-resumable). Only the agent's own storage answers
-    /// truthfully whether `session/load` will succeed.
-    ///
-    /// Checks gemini-cli (`~/.gemini/tmp/<any-proj>/chats/session-*-<first8>.json`)
-    /// and Claude (`~/.claude/projects/<encoded-cwd>/<sid>.jsonl`). If either
-    /// matches, the row is `.desktop` (= resumable). Otherwise `.terminal`
-    /// if the ledger looks real, else `.unknown`.
     private static func detectOrigin(path: String, projectPath: String?, sessionId: String) -> SessionOrigin {
         if agentHasSession(sessionId: sessionId, projectPath: projectPath) {
             return .desktop
         }
-        // Read the ledger once and classify. Two desktop signals beat the
-        // agentHasSession lookup when the agent's internal UUID has diverged
-        // from our kernel UUID (the SOUL-SOUL_DESKTOP-022 namespace case):
-        //   - `NativeSessionID` written by ThreadController — we minted this
-        //   - `UserPrompt` written by ThreadController.send — we minted this
-        // Either is proof the row is ours regardless of whether we can find
-        // a matching chat file via first8 prefix scan. Without this, the
-        // live in-canvas thread vanishes from the sidebar the moment the
-        // agent's transcript filename's first8 no longer matches.
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return .unknown }
         var hasTerminalSignal = false
         for line in blob.split(separator: "\n", omittingEmptySubsequences: true).prefix(20) {
@@ -830,14 +765,8 @@ enum SoulRegistry {
         return hasTerminalSignal ? .terminal : .unknown
     }
 
-    /// Read `worktree_path` from the first `SESSION_START` event in a
-    /// hooks.jsonl. Kernel writes this on the first line for sessions
-    /// started inside a git worktree (SOUL-SOUL-007). Returns nil for
-    /// main-tree sessions and ledgers that pre-date the tagging change.
     private static func worktreePathFromHooks(path: String) -> String? {
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        // First non-empty line only — kernel always writes SESSION_START first
-        // when the file is created.
         for line in blob.split(separator: "\n", omittingEmptySubsequences: true).prefix(1) {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -848,10 +777,6 @@ enum SoulRegistry {
         return nil
     }
 
-    /// Read the timestamp on the first hook event for a session. This is the
-    /// real session start — the kernel writes SESSION_START as the first line
-    /// when the directory is created. Returns nil if the file is missing,
-    /// empty, or the first line lacks a parseable timestamp.
     static func firstHookTimestamp(projectKey: String, sessionId: String) -> Date? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
@@ -874,19 +799,9 @@ enum SoulRegistry {
         return agentMatch(sessionId: sessionId, projectPath: projectPath) != nil
     }
 
-    /// Like `agentHasSession` but reports *which* agent has the persistence
-    /// file. Returns `"geminiCLI"` / `"claude"` / nil. Used at row-build
-    /// time so the click handler can switch the harness to match.
     private static func agentMatch(sessionId: String, projectPath: String?) -> String? {
         let first8 = String(sessionId.prefix(8))
         let fm = FileManager.default
-
-        // Gemini-cli stores chats at ~/.gemini/tmp/<dir>/chats/ where <dir>
-        // is `basename(cwd)` with an optional `-N` collision suffix. We MUST
-        // scope the lookup to dirs that map to this projectPath — `session/load`
-        // is cwd-scoped, so a prefix match in some other project's chats dir
-        // is a false positive (agent says "yes I have it" but load fails when
-        // gemini is spawned in this cwd).
         if let projectPath {
             let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
             let base = (trimmed as NSString).lastPathComponent
@@ -894,26 +809,16 @@ enum SoulRegistry {
             if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
                 for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
                     let chatsDir = "\(geminiBase)/\(proj)/chats"
-                    // Gemini-cli switched session-file extension from .json to
-                    // .jsonl mid-stream; old sessions still use .json. Accept
-                    // either so live rows recorded under both formats surface.
                     guard let files = try? fm.contentsOfDirectory(atPath: chatsDir) else { continue }
                     let matches = files.filter {
                         $0.hasSuffix("-\(first8).json") || $0.hasSuffix("-\(first8).jsonl")
                     }
-                    // Surface only files that gemini-cli will actually be
-                    // able to resume. Its `listSessions` skips any file
-                    // that has only system messages (no user/assistant
-                    // turns) — we mirror that check here so dead stub files
-                    // don't surface as "live" rows and dead-end on click.
                     if matches.contains(where: { isResumableGeminiChatFile("\(chatsDir)/\($0)") }) {
                         return "geminiCLI"
                     }
                 }
             }
         }
-
-        // Claude: ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
         if let projectPath {
             let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
             let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
@@ -922,23 +827,12 @@ enum SoulRegistry {
                 return "claude"
             }
         }
-
         return nil
     }
 
-    /// True iff the gemini-cli chat file at `path` carries at least one
-    /// user-or-assistant turn. Mirrors gemini-cli's own `getAllSessionFiles`
-    /// filter (sessionUtils.ts: `hasUserOrAssistantMessage`) so we never
-    /// classify a metadata-only stub as resumable — it would dead-end on
-    /// click with `Invalid session identifier`. Cheap: we scan up to 50
-    /// lines, which is plenty to find the first user turn for any non-stub
-    /// chat. Returns true on read errors so we don't accidentally hide
-    /// healthy sessions if the JSONL has an unexpected shape.
     private static func isResumableGeminiChatFile(_ path: String) -> Bool {
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return true }
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        // Hard-stub guard: a brand-new gemini session is exactly one
-        // metadata line, no `type` field. Bail without parsing.
         if lines.count <= 1 { return false }
         for line in lines.prefix(50) {
             guard let data = line.data(using: .utf8),
@@ -952,13 +846,9 @@ enum SoulRegistry {
         return false
     }
 
-    /// Scan the first few hooks for a user-prompt event to use as a row title.
-    /// Falls back to nil — the row will render "live N min ago" via the row UI.
     private static func firstUserPromptFromHooks(path: String) -> String? {
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        
-        // Pass 1: Look for explicit "Title" event
         for line in lines.prefix(40) {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -967,15 +857,12 @@ enum SoulRegistry {
                 return truncateForTitle(text)
             }
         }
-
-        // Pass 2: Heuristic search for first user prompt or agent thought
         for line in lines.prefix(40) {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             let event = (obj["event"] as? String) ?? ""
             let content = (obj["content"] as? String) ?? (obj["text"] as? String) ?? (obj["prompt"] as? String)
-            
             if event == "UserPrompt" || event == "UserMessage" || event == "session/prompt" || event == "BeforeAgent" {
                 if let text = content {
                     return truncateForTitle(text)
@@ -991,85 +878,40 @@ enum SoulRegistry {
         return one.count > 60 ? String(one.prefix(60)) + "…" : one
     }
 
-    /// Append a JSON event to a session's hooks.jsonl. Uses POSIX `O_APPEND`
-    /// so concurrent writes from the Python kernel (which also opens in
-    /// append mode) interleave atomically per line. `FileHandle.seekToEnd +
-    /// write` is two syscalls — another writer can extend the file between
-    /// them and the Swift write then clobbers the tail.
-    ///
-    /// Schema matches the kernel's rows: `timestamp` (POSIX microsecond ISO,
-    /// UTC) and `session_id` are injected if the caller didn't set them, so
-    /// the row flows through the same finalize / replay pipelines as
-    /// kernel-emitted rows.
-    /// Serial queue that owns every kernel-ledger write. Single queue (not
-    /// concurrent) so appends preserve the order callers submit them in —
-    /// important because Replay merges by timestamp + arrival order and a
-    /// scrambled UserPrompt/AfterAgent pair would render out of sequence.
-    /// SOUL-SOUL_DESKTOP-063: moved off the main actor to unblock the UI
-    /// during heavy turns (every UserPrompt + AfterAgent used to do a
-    /// synchronous open()/write()/close() on whatever actor called it).
-    private static let hookWriteQueue = DispatchQueue(
-        label: "soul.registry.hook-write",
-        qos: .utility
-    )
-
-    /// Cached timestamp formatter — DateFormatter allocation is non-trivial
-    /// and we hit appendHook on every prompt + reply + tool call.
+    private static let hookWriteQueue = DispatchQueue(label: "soul.registry.hook-write", qos: .utility)
     private static let hookTimestampFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
-        f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
-    /// SOUL-SOUL_DESKTOP-078: scan the live hooks.jsonl for any AfterTool
-    /// event whose tool_call_id (or "tool_use_id" — Claude shape) matches
-    /// `toolId`. Used by `fireToolCallTimeout` to classify the hang:
-    ///
-    ///   - true  → tool actually completed; ACP just didn't surface
-    ///             `item/completed` to the desktop (class B in -078).
-    ///   - false → tool genuinely never finished, or the kernel writer
-    ///             never landed AfterTool (class A or C).
-    ///
-    /// Reads only the tail of hooks.jsonl (last ~256KB) — enough to find
-    /// any plausibly-recent AfterTool without scanning the full ledger.
-    /// Cheap; safe to call from the stall watchdog tick.
     static func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard let fh = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? fh.close() }
-        let size = (try? fh.seekToEnd()) ?? 0
-        let window: UInt64 = 256 * 1024
-        let start = size > window ? size - window : 0
-        try? fh.seek(toOffset: start)
-        guard let data = try? fh.readToEnd(), !data.isEmpty else { return false }
-        guard let text = String(data: data, encoding: .utf8) else { return false }
-        // Match either "AfterTool" + tool_call_id, or AfterTool + tool_use_id
-        // (Claude). Cheap substring check — false-positive risk is essentially
-        // zero because the toolId is a UUID-ish opaque string.
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            if line.contains("AfterTool"),
-               line.contains(toolId) {
-                return true
-            }
-        }
-        return false
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
+        let readLen = min(size, UInt64(256 * 1024))
+        if size > readLen { try? fh.seek(toOffset: size - readLen) }
+        let data = fh.readDataToEndOfFile()
+        guard let blob = String(data: data, encoding: .utf8) else { return false }
+        let needle = "\"event\":\"AfterTool\",\"tool_call_id\":\"\(toolId)\""
+        return blob.contains(needle)
     }
 
     static func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
-        // Snapshot the wall-clock at call time. The dispatch below may run a
-        // few ms later; we want the timestamp to reflect when the caller
-        // logged the event, not when the file write actually landed.
         let capturedAt = Date()
-        var fullEvent = event
-        if fullEvent["timestamp"] == nil {
-            fullEvent["timestamp"] = hookTimestampFormatter.string(from: capturedAt)
+        var payload = event
+        if payload["timestamp"] == nil {
+            payload["timestamp"] = hookTimestampFormatter.string(from: capturedAt)
         }
-        if fullEvent["session_id"] == nil {
-            fullEvent["session_id"] = sessionId
+        if payload["session_id"] == nil {
+            payload["session_id"] = sessionId
         }
-
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        var line = data
+        line.append(0x0A)
         hookWriteQueue.async {
             let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
             let fm = FileManager.default
@@ -1077,37 +919,21 @@ enum SoulRegistry {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             }
             let path = "\(dir)/hooks.jsonl"
-
-            guard let data = try? JSONSerialization.data(withJSONObject: fullEvent),
-                  let line = String(data: data, encoding: .utf8),
-                  let payload = (line + "\n").data(using: .utf8)
-            else { return }
-
-            let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-            guard fd >= 0 else { return }
-            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            try? handle.write(contentsOf: payload)
-            try? handle.close()
+            let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+            if fd >= 0 {
+                _ = line.withUnsafeBytes { p in write(fd, p.baseAddress, p.count) }
+                close(fd)
+            }
         }
     }
 
-    /// SOUL-SOUL_DESKTOP-065: stream-time capture of agent reply chunks.
-    /// Every `agent_message_chunk` notification appends one line here so
-    /// that if the provider child dies before its checkpoint flush AND
-    /// before Soul-Desktop's end-of-turn `AfterAgent` write, the reply
-    /// text still survives on disk and Replay can stitch it.
-    ///
-    /// Schema: `{ "ts": ISO-UTC, "bubble_id": <UUID>, "chunk": "<text>" }`.
-    /// One line per chunk; the reader coalesces by `bubble_id` order to
-    /// reconstruct each agent reply. Bounded growth: `retireChunks` empties
-    /// the file at end-of-turn once `AfterAgent` has landed authoritatively
-    /// in hooks.jsonl.
     static func appendAgentChunk(projectKey: String, sessionId: String, bubbleId: UUID, chunk: String) {
         let capturedAt = Date()
         let entry: [String: Any] = [
-            "ts": hookTimestampFormatter.string(from: capturedAt),
+            "timestamp": hookTimestampFormatter.string(from: capturedAt),
+            "event": "AgentThoughtChunk",
             "bubble_id": bubbleId.uuidString,
-            "chunk": chunk,
+            "chunk": chunk
         ]
         hookWriteQueue.async {
             let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
@@ -1116,22 +942,18 @@ enum SoulRegistry {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             }
             let path = "\(dir)/agent_chunks.jsonl"
-            guard let data = try? JSONSerialization.data(withJSONObject: entry),
-                  let line = String(data: data, encoding: .utf8),
-                  let payload = (line + "\n").data(using: .utf8)
-            else { return }
-            let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-            guard fd >= 0 else { return }
-            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            try? handle.write(contentsOf: payload)
-            try? handle.close()
+            let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+            if fd >= 0 {
+                if let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) {
+                    var line = data
+                    line.append(0x0A)
+                    _ = line.withUnsafeBytes { p in write(fd, p.baseAddress, p.count) }
+                }
+                close(fd)
+            }
         }
     }
 
-    /// Drop the per-session chunk file once the turn's `AfterAgent` row has
-    /// been authoritatively written to hooks.jsonl. Called at end of every
-    /// successful turn so the chunk file doesn't grow unbounded across a
-    /// long session. Idempotent.
     static func retireAgentChunks(projectKey: String, sessionId: String) {
         hookWriteQueue.async {
             let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/agent_chunks.jsonl"
@@ -1139,9 +961,6 @@ enum SoulRegistry {
         }
     }
 
-    /// Read the most-recent NativeSessionID event for a session and return
-    /// (provider, cwd) if present. Used by `liveSessions` to filter out rows
-    /// the current harness can't actually resume.
     static func nativeSessionRecord(projectKey: String, sessionId: String) -> (provider: String?, cwd: String?)? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
@@ -1158,15 +977,12 @@ enum SoulRegistry {
         return nil
     }
 
-    /// Outcome of a backfill attempt. Callers that only need a UUID for retry
-    /// can read `.uuid`; callers that surface state to the user (sidebar
-    /// Repair menu) switch on the cases.
-    enum BackfillResult: Equatable {
-        case hit(String)                       // newly written mapping
-        case alreadyMapped(String)             // existing NativeSessionID on file
-        case miss                              // no needle or no matching candidate
-        case ambiguous(candidates: [String])   // multiple candidates with identical first prompt
-        case unsupported                       // provider not eligible (e.g. pi)
+    enum BackfillResult {
+        case hit(String)
+        case alreadyMapped(String)
+        case miss
+        case ambiguous([String])
+        case unsupported
 
         var uuid: String? {
             switch self {
@@ -1176,108 +992,63 @@ enum SoulRegistry {
         }
     }
 
-    /// Content-match backfill of a missing `kernel_uuid → agent_uuid` mapping.
-    /// SOUL-SOUL_DESKTOP-022: when `session/load` fails with `Invalid session
-    /// identifier`, the kernel UUID we handed the agent is one it never minted.
-    /// Scan the agent's native transcript directory, find a file whose first
-    /// user prompt content-matches our hooks ledger's first prompt, and append
-    /// a `NativeSessionID` event with `source: "backfill"`. After this the
-    /// existing `findNativeSessionID` reader resolves cleanly on retry.
-    ///
-    /// Returns a typed `BackfillResult` (SOUL-SOUL_DESKTOP-029) so callers can
-    /// surface miss / ambiguous outcomes to the user instead of swallowing nil.
-    ///
-    /// Safety: only appends to hooks.jsonl. Never writes to agent transcript
-    /// directories, never overwrites an existing NativeSessionID.
-    /// Bounded: ≤ 500 candidates × 64 KB read per candidate.
     static func backfillNativeSessionID(
         projectKey: String,
         sessionId: String,
         provider: String,
         cwd: String
     ) -> BackfillResult {
-        // Short-circuit: if any NativeSessionID hook is already on file,
-        // return it. The on-disk mapping wins — backfill never overwrites or
-        // duplicates an existing record. This applies equally to identity
-        // mappings (existing == sessionId, written at spawn): when session/load
-        // fails despite an identity record, the failure is something other
-        // than UUID-namespace divergence (parse error, capability bug, cwd
-        // mismatch) and a content-match rescan would just append an unrelated
-        // second mapping. Forced re-scan, if it's ever needed, belongs behind
-        // an explicit force/repair API surface — not this implicit fall-through.
-        if let existing = findNativeSessionID(projectKey: projectKey, sessionId: sessionId) {
+        if let existing = findNativeSessionID(projectKey: projectKey, sessionId: sessionId, provider: provider) {
             return .alreadyMapped(existing)
         }
-
         let hooksPath = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard let ourPrompt = firstUserPromptFullFromHooks(path: hooksPath) else { return .miss }
         let needle = normalizeForMatch(ourPrompt)
-        // Trivial first prompts ("hi", "ok", "/finalize") are too common to
-        // disambiguate sessions. A 20-char floor avoids false-positive
-        // backfills against unrelated chats that happen to start the same way.
         guard needle.count >= 20 else { return .miss }
-
-        let candidates: [(nativeId: String, firstPrompt: String?)]
-        switch provider {
-        case "geminiCLI": candidates = scanGeminiCandidates(cwd: cwd)
-        case "claude":    candidates = scanClaudeCandidates(cwd: cwd)
-        default: return .unsupported
+        var candidates: [(nativeId: String, firstPrompt: String?)] = []
+        if provider == "geminiCLI" {
+            candidates = scanGeminiCandidates(cwd: cwd)
+        } else if provider == "claude" {
+            candidates = scanClaudeCandidates(cwd: cwd)
+        } else {
+            return .unsupported
         }
-
-        let hits = candidates.compactMap { c -> String? in
-            guard let p = c.firstPrompt else { return nil }
-            return normalizeForMatch(p) == needle ? c.nativeId : nil
+        let hits = candidates.filter { cand in
+            guard let p = cand.firstPrompt else { return false }
+            return normalizeForMatch(p) == needle
         }
-
-        switch hits.count {
-        case 0:
-            return .miss
-        case 1:
-            let nativeId = hits[0]
-            appendHook(projectKey: projectKey, sessionId: sessionId, event: [
-                "event": "NativeSessionID",
-                "provider": provider,
-                "nativeId": nativeId,
-                "cwd": cwd,
-                "source": "backfill",
-            ])
-            return .hit(nativeId)
-        default:
+        if hits.isEmpty { return .miss }
+        if hits.count > 1 {
+            let ids = hits.map { $0.nativeId }
             appendHook(projectKey: projectKey, sessionId: sessionId, event: [
                 "event": "BackfillAmbiguous",
                 "provider": provider,
-                "cwd": cwd,
-                "candidates": hits,
+                "candidate_ids": ids,
+                "first_prompt_preview": String(needle.prefix(100))
             ])
-            return .ambiguous(candidates: hits)
+            return .ambiguous(ids)
         }
+        let hit = hits[0].nativeId
+        writeNativeSessionID(projectKey: projectKey, sessionId: sessionId, nativeId: hit, provider: provider, cwd: cwd)
+        return .hit(hit)
     }
 
-    /// Write a chosen NativeSessionID mapping. Used by the sidebar's
-    /// ambiguous-result popover so the user can resolve a tie by picking
-    /// one of the candidate UUIDs. No content matching, no append guard
-    /// beyond the appendHook line-atomic write.
     static func writeNativeSessionID(
         projectKey: String,
         sessionId: String,
         nativeId: String,
         provider: String,
-        cwd: String,
-        source: String = "manual"
+        cwd: String
     ) {
         appendHook(projectKey: projectKey, sessionId: sessionId, event: [
             "event": "NativeSessionID",
+            "native_session_id": nativeId,
             "provider": provider,
-            "nativeId": nativeId,
             "cwd": cwd,
-            "source": source,
+            "source": "backfill"
         ])
     }
 
-    /// Whitespace-normalize a string for first-prompt content matching. The
-    /// raw text the user typed may have leading/trailing whitespace or CRLF
-    /// where the agent's transcript has LF; normalize before comparing so
-    /// cosmetic differences don't break the match.
     private static func normalizeForMatch(_ s: String) -> String {
         let collapsed = s.replacingOccurrences(of: "\r\n", with: "\n")
                          .components(separatedBy: .whitespacesAndNewlines)
@@ -1286,200 +1057,105 @@ enum SoulRegistry {
         return collapsed
     }
 
-    /// Non-truncating variant of `firstUserPromptFromHooks`. Used by backfill
-    /// where we need the full text to content-match against agent transcripts;
-    /// the truncated version is for sidebar titles only.
     private static func firstUserPromptFullFromHooks(path: String) -> String? {
         guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        for line in lines.prefix(40) {
+        for line in lines {
             guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (obj["event"] as? String) == "UserPrompt" || (obj["event"] as? String) == "UserMessage"
             else { continue }
-            let event = (obj["event"] as? String) ?? ""
-            if event == "UserPrompt" || event == "UserMessage" || event == "session/prompt" || event == "BeforeAgent" {
-                let content = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
-                if let text = content, !text.isEmpty { return text }
-            }
+            let text = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
+            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let t = trimmed, !t.isEmpty { return t }
         }
         return nil
     }
 
-    /// Scan `~/.gemini/tmp/<basename-of-cwd>[*]/chats/session-*.{json,jsonl}`
-    /// for resumable chat files and return their self-reported sessionId +
-    /// first user-role prompt text. Capped at 500 files; 64 KB read budget
-    /// per file.
     private static func scanGeminiCandidates(cwd: String) -> [(nativeId: String, firstPrompt: String?)] {
         let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
         let base = (trimmed as NSString).lastPathComponent
         let root = "\(homePath)/.gemini/tmp"
         let fm = FileManager.default
         guard let projects = try? fm.contentsOfDirectory(atPath: root) else { return [] }
-
-        var out: [(nativeId: String, firstPrompt: String?)] = []
+        var out: [(String, String?)] = []
         for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
             let chatsDir = "\(root)/\(proj)/chats"
             guard let files = try? fm.contentsOfDirectory(atPath: chatsDir) else { continue }
-            for f in files where f.hasSuffix(".json") || f.hasSuffix(".jsonl") {
-                if out.count >= 500 { return out }
-                let path = "\(chatsDir)/\(f)"
-                if let (sid, prompt) = readGeminiChatHeader(path: path) {
-                    out.append((sid, prompt))
+            for name in files where name.hasSuffix(".json") || name.hasSuffix(".jsonl") {
+                if let header = readGeminiChatHeader(path: "\(chatsDir)/\(name)") {
+                    out.append((header.sid, header.firstPrompt))
                 }
+                if out.count >= 500 { break }
             }
+            if out.count >= 500 { break }
         }
         return out
     }
 
-    /// Extract `(sessionId, firstUserPromptText)` from a gemini-cli chat file.
-    /// Handles both formats:
-    ///   - `.json`  — single object with `sessionId` and `messages: [{type, content: [{text}]}]`
-    ///   - `.jsonl` — header line carries `sessionId`; subsequent lines are messages,
-    ///                interleaved with `{"$set": {...}}` mutations we skip.
-    /// Reads at most 64 KB from the file.
     private static func readGeminiChatHeader(path: String) -> (sid: String, firstPrompt: String?)? {
         let fd = open(path, O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
-        var buf = [UInt8](repeating: 0, count: 64 * 1024)
-        let n = buf.withUnsafeMutableBufferPointer { read(fd, $0.baseAddress, $0.count) }
-        guard n > 0 else { return nil }
-        let slice = Data(bytes: buf, count: n)
-        guard let text = String(data: slice, encoding: .utf8) else { return nil }
-
-        if path.hasSuffix(".jsonl") {
-            var sid: String? = nil
-            var prompt: String? = nil
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard let data = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { continue }
-                if sid == nil, let s = obj["sessionId"] as? String { sid = s }
-                if prompt == nil,
-                   (obj["type"] as? String) == "user",
-                   let content = obj["content"] as? [[String: Any]],
-                   let first = content.first?["text"] as? String {
-                    prompt = first
-                }
-                if sid != nil && prompt != nil { break }
-            }
-            guard let s = sid else { return nil }
-            return (s, prompt)
-        }
-
-        // .json: try full parse first. Large transcripts (the truss-labs
-        // 11 MB chat is a real example) exceed the 64 KB read cap and the
-        // truncated JSON won't deserialize — fall back to a regex pull of
-        // `sessionId` so the candidate still counts. Prompt is best-effort:
-        // gemini writes it within the first ~1 KB so the head usually has
-        // it, and we regex it out of the head in the same pass.
-        if let data = text.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let s = obj["sessionId"] as? String {
-            var prompt: String? = nil
-            if let msgs = obj["messages"] as? [[String: Any]] {
-                for m in msgs {
-                    if (m["type"] as? String) == "user",
-                       let content = m["content"] as? [[String: Any]],
-                       let first = content.first?["text"] as? String {
-                        prompt = first
-                        break
-                    }
-                }
-            }
-            return (s, prompt)
-        }
-        // Truncated-JSON fallback: regex sessionId out of the head.
-        let sidPattern = #""sessionId"\s*:\s*"([0-9a-fA-F-]{36})""#
-        guard let sidRe = try? NSRegularExpression(pattern: sidPattern),
-              let m = sidRe.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let sidRange = Range(m.range(at: 1), in: text)
+        var buf = [UInt8](repeating: 0, count: 65536)
+        let n = read(fd, &buf, buf.count)
+        guard n > 0, let blob = String(bytes: buf.prefix(n), encoding: .utf8) else { return nil }
+        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        guard let first = lines.first?.data(using: .utf8),
+              let meta = try? JSONSerialization.jsonObject(with: first) as? [String: Any],
+              let sid = meta["sessionId"] as? String
         else { return nil }
-        let sid = String(text[sidRange])
-        // Best-effort prompt salvage from the same head bytes. Match the
-        // first `{"type":"user","content":[{"text":"…"}]}` shape; gemini
-        // writes the first user message within ~1 KB of the messages array
-        // start, so it's reliably inside our 64 KB window.
-        var prompt: String? = nil
-        let promptPattern = #""type"\s*:\s*"user"\s*,\s*"content"\s*:\s*\[\s*\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)""#
-        if let promptRe = try? NSRegularExpression(pattern: promptPattern),
-           let pm = promptRe.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let pRange = Range(pm.range(at: 1), in: text) {
-            let raw = String(text[pRange])
-            prompt = raw
-                .replacingOccurrences(of: "\\n", with: "\n")
-                .replacingOccurrences(of: "\\\"", with: "\"")
-                .replacingOccurrences(of: "\\\\", with: "\\")
+        for line in lines.dropFirst() {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = obj["type"] as? String,
+                  type == "user"
+            else { continue }
+            return (sid, obj["text"] as? String)
         }
-        return (sid, prompt)
+        return (sid, nil)
     }
 
-    /// Scan `~/.claude/projects/<encoded-cwd>/*.jsonl` for transcripts and
-    /// return `(sessionId, firstUserPromptText)`. The sessionId IS the
-    /// filename stem for Claude — no in-file extraction needed.
     private static func scanClaudeCandidates(cwd: String) -> [(nativeId: String, firstPrompt: String?)] {
         let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
         let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
         let dir = "\(homePath)/.claude/projects/\(encoded)"
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
-
-        var out: [(nativeId: String, firstPrompt: String?)] = []
-        for f in files where f.hasSuffix(".jsonl") {
-            if out.count >= 500 { return out }
-            let stem = String(f.dropLast(".jsonl".count))
-            guard UUID(uuidString: stem) != nil else { continue }
-            let path = "\(dir)/\(f)"
-            let prompt = readClaudeFirstUserPrompt(path: path)
-            out.append((stem, prompt))
+        var out: [(String, String?)] = []
+        for name in files where name.hasSuffix(".jsonl") {
+            let sid = (name as NSString).deletingPathExtension
+            let prompt = readClaudeFirstUserPrompt(path: "\(dir)/\(name)")
+            out.append((sid, prompt))
+            if out.count >= 500 { break }
         }
         return out
     }
 
-    /// Read the first real `type: "user"` prompt from a Claude transcript.
-    /// Skips tool_result records (where `message.content` is a list) — those
-    /// are bookkeeping, not user input. 64 KB read cap.
     private static func readClaudeFirstUserPrompt(path: String) -> String? {
         let fd = open(path, O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
-        var buf = [UInt8](repeating: 0, count: 64 * 1024)
-        let n = buf.withUnsafeMutableBufferPointer { read(fd, $0.baseAddress, $0.count) }
-        guard n > 0 else { return nil }
-        let slice = Data(bytes: buf, count: n)
-        guard let text = String(data: slice, encoding: .utf8) else { return nil }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        var buf = [UInt8](repeating: 0, count: 65536)
+        let n = read(fd, &buf, buf.count)
+        guard n > 0, let blob = String(bytes: buf.prefix(n), encoding: .utf8) else { return nil }
+        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        for line in lines {
             guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = obj["type"] as? String,
+                  type == "user",
+                  let message = obj["message"] as? [String: Any],
+                  let content = message["content"] as? String,
+                  !content.isEmpty
             else { continue }
-            guard (obj["type"] as? String) == "user" else { continue }
-            let msg = obj["message"] as? [String: Any]
-            if let s = msg?["content"] as? String, !s.isEmpty {
-                return s
-            }
-            // List content = tool_result; keep scanning.
+            return content
         }
         return nil
     }
 
-    /// Search for a `NativeSessionID` event in the session's hooks.jsonl.
-    /// Read the recorded provider for a session from its hooks ledger. Any
-    /// kernel event line that carries a `provider` field counts; we take the
-    /// first non-empty one we see. Returns the raw provider string ("claude",
-    /// "geminiCLI", "pi", "codex") so the caller can map it to a Provider
-    /// enum case. nil if the session has no ledger or no provider field was
-    /// written.
-    ///
-    /// SOUL-SOUL_DESKTOP-043: AppShell.loadSession uses this to override the
-    /// active harness when the user opens an archived row from a different
-    /// provider than what's currently active. Without it, a Gemini session
-    /// clicked while Claude is the active harness spawns the wrong agent and
-    /// fails session/load against a UUID it never minted.
     static func findProvider(projectKey: String, sessionId: String) -> String? {
         let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
-
-        // Primary signal: NativeSessionID hook (any provider that
-        // Soul-Desktop spawned writes one in `ensureSession`).
         let hooksPath = "\(dir)/hooks.jsonl"
         if FileManager.default.fileExists(atPath: hooksPath),
            let blob = try? String(contentsOfFile: hooksPath, encoding: .utf8) {
@@ -1487,123 +1163,77 @@ enum SoulRegistry {
                 guard let data = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let prov = obj["provider"] as? String,
-                      !prov.isEmpty
+                      (obj["event"] as? String) == "NativeSessionID" || (obj["event"] as? String) == "AfterAgent"
                 else { continue }
                 return prov
             }
         }
-
-        // Codex fallback: codex sessions are the only ones that get a
-        // sibling `transcript.jsonl` file in the registry directory
-        // (codex writes its own per-session transcript there). Before the
-        // NativeSessionID hook landed for codex spawns, legacy codex
-        // sessions had no marker — this fallback lets those rows still
-        // route correctly. New codex sessions will hit the NSID branch
-        // above first.
-        if FileManager.default.fileExists(atPath: "\(dir)/transcript.jsonl") {
-            return Provider.codex.rawValue
-        }
         return nil
     }
 
-    /// Resolve the agent-side UUID Soul-Desktop recorded for this session.
-    ///
-    /// When `provider` is supplied, only return NSIDs whose recorded provider
-    /// matches. This matters when the same kernel UUID has been touched by
-    /// more than one provider over its lifetime (e.g. Claude finalize + later
-    /// Gemini resume): the most-recent NSID hook would otherwise misroute a
-    /// Claude resume into Gemini's UUID namespace, and `session/load` falls
-    /// through to a fresh-session spawn.
-    ///
-    /// `provider` is the canonical Soul-Desktop key — `"claude"` / `"geminiCLI"`
-    /// / `"pi"` / `"codex"` — matching `Provider.rawValue` and the value the
-    /// kernel writes into the hook record. Pass `nil` to keep the legacy
-    /// "any provider, most recent wins" behavior (only callers that don't
-    /// know the provider, e.g. read-only loadability checks pre-route, should
-    /// do this).
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
-
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
-        // Scan backwards: most recent matching NSID wins. Provider filter
-        // applied per-record so a stale opposite-provider mapping at the
-        // bottom of the ledger doesn't shadow the right one above it.
         for line in lines.reversed() {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   (obj["event"] as? String) == "NativeSessionID",
-                  let nativeId = obj["nativeId"] as? String
+                  provider == nil || (obj["provider"] as? String) == provider
             else { continue }
-            if let want = provider {
-                guard (obj["provider"] as? String) == want else { continue }
-            }
-            return nativeId
+            return obj["native_session_id"] as? String
         }
         return nil
     }
 
-    /// Structured Quad pulled from the most-recent `<ts>_<sid>.json` finalize
-    /// record for a session. Returns nil if no finalize file exists. Used by
-    /// `ThreadController.hydrateFromDisk` to render a finalize summary card
-    /// in the canvas so the user can see what a session accomplished without
-    /// reading the JSON directly.
-    struct FinalizeRecord: Hashable {
-        var intent: String?
-        var summary: String?
-        var rationale: String?
-        var fixed: String?
-        var nextStep: String?
-        var timestamp: Date?
+    struct FinalizeRecord {
+        let sessionId: String
+        let summary: String?
+        let intent: String?
+        let rationale: String?
+        let fixed: String?
+        let nextStep: String?
+        let timestamp: Date?
     }
 
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
-        // SOUL-SOUL_DESKTOP-100: trace each step so we know exactly where
-        // the reader misses for providers whose finalize JSON should exist.
+        // SOUL-SOUL_DESKTOP-100: trace each step of the finalize lookup.
         let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
         let dir = "\(registryPath)/sessions/\(projectKey)"
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else {
             SoulSignposts.event("latestFinalize.no_dir", "\(sidLabel)")
             return nil
         }
-        // Filename shapes the kernel writes:
-        //   <uuid>.json
-        //   <ts>_<uuid>.json   (the common case; multiple per session as the
-        //                       user re-finalizes)
-        let matches = entries.filter { name in
-            guard name.hasSuffix(".json") else { return false }
+        for name in entries where name.hasSuffix(".json") {
             let stem = String(name.dropLast(5))
-            if stem == sessionId { return true }
-            if let tail = stem.split(separator: "_").last, String(tail) == sessionId { return true }
-            return false
+            if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(dir)/\(name)")),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(name)")
+                    continue
+                }
+                let fixedArray = obj["fixed_issues"] as? [String]
+                let fixedStr = fixedArray?.joined(separator: ", ")
+                SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
+                return FinalizeRecord(
+                    sessionId: sessionId,
+                    summary: obj["summary"] as? String,
+                    intent: obj["intent"] as? String,
+                    rationale: obj["rationale"] as? String,
+                    fixed: fixedStr,
+                    nextStep: obj["next_step"] as? String,
+                    timestamp: parseTimestamp(obj["timestamp"] as? String)
+                )
+            }
         }
-        // Most recent finalize wins — `<ts>_<uuid>` filenames sort
-        // lexicographically by timestamp prefix.
-        guard let latest = matches.sorted().last else {
-            SoulSignposts.event("latestFinalize.no_match", "\(sidLabel)")
-            return nil
-        }
-        let path = "\(dir)/\(latest)"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(latest)")
-            return nil
-        }
-        SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(latest)")
-        return FinalizeRecord(
-            intent: stringOrNil(obj["intent"]),
-            summary: stringOrNil(obj["summary"]),
-            rationale: stringOrNil(obj["rationale"]),
-            fixed: stringOrNil(obj["fixed"]),
-            nextStep: stringOrNil(obj["next_step"]) ?? stringOrNil(obj["next"]),
-            timestamp: parseTimestamp(obj["timestamp"] as? String)
-        )
+        SoulSignposts.event("latestFinalize.no_match", "\(sidLabel)")
+        return nil
     }
 
-    /// Search for a `Title` event in the session's hooks.jsonl.
     static func findTitle(projectKey: String, sessionId: String) -> String? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
@@ -1614,34 +1244,18 @@ enum SoulRegistry {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   (obj["event"] as? String) == "Title",
-                  let text = obj["text"] as? String
+                  let t = (obj["text"] as? String) ?? (obj["title"] as? String)
             else { continue }
-            return text
+            return t
         }
         return nil
     }
 
-    /// SOUL-SOUL_DESKTOP-038: read UserPrompt hooks whose text starts with a
-    /// slash command (e.g. `/decision`, `/finalize`). Terminal Claude Code
-    /// expands these client-side before the model API sees them, so a
-    /// session/load via ACP never re-streams them. The Soul harness captures
-    /// the raw text into hooks.jsonl, so we merge those back into the canvas
-    /// on load to keep the slash-command chip rendering consistent across
-    /// surfaces. Returns chronological order.
     static func slashCommandPrompts(projectKey: String, sessionId: String) -> [(text: String, timestamp: Date)] {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return [] }
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = TimeZone(identifier: "UTC")
-        // hooks.jsonl writes microsecond-precision UTC timestamps with a Z
-        // suffix (post -027). Tolerate the legacy naive-local format too so
-        // older files keep working.
-        let withZ = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
-        let naive = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-
         var out: [(text: String, timestamp: Date)] = []
         for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let data = line.data(using: .utf8),
@@ -1649,31 +1263,14 @@ enum SoulRegistry {
             else { continue }
             let event = (obj["event"] as? String) ?? ""
             guard event == "UserPrompt" || event == "UserMessage" else { continue }
-            let raw = (obj["text"] as? String)
-                ?? (obj["content"] as? String)
-                ?? (obj["prompt"] as? String)
-                ?? ""
+            let raw = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String) ?? ""
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.hasPrefix("/") else { continue }
-            // Match the same /<kebab> shape UserMessageRow.parsed accepts so we
-            // don't inject text that wouldn't render as a chip anyway.
-            let body = trimmed.dropFirst()
-            let name: Substring = {
-                if let space = body.firstIndex(of: " ") { return body[..<space] }
-                if let nl = body.firstIndex(of: "\n") { return body[..<nl] }
-                return body
-            }()
-            guard !name.isEmpty,
-                  name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
-            else { continue }
-            let tsStr = (obj["timestamp"] as? String) ?? ""
-            fmt.dateFormat = withZ
-            let ts = fmt.date(from: tsStr)
-                ?? { fmt.dateFormat = naive; return fmt.date(from: tsStr) }()
-                ?? Date()
-            out.append((text: trimmed, timestamp: ts))
+            if let ts = parseTimestamp(obj["timestamp"] as? String) {
+                out.append((trimmed, ts))
+            }
         }
-        return out.sorted { $0.timestamp < $1.timestamp }
+        return out
     }
 
     private static func hooksLineCount(projectKey: String, sessionId: String) -> Int {
@@ -1693,11 +1290,6 @@ enum SoulRegistry {
         else { return 0 }
         var n = 0
         for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
-            // Quick substring check beats JSON parse for 30+ sessions.
-            // Claude writes tool_results as user-type records too, so a raw
-            // "type":"user" count is wildly inflated. Real prompts carry a
-            // string content field; tool_results carry a list with
-            // "tool_use_id" / "tool_result" markers — exclude those.
             let isUserType = line.contains("\"type\":\"user\"") || line.contains("\"type\": \"user\"")
             guard isUserType else { continue }
             if line.contains("tool_use_id") || line.contains("\"tool_result\"") { continue }

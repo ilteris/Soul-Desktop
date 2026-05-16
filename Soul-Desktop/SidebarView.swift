@@ -180,15 +180,20 @@ struct SidebarView: View {
                     .frame(maxHeight: .infinity)
             }
 
-            Button(action: onOpenSettings) {
-                HStack(spacing: 6) {
-                    SoulIcon(name: "gear", color: SoulColor.fgMuted)
-                    Text("Settings").font(SoulFont.ui(14)).foregroundStyle(SoulColor.fg)
-                    Spacer()
+            HStack(alignment: .center) {
+                Button(action: onOpenSettings) {
+                    HStack(spacing: 6) {
+                        SoulIcon(name: "gear", color: SoulColor.fgMuted)
+                        Text("Settings").font(SoulFont.ui(14)).foregroundStyle(SoulColor.fg)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                buildBadge
             }
-            .buttonStyle(.plain)
             .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -245,6 +250,30 @@ struct SidebarView: View {
                 watcher = nil
             }
             Task { await reloadSessions() }
+        }
+    }
+
+    private var buildBadge: some View {
+        HStack(spacing: 4) {
+            let isDev: Bool = {
+                #if DEBUG
+                return true
+                #else
+                return false
+                #endif
+            }()
+            Text(isDev ? "DEV" : "RELEASE")
+                .font(SoulFont.ui(9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(isDev ? Color.orange : Color.blue, in: RoundedRectangle(cornerRadius: 4))
+            
+            if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                Text("v\(version)")
+                    .font(SoulFont.ui(10))
+                    .foregroundStyle(SoulColor.fgSubtle)
+            }
         }
     }
 
@@ -517,7 +546,8 @@ struct SidebarView: View {
                 liveProvider: ctrl.provider.rawValue,
                 loadable: true,
                 replayable: true,
-                substantive: true
+                substantive: true,
+                isWorking: ctrl.isWorking
             )
             if let existing = byId[sid] {
                 // Take the disk row's metadata (source, worktree, status) and
@@ -531,6 +561,8 @@ struct SidebarView: View {
                 merged.isLive = true
                 merged.origin = .desktop
                 merged.liveProvider = ctrl.provider.rawValue
+                merged.isWorking = ctrl.isWorking
+                merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
                 byId[sid] = merged
             } else {
                 byId[sid] = synthetic
@@ -845,15 +877,20 @@ struct ChatRow: View {
                 }
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(isDraft ? "New chat" : cleanTitle(session.intent ?? session.summary))
-                    .font(SoulFont.ui(14, weight: isSelected ? .medium : .regular))
-                    .italic(isDraft)
-                    .foregroundStyle(
-                        isSelected ? SoulColor.accent
-                                   : (isDraft ? SoulColor.fgSubtle : SoulColor.fg)
-                    )
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(spacing: 4) {
+                    if session.isWorking {
+                        WorkingDot()
+                    }
+                    Text(isDraft ? "New chat" : cleanTitle(session.intent ?? session.summary))
+                        .font(SoulFont.ui(14, weight: isSelected ? .medium : .regular))
+                        .italic(isDraft)
+                        .foregroundStyle(
+                            isSelected ? SoulColor.accent
+                                       : (isDraft ? SoulColor.fgSubtle : SoulColor.fg)
+                        )
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Text(isDraft ? "Draft · not sent yet" : metaLine(session))
                     .font(SoulFont.ui(11))
                     .italic(isDraft)
@@ -975,6 +1012,22 @@ if isActiveReplay {
         }
         if let nl = s.firstIndex(of: "\n") { s = String(s[..<nl]) }
         return s.isEmpty ? "untitled" : s
+    }
+}
+
+private struct WorkingDot: View {
+    @State private var pulsing = false
+    var body: some View {
+        Circle()
+            .fill(SoulColor.accent)
+            .frame(width: 6, height: 6)
+            .scaleEffect(pulsing ? 1.2 : 0.8)
+            .opacity(pulsing ? 1.0 : 0.7)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                    pulsing = true
+                }
+            }
     }
 }
 
@@ -1197,12 +1250,18 @@ private struct LiveSessionRow: View {
     /// glyph + tooltip and click resumes via -059's relaxed routing.
     private var isResumable: Bool {
         if session.origin != .terminal { return true }
-        return session.liveProvider == "geminiCLI"
+        // For terminal-origin sessions, only allow resume if it's Gemini
+        // AND the session is abandoned (stale). Active terminal sessions
+        // stay read-only to prevent dual-writer corruption.
+        return session.liveProvider == "geminiCLI" && session.isStale
     }
 
     /// Provider-distinguishing glyph for live rows. Falls back to terminal
     /// when we can't resume (no agent file at all).
     private var liveIcon: String {
+        if session.origin == .terminal && !session.isStale {
+            return "terminal.fill" // Active terminal session
+        }
         guard isResumable else { return "terminal" }
         return ProviderIcon.symbol(for: session.liveProvider ?? session.source)
     }
@@ -1218,6 +1277,14 @@ private struct LiveSessionRow: View {
                 .foregroundStyle(textColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
+            if session.origin == .terminal && !session.isStale {
+                Text("active")
+                    .font(SoulFont.ui(9, weight: .bold))
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(.blue.opacity(0.12), in: Capsule())
+            }
             Spacer(minLength: 0)
             Text(relative(session.timestamp))
                 .font(SoulFont.code(11))
@@ -1237,18 +1304,23 @@ private struct LiveSessionRow: View {
 
     private var iconColor: Color {
         if isSelected { return SoulColor.accent }
+        if session.origin == .terminal && !session.isStale { return .blue }
         if !isResumable { return SoulColor.fgMuted }
         return SoulColor.fgSubtle
     }
 
     private var textColor: Color {
         if isSelected { return SoulColor.accent }
+        if session.origin == .terminal && !session.isStale { return SoulColor.fg }
         if !isResumable { return SoulColor.fgMuted }
         return SoulColor.fg
     }
 
     private var tooltip: String {
-        isResumable
+        if session.origin == .terminal && !session.isStale {
+            return "Currently active in a terminal. Resume disabled to prevent data loss."
+        }
+        return isResumable
             ? "Click to resume this conversation."
             : "Started outside Soul-Desktop — clicking will not resume the original conversation (starts fresh)."
     }

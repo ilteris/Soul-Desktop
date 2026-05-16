@@ -6,6 +6,8 @@ struct Soul_DesktopApp: App {
     init() {
         // Writing to a closed agent stdin would otherwise SIGPIPE the whole app.
         signal(SIGPIPE, SIG_IGN)
+        
+        NotificationManager.shared.requestAuthorization()
     }
 
     var body: some Scene {

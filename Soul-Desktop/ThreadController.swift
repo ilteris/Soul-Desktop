@@ -21,6 +21,12 @@ struct ToolCallDetails: Hashable {
     enum Kind: Hashable {
         case edit(oldString: String, newString: String)
         case write(content: String)
+        case output(text: String)
+
+        var isOutput: Bool {
+            if case .output = self { return true }
+            return false
+        }
     }
     var kind: Kind
     /// First line of the edit in the source file when known (from ACP's
@@ -156,37 +162,71 @@ final class ThreadController {
     /// one the agent is actively chewing on.
 var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
-    /// Groups consecutive edit/write tool calls on the same file into a single
-    /// .toolCallGroup for compact rendering. Group breaks on turn boundaries,
-    /// message chunks, or non-edit tool calls. Derived from the flat items
-    /// list to keep the ledger truth simple.
+    /// Groups tool calls for compact rendering. 
+    /// 1. File-changing tools (edit/write) for the same file are merged into 
+    ///    a single cumulative group even if non-consecutive.
+    /// 2. Verification tools (read, execute, search) are carouselled by kind,
+    ///    but are HIDDEN if they occur after a file change in the same turn.
+    /// 3. All grouping is turn-scoped (resets on user/agent messages).
     var groupedItems: [ThreadItem] {
         if let cache = groupedItemsCache, cache.version == itemsVersion {
             return cache.value
         }
-        // Two grouping flavors share the .toolCallGroup case:
-        //   - edit/write: same kind AND same file (combined-diff card render)
-        //   - other kinds (execute, read, search, fetch, think, …): same kind
-        //     only; renders as a carousel row that crossfades the arg portion.
-        // Singletons are unwrapped at the end so the single-row path stays
-        // untouched for non-clustered tool calls.
+
         var result: [ThreadItem] = []
+        /// Maps file paths to their index in `result`.
+        var fileGroupMap: [String: Int] = [:]
+        /// Maps tool kinds to their index in `result` (for non-file tools).
+        var kindGroupMap: [String: Int] = [:]
+        /// Track if we've seen any file changes in the current tool sequence.
+        var turnHasFileChanges = false
+
         for item in items {
             guard case .toolCall(let id, let kind, let title, _, let loc, _) = item else {
                 result.append(item)
+                if case .agentThought = item {
+                    // Thoughts don't break the tool-grouping context.
+                } else {
+                    fileGroupMap.removeAll()
+                    kindGroupMap.removeAll()
+                    turnHasFileChanges = false
+                }
                 continue
             }
-            let isDiffGroup = (kind == "edit" || kind == "write")
-            if let last = result.last,
-               case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = last,
-               gKind == kind,
-               isDiffGroup ? gTitle == title : true {
-                gItems.append(item)
-                result[result.count - 1] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
+
+            let isFileChange = (kind == "edit" || kind == "write")
+            let isVerification = (kind == "read" || kind == "execute" || kind == "search")
+            let fileKey = loc ?? title
+
+            if isFileChange {
+                turnHasFileChanges = true
+                if let idx = fileGroupMap[fileKey] {
+                    if case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = result[idx] {
+                        gItems.append(item)
+                        result[idx] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
+                    }
+                } else {
+                    fileGroupMap[fileKey] = result.count
+                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
+                }
+            } else if isVerification && turnHasFileChanges {
+                // Noise! Skip rendering verification tools that happen during 
+                // or after a file-change sequence in the same turn.
+                continue
             } else {
-                result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
+                if let idx = kindGroupMap[kind] {
+                    if case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = result[idx] {
+                        gItems.append(item)
+                        result[idx] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
+                    }
+                } else {
+                    kindGroupMap[kind] = result.count
+                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
+                }
             }
         }
+
+        // Unwrap groups containing only one item.
         result = result.map { entry in
             if case .toolCallGroup(_, _, _, _, let inner) = entry, inner.count == 1 {
                 return inner[0]
@@ -484,12 +524,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// fires a ToolCallTimeout + turn cancel when any entry exceeds the
     /// configured threshold. Removed when the call hits a terminal status.
     private var toolCallStartedAt: [String: Date] = [:]
-    /// SOUL-SOUL_DESKTOP-079: last time a tool_call / tool_call_update
-    /// notification arrived for this toolCallId. The watchdog uses THIS
-    /// (not `toolCallStartedAt`) to detect tool-call silence — a tool
-    /// that's still streaming output past the legacy 60s wall-clock from
-    /// start is legitimately working, not stuck. Updated on every non-
-    /// terminal tool_call/tool_call_update apply; cleared on terminal.
+    /// SOUL-SOUL_DESKTOP-079: activity-based timeout map. See commit 951d65d.
     private var toolCallLastActivityAt: [String: Date] = [:]
     /// IDs we've already fired a timeout for so the watchdog doesn't keep
     /// hammering cancel + writing duplicate hooks every tick after expiry.
@@ -561,6 +596,11 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             stopStallWatchdog()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
+            
+            NotificationManager.shared.sendTurnCompletedNotification(
+                threadTitle: displayTitle,
+                project: project.name
+            )
         }
 
         // First turn dispatches immediately; subsequent queued turns are
@@ -928,18 +968,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return
         }
 
-        // SOUL-SOUL_DESKTOP-079: per-tool-call timeout sweep, NOW driven by
-        // last-activity time instead of start time. A tool call that keeps
-        // receiving `tool_call_update` notifications is legitimately working
-        // (long recursive grep, big build, slow agent) and should NOT be
-        // auto-cancelled. The watchdog only fires when N seconds of silence
-        // pass with no update for the toolCallId. Still catches the original
-        // -033 target (`tail -f`-style commands that emit no per-update
-        // signal once started) because those don't tick lastActivityAt
-        // after the initial in_progress notification.
+        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout sweep. Independent
+        // from the turn-level quiet check — catches the `tail -f` case
+        // where a single tool call sits in_progress forever while still
+        // emitting enough output to keep `lastActivityAt` fresh.
         let toolTimeout = StallPolicy.toolCallTimeoutSeconds
         let now = Date()
         var expired: [String] = []
+        // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
             if Int(now.timeIntervalSince(lastSeen)) >= toolTimeout {
                 expired.append(toolId)
@@ -1060,26 +1096,10 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         do {
             switch provider {
             case .claude, .geminiCLI, .pi:
-                // All three report `agentCapabilities.loadSession: true`
-                // over ACP and stream the prior transcript back as
-                // user/agent message chunks during the load. (pi-acp 0.0.27
-                // confirmed: initialize result advertises `loadSession:
-                // true`; the CLI `--resume` flag we used to pass is parsed
-                // by nothing in pi-acp's argv handling, so it was a silent
-                // no-op and the kernel UUID never landed in pi-acp's
-                // session map — every subsequent prompt failed with
-                // "Unknown sessionId".)
                 try await spawnAndInitialize(skipNewSession: true)
                 guard let client else { return }
                 let resumeId = nativeId ?? sid
 
-                // SAFETY: snapshot the agent's own chat file before letting
-                // it try to load. We hit a regression where gemini-cli's
-                // session/new fallback (triggered after a session/load
-                // rpcError) reused the same sessionId and overwrote the
-                // original 11MB transcript with a 228-byte stub. Copy first,
-                // attempt load second; on disaster the user has `.bak-…`
-                // sitting next to the file to recover from.
                 let backupPath = Self.backupAgentChatIfPresent(
                     provider: provider,
                     sessionId: resumeId,
@@ -1089,43 +1109,18 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                     isReplayingLoad = true
                     try await client.loadSession(sessionId: resumeId, cwd: project.path)
                     isReplayingLoad = false
-                    // Keep sessionId == sid (kernel id). resumeId is the
-                    // agent-native id we hand to ACP; record it separately
-                    // so future prompts/cancels go to the agent's UUID
-                    // while hook writes stay under the kernel directory.
                     nativeSessionId = resumeId
                     hasInitialized = true
                     injectSlashCommandPrompts(meta.slashPrompts)
                 } catch ACPClientError.rpcError(let rpc) {
                     isReplayingLoad = false
-                    // SOUL-SOUL_DESKTOP-022: before surfacing the error, try a
-                    // content-match backfill. If our hooks ledger's first
-                    // prompt matches one of the agent's native transcripts,
-                    // we record the mapping and retry session/load once.
-                    //
-                    // SOUL-SOUL_DESKTOP-028: gate on the specific
-                    // invalid-session-id signal. JSON-RPC -32602 is the
-                    // canonical "invalid params" code both providers raise
-                    // for an unknown session UUID; we also accept message-
-                    // level signals because gemini-cli has been observed to
-                    // raise -32603 with the same surface text. Any other
-                    // rpcError (parse error, capability bug, cwd mismatch,
-                    // transient provider failure) falls straight through to
-                    // the existing error-reporting path instead of triggering
-                    // an unrelated content-match write.
                     let lowerMsg = rpc.message.lowercased()
-                    // Code spread: -32602 (Invalid params — gemini-cli's
-                    // canonical signal), -32603 (Internal — gemini-cli has
-                    // raised this with the same message text), -32002
-                    // (Resource not found — claude-agent-acp's signal when
-                    // the session UUID isn't in its store). All three mean
-                    // "the session you asked me to load doesn't exist," so
-                    // they share the backfill-and-retry recovery path.
                     let isInvalidSession = rpc.code == -32602
                         || rpc.code == -32002
                         || lowerMsg.contains("invalid session")
                         || lowerMsg.contains("session id")
                         || lowerMsg.contains("resource not found")
+                    
                     if isInvalidSession {
                         let result = SoulRegistry.backfillNativeSessionID(
                             projectKey: project.id,
@@ -1142,31 +1137,16 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                                 isReplayingLoad = true
                                 try await client.loadSession(sessionId: backfilled, cwd: project.path)
                                 isReplayingLoad = false
-                                // Kernel sessionId stays sid; backfilled is
-                                // the agent's UUID for ACP calls. Without
-                                // this split, follow-up prompts would
-                                // append hooks under the wrong directory.
                                 nativeSessionId = backfilled
                                 hasInitialized = true
                                 injectSlashCommandPrompts(meta.slashPrompts)
                                 return
                             } catch {
                                 isReplayingLoad = false
-                                // Fall through to the original error reporting.
                             }
                         }
                     }
-                    // Surface the full JSON-RPC error so we can diagnose
-                    // why gemini's session/load actually failed (parse
-                    // error in the transcript? cwd basename mismatch?
-                    // capability gating?). Without this the symptom is
-                    // opaque and we just route to the fallback blind.
-                    // Soften the noise for the routine "session UUID not in
-                    // agent's store" case — for Claude we always recover via
-                    // session/new, so a red error row is misleading. Other
-                    // rpcErrors (parse error, capability gating, cwd
-                    // mismatch) keep the red treatment because they signal
-                    // a real problem the user needs to see.
+
                     let dataStr = Self.describeJSONValue(rpc.data)
                     let suffix = dataStr.isEmpty ? "" : " · data: \(dataStr)"
                     let recoverable = isInvalidSession && provider == .claude
@@ -1176,24 +1156,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                             text: "ℹ \(rpc.message) — session not on agent, recovering"
                         ))
                     } else if provider != .geminiCLI {
-                        // Gemini-CLI failures present a recovery sheet
-                        // (pendingRecovery below); the red error row would
-                        // double up. Other providers still surface the raw
-                        // rpcError so non-recovery cases stay diagnosable.
                         items.append(.error(
                             id: UUID(),
                             text: "session/load rpcError code=\(rpc.code) message=\(rpc.message)\(suffix)"
                         ))
                     }
+
                     if provider == .geminiCLI {
-                        // Hard stop. Gemini-cli's session/new fallback under
-                        // a same-UUID load failure is destructive (rewrites
-                        // the chat file with an empty stub). Refuse the
-                        // fallback, quarantine the broken live file so
-                        // re-clicks don't loop on the same parse error, and
-                        // raise a recovery sheet so the user sees actionable
-                        // buttons (Replay / Reveal backup / Start fresh)
-                        // instead of a wall of red status rows.
                         let quarantinedPath: String? = {
                             guard isInvalidSession, backupPath != nil else { return nil }
                             return Self.quarantineCorruptGeminiChat(
@@ -1210,42 +1179,17 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                                 title: customTitle
                             )
                         }
-                        // Keep `hasInitialized` false so the canvas stays in
-                        // a clear "not loaded" state instead of pretending a
-                        // fresh thread.
                         return
                     }
-                    // Claude: existing behavior (transcript file is at a
-                    // different path and isn't touched by session/new).
+
                     renderHistoryIfAvailable(sid: sid)
                     items.append(.status(id: UUID(), text: "ℹ session could not be resumed — starting fresh"))
-                    // Couldn't resume — start a fresh session. Discard
-                    // the kernel id of the failed resume attempt; the new
-                    // session lives under newSid for both kernel + native
-                    // (identity mapping, written by ensureSession on
-                    // subsequent paths or implicit here).
                     let newSid = try await client.newSession(cwd: project.path)
                     sessionId = newSid
                     nativeSessionId = newSid
                     hasInitialized = true
                 }
-            case .pi:
-                // Unreachable: pi now routes through the
-                // `.claude, .geminiCLI, .pi` ACP loadSession branch above.
-                // Left as a defensive fallback in case the upper match is
-                // ever narrowed; spawns fresh and renders any local hooks
-                // history rather than throwing.
-                renderHistoryIfAvailable(sid: sid)
-                try await spawnAndInitialize(skipNewSession: false)
-                hasInitialized = true
             case .codex:
-                // Codex doesn't support session/load. This branch fires
-                // only when AppShell routed straight to loadSession (rare —
-                // the normal codex click goes through `hydrateFromDisk`
-                // which renders kernel hooks history and spawns codex
-                // lazily on first send). Quietly spawn fresh; the user is
-                // either in a brand-new chat or a codex session whose
-                // hydrate returned nothing.
                 try await spawnAndInitializeCodex()
             }
         } catch {
@@ -1354,13 +1298,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // "New chat".
         if let t = result.title, !t.isEmpty { customTitle = t }
         nativeSessionId = result.nativeId
-        // SOUL-SOUL_DESKTOP-097: bulk-update the @Observable Set in ONE
-        // mutation instead of N. Per-item .insert in a synchronous loop
-        // fires N tracked-change events, each invalidating ThreadView and
-        // forcing the LazyVStack to re-evaluate its ForEach over the
-        // growing items array — quadratic blowup on long Claude
-        // transcripts (measured: hydrate hung indefinitely on a ~thousand-
-        // item session). formUnion is a single mutation.
+        // SOUL-SOUL_DESKTOP-097: bulk-update; see commit 88aead0.
         historicalIDs.formUnion(history.lazy.map(\.id))
         items.append(contentsOf: history)
         // Slash-command UserPrompt hooks (captured by the kernel before the
@@ -1474,13 +1412,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
               !history.isEmpty
         else { return }
 
-        // SOUL-SOUL_DESKTOP-097: bulk-update the @Observable Set in ONE
-        // mutation instead of N. Per-item .insert in a synchronous loop
-        // fires N tracked-change events, each invalidating ThreadView and
-        // forcing the LazyVStack to re-evaluate its ForEach over the
-        // growing items array — quadratic blowup on long Claude
-        // transcripts (measured: hydrate hung indefinitely on a ~thousand-
-        // item session). formUnion is a single mutation.
+        // SOUL-SOUL_DESKTOP-097: bulk-update; see commit 88aead0.
         historicalIDs.formUnion(history.lazy.map(\.id))
         items.append(contentsOf: history)
         items.append(.status(id: UUID(), text: "─ history above (read-only) ─"))
@@ -1502,8 +1434,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// `hydrateFromDisk`); same session where /finalize ran would never
     /// surface the structured summary.
     private func injectFinalizeSummaryIfFresh(sessionId sid: String) {
-        // SOUL-SOUL_DESKTOP-100: trace each branch so we can pin down why
-        // the FinalizeCard doesn't render for some providers.
+        // SOUL-SOUL_DESKTOP-100: trace each branch.
         let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
         guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
             SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
@@ -1719,7 +1650,16 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         sessionId = sid
         nativeSessionId = sid
         hasInitialized = true
-        
+
+        // SOUL-FINALIZE-PARITY-001: write the freshly-minted sid to
+        // /tmp/soul_last_session_id so a `soul finalize` call from the spawned
+        // agent (which didn't have SOUL_SESSION_ID at spawn time) hits the
+        // kernel's existing fallback path (soul_finalize.sh line ~104) and
+        // tags its JSON with the desktop's sid. Best-effort write — the
+        // worst case is the script falls back to mint_session_uuid() and the
+        // FinalizeCard fails to match, which is the pre-fix status quo.
+        try? sid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)
+
         // Persist the provider's native sessionId alongside the kernel ledger
         // for this session. Identity-mapping for Soul-Desktop spawns (kernel
         // dir == gemini's sessionId), but keeping the explicit record means
@@ -1764,6 +1704,21 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // and split the ledger across two ~/soul_registry/sessions/<key>/
         // buckets for the same session UUID. See SOUL-PROJECT-KEY-CONTRACT-001.
         env["SOUL_PROJECT"] = project.id
+        // SOUL-FINALIZE-PARITY-001: forward the desktop-resolved kernel sid so
+        // `soul finalize` (and any other kernel CLI the agent shells out to)
+        // writes under the same sid the desktop holds. Without this, the
+        // agent's env has GEMINI_SESSION_ID / SOUL_THREAD_ID unset and
+        // mint_session_uuid() returns a fresh uuid that latestFinalize()
+        // never matches → FinalizeCard never renders.
+        //
+        // For resumed sessions `sessionId` is set by assignSessionId() before
+        // spawn. For fresh sessions the kernel sid is whatever the ACP agent
+        // mints in newSession(), which happens after spawn — so we can't pre-
+        // populate. The composer-side /finalize expansion picks up the sid
+        // at type-time as the fallback for that case.
+        if let sid = sessionId {
+            env["SOUL_SESSION_ID"] = sid
+        }
         spawn.environment = env
         spawn.cwd = project.path
 
@@ -1803,6 +1758,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         // for codex: kernel hooks should write to the desktop-selected
         // project bucket, not a cwd-derived one.
         codexEnv["SOUL_PROJECT"] = project.id
+        // SOUL-FINALIZE-PARITY-001: same SOUL_SESSION_ID export as the ACP
+        // path so `soul finalize` from a codex bash tool call writes a JSON
+        // tagged with the desktop's session id. Codex resume isn't wired yet,
+        // so `sessionId` is nil at spawn — the env stays out and the composer
+        // expansion below carries the sid at /finalize time.
+        if let sid = sessionId {
+            codexEnv["SOUL_SESSION_ID"] = sid
+        }
         enriched.environment = codexEnv
         enriched.cwd = project.path
 
@@ -3047,7 +3010,16 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     }
 
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
-        let toolId = payload["toolCallId"]?.stringValue ?? UUID().uuidString
+        let toolId: String = {
+            if let tid = payload["toolCallId"]?.stringValue { return tid }
+            // pi-acp legacy/load support: try to derive an ID from the payload
+            // if toolCallId is missing, to avoid duplication during session/load.
+            if let kind = payload["kind"]?.stringValue,
+               let title = payload["title"]?.stringValue {
+                return "legacy-\(kind)-\(title)"
+            }
+            return UUID().uuidString
+        }()
         let rawKind = payload["kind"]?.stringValue ?? "tool"
         let rawTitle = payload["title"]?.stringValue ?? ""
         // Normalize provider kind quirks: Pi sends kind="other"+title="bash"
@@ -3127,25 +3099,18 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return l
         }()
         let structuredDetails: ToolCallDetails? = {
-            // SOUL-SOUL_DESKTOP-101: ACP DiffContent fallback for providers
-            // that omit `rawInput` entirely (Gemini-CLI's write_file is the
-            // canonical case — payload has only `content[]` with a `type:
-            // "diff"` block carrying { path, oldText, newText }). Try this
-            // shape first; if no diff block matches, fall through to the
-            // rawInput-based extractors below.
+            // SOUL-SOUL_DESKTOP-101: ACP DiffContent fallback. Gemini-CLI
+            // write_file omits rawInput entirely; the diff lives in the
+            // top-level content[] as { type:"diff", path, oldText, newText }.
             if case .array(let blocks)? = payload["content"] {
                 for block in blocks {
-                    let isDiff = block["type"]?.stringValue == "diff"
-                    guard isDiff else { continue }
+                    guard block["type"]?.stringValue == "diff" else { continue }
                     let oldT = block["oldText"]?.stringValue ?? block["old_string"]?.stringValue
                     let newT = block["newText"]?.stringValue ?? block["new_string"]?.stringValue
                     guard let newT else { continue }
                     if let oldT, !oldT.isEmpty {
                         return ToolCallDetails(kind: .edit(oldString: oldT, newString: newT), startLine: startLine)
                     }
-                    // Empty oldText → write. Capture previous file size if
-                    // disk still has the pre-write version (gives +N -M
-                    // instead of additions-only).
                     if toolCallPreviousLineCount[toolId] == nil,
                        let path = block["path"]?.stringValue {
                         let abs = path.hasPrefix("/") ? path : (project.path as NSString).appendingPathComponent(path)
@@ -3159,59 +3124,62 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
                     )
                 }
             }
-            guard let rawInput else { return nil }
-            let oldS = rawInput["old_string"]?.stringValue ?? rawInput["oldString"]?.stringValue
-            let newS = rawInput["new_string"]?.stringValue ?? rawInput["newString"]?.stringValue
-            if let oldS, let newS {
-                return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS), startLine: startLine)
-            }
-            // SOUL-SOUL_DESKTOP-080: Pi's edit shape — `edits: [{oldText, newText}]`
-            // wrapped in an array, camelCase keys. Without this branch every Pi
-            // edit fell through to nil details → no +/- counts, no diff card.
-            // For now we render the first edit; multi-edit grouping is a
-            // follow-up (Pi sometimes batches several edits into one tool call).
-            if case .array(let edits)? = rawInput["edits"],
-               let first = edits.first {
-                let oldT = first["oldText"]?.stringValue ?? first["old_string"]?.stringValue
-                let newT = first["newText"]?.stringValue ?? first["new_string"]?.stringValue
-                if let oldT, let newT {
-                    return ToolCallDetails(kind: .edit(oldString: oldT, newString: newT), startLine: startLine)
+            if let rawInput {
+                let oldS = rawInput["old_string"]?.stringValue ?? rawInput["oldString"]?.stringValue
+                let newS = rawInput["new_string"]?.stringValue ?? rawInput["newString"]?.stringValue
+                if let oldS, let newS {
+                    return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS), startLine: startLine)
+                }
+                // SOUL-SOUL_DESKTOP-080: Pi's edit shape — `edits: [{oldText, newText}]`
+                // wrapped in an array, camelCase keys. Without this branch every Pi
+                // edit fell through to nil details → no +/- counts, no diff card.
+                // For now we render the first edit; multi-edit grouping is a
+                // follow-up (Pi sometimes batches several edits into one tool call).
+                if case .array(let edits)? = rawInput["edits"],
+                   let first = edits.first {
+                    let oldT = first["oldText"]?.stringValue ?? first["old_string"]?.stringValue
+                    let newT = first["newText"]?.stringValue ?? first["new_string"]?.stringValue
+                    if let oldT, let newT {
+                        return ToolCallDetails(kind: .edit(oldString: oldT, newString: newT), startLine: startLine)
+                    }
+                }
+                // Write-body field name varies by provider: Claude uses `content`
+                // or `new_str`, Gemini-CLI's write_file uses `file_text`, and some
+                // ACP servers use plain `text`. Check all four so the diff card
+                // renders the actual file content instead of falling through to
+                // the JSON-envelope fallback (SOUL-SOUL_DESKTOP-032).
+                let writeBody = rawInput["content"]?.stringValue
+                    ?? rawInput["new_str"]?.stringValue
+                    ?? rawInput["file_text"]?.stringValue
+                    ?? rawInput["text"]?.stringValue
+                if let writeBody {
+                    // Capture line count of the file on disk the first time we
+                    // see this toolCallId, before the agent's write lands. Reads
+                    // are cheap (single stat + read) and gated by the cache so
+                    // later update events don't see the post-write content.
+                    if toolCallPreviousLineCount[toolId] == nil,
+                       let path = writeTargetPath(payload: payload, rawInput: rawInput) {
+                        toolCallPreviousLineCount[toolId] = previousLineCount(atPath: path)
+                    }
+                    let prev = toolCallPreviousLineCount[toolId]
+                    return ToolCallDetails(
+                        kind: .write(content: writeBody),
+                        startLine: startLine,
+                        previousLineCount: (prev ?? 0) > 0 ? prev : nil
+                    )
                 }
             }
-            // Write-body field name varies by provider: Claude uses `content`
-            // or `new_str`, Gemini-CLI's write_file uses `file_text`, and some
-            // ACP servers use plain `text`. Check all four so the diff card
-            // renders the actual file content instead of falling through to
-            // the JSON-envelope fallback (SOUL-SOUL_DESKTOP-032).
-            let writeBody = rawInput["content"]?.stringValue
-                ?? rawInput["new_str"]?.stringValue
-                ?? rawInput["file_text"]?.stringValue
-                ?? rawInput["text"]?.stringValue
-            if let writeBody {
-                // Capture line count of the file on disk the first time we
-                // see this toolCallId, before the agent's write lands. Reads
-                // are cheap (single stat + read) and gated by the cache so
-                // later update events don't see the post-write content.
-                if toolCallPreviousLineCount[toolId] == nil,
-                   let path = writeTargetPath(payload: payload, rawInput: rawInput) {
-                    toolCallPreviousLineCount[toolId] = previousLineCount(atPath: path)
-                }
-                let prev = toolCallPreviousLineCount[toolId]
-                return ToolCallDetails(
-                    kind: .write(content: writeBody),
-                    startLine: startLine,
-                    previousLineCount: (prev ?? 0) > 0 ? prev : nil
-                )
+            // Fallback: capture tool output (stdout/stderr) for non-edit tools.
+            // Surfaced when the row is expanded; helps diagnose grep/shell failures.
+            if let out = payload["output"]?.stringValue, !out.isEmpty {
+                return ToolCallDetails(kind: .output(text: out))
             }
             return nil
         }()
 
         // SOUL-SOUL_DESKTOP-033 + -079: per-tool-call timeout bookkeeping.
-        // Record the first time we see a toolCallId in a non-terminal state
-        // AND refresh `lastActivityAt` on every subsequent non-terminal
-        // notification — the watchdog at line ~937 keys off lastActivityAt,
-        // not startedAt, so any tool that keeps emitting updates is treated
-        // as live and never timed out.
+        // Record start AND refresh lastActivityAt on every non-terminal
+        // update; the watchdog keys off lastActivityAt.
         let isTerminal = (status == "completed" || status == "failed" || status == "stopped")
         if isTerminal {
             toolCallStartedAt.removeValue(forKey: toolId)
