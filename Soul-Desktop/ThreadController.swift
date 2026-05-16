@@ -184,9 +184,16 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         for item in items {
             guard case .toolCall(let id, let kind, let title, _, let loc, _) = item else {
                 result.append(item)
-                if case .agentThought = item {
-                    // Thoughts don't break the tool-grouping context.
-                } else {
+                // SOUL-SOUL_DESKTOP-104b: only userMessage resets the grouping
+                // context. Pi (and Claude Code on long turns) interleaves
+                // agentMessage chunks between consecutive tool calls — the
+                // agent narrating "I'll try X now" between two greps — and
+                // the original "reset on any non-toolCall" rule turned every
+                // execute into its own group. The carousel never engaged
+                // because each group ended up with count == 1 and got
+                // unwrapped. Now only a real turn boundary (a new user
+                // message) resets the maps.
+                if case .userMessage = item {
                     fileGroupMap.removeAll()
                     kindGroupMap.removeAll()
                     turnHasFileChanges = false
