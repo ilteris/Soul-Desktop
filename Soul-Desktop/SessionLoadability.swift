@@ -43,9 +43,9 @@ enum SessionLoadability {
         let claudeId = SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: "claude") ?? sid
         if claudeId != sid, claudeFileExists(sessionId: claudeId, cwd: project.path) { return true }
 
-        if geminiFileHasContent(sessionId: sid, projectKey: project.id) { return true }
+        if geminiFileHasContent(sessionId: sid, project: project) { return true }
         let geminiId = SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: "geminiCLI") ?? sid
-        if geminiId != sid, geminiFileHasContent(sessionId: geminiId, projectKey: project.id) { return true }
+        if geminiId != sid, geminiFileHasContent(sessionId: geminiId, project: project) { return true }
 
         if piFileExists(sessionId: sid, cwd: project.path) { return true }
         if codexFileExists(sessionId: sid, projectKey: project.id) { return true }
@@ -110,11 +110,27 @@ enum SessionLoadability {
 
     // MARK: - Gemini
 
-    private static func geminiFileHasContent(sessionId sid: String, projectKey: String) -> Bool {
+    private static func geminiFileHasContent(sessionId sid: String, project: SoulProject) -> Bool {
         let geminiBase = ("~/.gemini/tmp" as NSString).expandingTildeInPath
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: geminiBase) else { return false }
-        let candidateDirs = entries.filter { $0 == projectKey || $0.hasPrefix("\(projectKey)-") }
+        // SOUL-SOUL_DESKTOP-083: marker-first dir selection. See the warm-walk
+        // in SoulRegistry.agentMatchCached for the rationale.
+        let projectRealpath: String? = project.path.isEmpty ? nil
+            : URL(fileURLWithPath: project.path).resolvingSymlinksInPath().path
+        let keyLC = project.id.lowercased()
+        let prefixLC = "\(keyLC)-"
+        let candidateDirs = entries.filter { dir in
+            let markerPath = "\(geminiBase)/\(dir)/.project_root"
+            if let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) {
+                guard let projectRealpath else { return false }
+                let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .resolvingSymlinksInPath().path
+                return resolved == projectRealpath
+            }
+            let dirLC = dir.lowercased()
+            return dirLC == keyLC || dirLC.hasPrefix(prefixLC)
+        }
         for dir in candidateDirs {
             if scanGeminiChatsDir("\(geminiBase)/\(dir)/chats", sessionId: sid) != nil {
                 return true
@@ -163,20 +179,42 @@ enum SessionLoadability {
         return nil
     }
 
-    /// Map a `~/.gemini/tmp/<basename>` (possibly with `-N` collision
-    /// suffix) back to a real cwd via SoulProject path basename match.
+    /// Map a `~/.gemini/tmp/<basename>` dir back to a real cwd. Marker-first
+    /// (SOUL-SOUL_DESKTOP-083): read `.project_root` and match its resolved
+    /// realpath against active SoulProjects — handles `-N` collision siblings,
+    /// duplicate-basename projects in different parents, and gemini-cli slug
+    /// normalization. Falls back to case-insensitive basename match for legacy
+    /// dirs that pre-date the marker.
     private static func projectPathForGeminiBasename(_ dir: String) -> String? {
-        // Strip trailing -N suffix when looking up; the canonical project
-        // basename is the prefix before any numeric collision tag.
+        let geminiBase = ("~/.gemini/tmp" as NSString).expandingTildeInPath
+        let markerPath = "\(geminiBase)/\(dir)/.project_root"
+        if let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) {
+            let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+                .resolvingSymlinksInPath().path
+            for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
+                let projResolved = URL(fileURLWithPath: proj.path).resolvingSymlinksInPath().path
+                if projResolved == resolved { return proj.path }
+            }
+            // Marker is authoritative: if it points at a path no active
+            // project owns, don't silently fall back to basename — that
+            // would re-introduce the cross-project misroute -083 is here
+            // to prevent.
+            return nil
+        }
+
+        // Legacy fallback: no marker → strip `-N` and case-insensitive
+        // basename match (SOUL-SOUL_DESKTOP-084).
         let stripped: String = {
             if let dashIdx = dir.lastIndex(of: "-"),
                let tail = Int(dir[dir.index(after: dashIdx)...]),
                tail >= 0 { return String(dir[..<dashIdx]) }
             return dir
         }()
+        let strippedLC = stripped.lowercased()
+        let dirLC = dir.lowercased()
         for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
-            let basename = (proj.path as NSString).lastPathComponent
-            if basename == stripped || basename == dir { return proj.path }
+            let basenameLC = (proj.path as NSString).lastPathComponent.lowercased()
+            if basenameLC == strippedLC || basenameLC == dirLC { return proj.path }
         }
         return nil
     }

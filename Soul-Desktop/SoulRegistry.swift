@@ -594,8 +594,38 @@ enum SoulRegistry {
             let base = (trimmed as NSString).lastPathComponent
             let geminiBase = "\(homePath)/.gemini/tmp"
             if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
-                for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
-                    _ = cache.entries(at: "\(geminiBase)/\(proj)/chats", fm: fm)
+                // SOUL-SOUL_DESKTOP-083: marker-first match. Read
+                // `<tmp>/.project_root` — gemini-cli's own ground truth —
+                // and compare its resolved realpath to the project's
+                // resolved realpath. This handles `-N` collision siblings,
+                // duplicate-basename projects in different parents, and
+                // any future slug normalization gemini-cli applies.
+                // Fallback to case-insensitive basename match (SOUL-084)
+                // for legacy dirs that pre-date the marker — APFS is
+                // case-insensitive, so a `Soul-Desktop` project may show
+                // up as `soul-desktop` in `contentsOfDirectory`.
+                let projectRealpath = URL(fileURLWithPath: trimmed)
+                    .resolvingSymlinksInPath().path
+                let baseLC = base.lowercased()
+                let prefixLC = "\(baseLC)-"
+                for proj in projects {
+                    let markerPath = "\(geminiBase)/\(proj)/.project_root"
+                    let matchedByMarker: Bool? = {
+                        guard let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) else {
+                            return nil
+                        }
+                        let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+                            .resolvingSymlinksInPath().path
+                        return resolved == projectRealpath
+                    }()
+                    let match: Bool = {
+                        if let m = matchedByMarker { return m }
+                        let projLC = proj.lowercased()
+                        return projLC == baseLC || projLC.hasPrefix(prefixLC)
+                    }()
+                    if match {
+                        _ = cache.entries(at: "\(geminiBase)/\(proj)/chats", fm: fm)
+                    }
                 }
             }
             if let hit = cache.firstEightIndex[first8] {
