@@ -227,12 +227,14 @@ final class GitReviewModel: ObservableObject {
         p.standardOutput = out
         p.standardError = err
         do { try p.run() } catch { return .failure(GitError(message: error.localizedDescription)) }
-        p.waitUntilExit()
+        // SOUL-SOUL_DESKTOP-117: drain both pipes BEFORE waitUntilExit; otherwise git
+        // blocks writing once stdout > 64KB pipe buffer and we deadlock here forever.
         let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         if p.terminationStatus == 0 {
             return .success(String(data: outData, encoding: .utf8) ?? "")
         } else {
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
             let msg = String(data: errData, encoding: .utf8) ?? "exit \(p.terminationStatus)"
             return .failure(GitError(message: msg.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
