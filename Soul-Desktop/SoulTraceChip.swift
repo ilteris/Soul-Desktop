@@ -1,39 +1,7 @@
 import SwiftUI
 
-struct SoulTrace {
-    let intent: String
-    let nextStep: String
-    let rationale: String
-
-    /// Returns (text with the trace block stripped, parsed trace if present).
-    /// Trace blocks are: `<soul_trace>{...json...}</soul_trace>`. The JSON has
-    /// `intent`, `next_step`, `rationale` keys.
-    static func extract(from raw: String) -> (visible: String, trace: SoulTrace?) {
-        guard let range = raw.range(of: #"<soul_trace>([\s\S]*?)</soul_trace>"#, options: .regularExpression) else {
-            return (raw, nil)
-        }
-        let block = String(raw[range])
-        let inner = block
-            .replacingOccurrences(of: "<soul_trace>", with: "")
-            .replacingOccurrences(of: "</soul_trace>", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let parsed: SoulTrace? = {
-            guard let data = inner.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            return SoulTrace(
-                intent:    obj["intent"]    as? String ?? "",
-                nextStep:  obj["next_step"] as? String ?? "",
-                rationale: obj["rationale"] as? String ?? ""
-            )
-        }()
-
-        var stripped = raw
-        stripped.replaceSubrange(range, with: "")
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), parsed)
-    }
-}
+// SoulTrace model + parser live in SoulTrace.swift (refactor step 1 —
+// kept the view file focused on rendering, isolated the regex/JSON work).
 
 struct SoulTraceChip: View {
     let trace: SoulTrace
