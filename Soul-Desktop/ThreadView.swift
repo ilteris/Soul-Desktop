@@ -222,12 +222,27 @@ struct ThreadView: View {
             .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SOUL-SOUL_DESKTOP-147: dashed-border drop-target affordance now
+        // traces the whole ThreadView so the user can see exactly where
+        // drops will land. Inset slightly so the border doesn't clip
+        // against the window chrome.
+        .overlay {
+            RoundedRectangle(cornerRadius: SoulMetric.radiusL)
+                .strokeBorder(
+                    SoulColor.accent,
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 5])
+                )
+                .padding(8)
+                .opacity(isImageDropTargeted ? 1 : 0)
+                .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
+                .allowsHitTesting(false)
+        }
         // SOUL-SOUL_DESKTOP-146: whole-canvas drop target. Drops anywhere
         // in the ThreadView area land in `droppedAttachments`, which the
         // composer below renders as chips and submits as markdown links.
         // The composer keeps its own inner `.onDrop` too — innermost wins
-        // for drops directly on it, which preserves the existing on-
-        // composer dashed-border targeting affordance.
+        // for drops directly on it, but both write through the same
+        // Binding so the canvas-wide highlight tracks targeting state.
         .onDrop(
             of: DropAttachmentHandler.acceptedTypes,
             isTargeted: $isImageDropTargeted

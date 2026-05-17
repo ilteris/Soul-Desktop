@@ -315,15 +315,11 @@ struct ComposerView: View {
                 RoundedRectangle(cornerRadius: SoulMetric.radiusL)
                     .strokeBorder(SoulColor.border, lineWidth: 0.5)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: SoulMetric.radiusL)
-                    .strokeBorder(
-                        SoulColor.accent,
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
-                    )
-                    .opacity(isImageDropTargeted ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
-            )
+            // SOUL-SOUL_DESKTOP-147: the dashed drop-target affordance moved
+            // to ThreadView so it traces the whole canvas (matching where
+            // drops are actually accepted). Composer keeps its inner
+            // `.onDrop` for direct-composer drops but no longer paints its
+            // own border — the canvas-wide one covers it.
             .onDrop(
                 of: [.fileURL, .image, .png, .jpeg, .tiff, .gif],
                 isTargeted: $isImageDropTargeted

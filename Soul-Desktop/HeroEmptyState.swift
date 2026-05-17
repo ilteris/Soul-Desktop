@@ -54,6 +54,19 @@ struct HeroEmptyState: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SOUL-SOUL_DESKTOP-147: canvas-wide dashed-border affordance,
+        // mirrors ThreadView.
+        .overlay {
+            RoundedRectangle(cornerRadius: SoulMetric.radiusL)
+                .strokeBorder(
+                    SoulColor.accent,
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 5])
+                )
+                .padding(8)
+                .opacity(isImageDropTargeted ? 1 : 0)
+                .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
+                .allowsHitTesting(false)
+        }
         // SOUL-SOUL_DESKTOP-146: same whole-canvas drop target as ThreadView.
         .onDrop(
             of: DropAttachmentHandler.acceptedTypes,
