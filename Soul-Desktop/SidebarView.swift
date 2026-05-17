@@ -342,7 +342,7 @@ struct SidebarView: View {
                     && activeSessionId == nil
                     && activeReplaySessionId == nil),
             isExpanded: expansionBinding(for: project.id),
-            chatCount: sessionCounts[project.id] ?? 0,
+            chatCount: filteredChatCount(for: project) ?? (sessionCounts[project.id] ?? 0),
             onSelect: { selectedProject = project.id },
             onNewChat: {
                 onNewChat(project.id)
@@ -575,6 +575,19 @@ struct SidebarView: View {
     ///   - `loadable || replayable` → drop fully orphan rows (toggle: showUnreadable)
     ///   - `chatSourceFilter`       → optional provider scope
     ///   - `hideUntitled`           → optional drop of empty-titled rows
+    /// SOUL-SOUL_DESKTOP-148: derive the badge count from the same filter
+    /// the rendered list uses (substantive + loadable/replayable + provider
+    /// filter + hideUntitled), minus archived. Returns nil if the project's
+    /// sessions haven't been loaded yet — caller falls back to the raw
+    /// disk-count badge in that case (which gets corrected on first expand
+    /// when the Stage-1 scan populates sessionsByProject).
+    fileprivate func filteredChatCount(for project: SoulProject) -> Int? {
+        guard sessionsByProject[project.id] != nil else { return nil }
+        let merged = mergedChatList(for: project)
+        let archivedSet = archiveStore.archivedIDs(forProject: project.id)
+        return merged.filter { !archivedSet.contains($0.id) }.count
+    }
+
     fileprivate func mergedChatList(for project: SoulProject) -> [SoulSession] {
         let onDisk = (sessionsByProject[project.id] ?? []).filter { s in
             if !s.substantive { return false }
