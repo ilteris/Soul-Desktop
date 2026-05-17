@@ -20,6 +20,12 @@ struct AppShell: View {
     /// sidebar highlight before the spawn completes and `thread.sessionId`
     /// is real. Cleared once the thread's own session ID catches up.
     @State private var pendingActiveId: String? = nil
+    /// SOUL-SOUL_DESKTOP-138: nonce bumped every time the user initiates a
+    /// new chat (composer-send into empty hero or sidebar "+ New chat"
+    /// button). SidebarView observes this and auto-expands the parent
+    /// project of the new thread. Restored-at-launch sessions don't bump
+    /// this, so launch UX stays "all projects collapsed."
+    @State private var newChatNonce: Int = 0
     /// Pre-thread composer text. Used by HeroEmptyState (no thread yet) and
     /// while the draft-session row is selected. Once a real thread exists,
     /// each ThreadController owns its own `composerDraft` so keystrokes
@@ -161,6 +167,7 @@ struct AppShell: View {
         controller.permissionMode = pendingPermissionMode
         threads[controller.id] = controller
         setActiveThread(controller.id)
+        newChatNonce &+= 1
         Task { await controller.send(display: display, agent: agent) }
     }
 
@@ -400,6 +407,7 @@ struct AppShell: View {
             )
             draftSession = draft
             pendingActiveId = draft.id
+            newChatNonce &+= 1
         } else {
             draftSession = nil
             pendingActiveId = nil
@@ -961,6 +969,7 @@ struct AppShell: View {
                 currentProvider: harness,
                 draftSession: draftSession,
                 activeThreads: Array(threads.values),
+                newChatNonce: newChatNonce,
                 repairToast: $repairToast
             )
             .frame(width: SoulMetric.sidebarWidth)

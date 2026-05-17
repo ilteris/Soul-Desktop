@@ -35,6 +35,11 @@ struct SidebarView: View {
     /// Each controller becomes one row keyed by its sessionId (preferred)
     /// or controller.id (pre-spawn).
     var activeThreads: [ThreadController] = []
+    /// SOUL-SOUL_DESKTOP-138: bumped by AppShell every time the user
+    /// initiates a new chat (composer send into empty hero, sidebar "+ New
+    /// chat" button). Distinguishes user-initiated chats from launch
+    /// state restore.
+    var newChatNonce: Int = 0
     // Seed projects synchronously from PROJECTS.json so the first render
     // already has data instead of flashing an empty "Projects" + "No chats"
     // header for the ~250ms until the async reload finishes.
@@ -226,12 +231,19 @@ struct SidebarView: View {
         }
         .task { await reload() }
         .onChange(of: activeProjectId) { _, newId in
-            // Don't auto-expand the parent of the active session at launch —
-            // that was the cause of "Soul OS pops open with a filled folder
-            // icon on app start." Just prime the session cache; the user
-            // expands explicitly if they want to see the row.
+            // Prime the session cache when active project changes.
             guard let id = newId else { return }
             Task { await loadProject(id) }
+        }
+        .onChange(of: newChatNonce) { _, _ in
+            // SOUL-SOUL_DESKTOP-138: AppShell bumps this every time the user
+            // initiates a new chat (composer-send into the empty hero state,
+            // or the sidebar "+ New chat" button). Auto-expand the parent
+            // project so the freshly-active live row is visible without an
+            // extra click. Restored-at-launch sessions don't bump the nonce,
+            // so the launch UX stays "all projects collapsed."
+            guard let pid = activeProjectId else { return }
+            setExpanded(pid, true)
         }
         .onChange(of: currentProvider) { _, _ in
             // Harness change → re-filter live rows. A row that's valid under
