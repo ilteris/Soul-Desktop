@@ -361,7 +361,7 @@ struct AppShell: View {
         // the prior conversation instead of dropping the user into a blank
         // fresh thread. Pi stays on the spawn-first path until we wire a
         // hydrate reader for it.
-        let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex
+        let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi
         if useReadFirst {
             Task { await controller.hydrateFromDisk(id: session.id) }
         } else {

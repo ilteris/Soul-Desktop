@@ -570,8 +570,14 @@ struct SidebarView: View {
                 // Keep the disk row's original timestamp — don't bump it from
                 // the live controller's startedAt / lastActivityAt. Live
                 // activity should NOT reorder the sidebar.
-                merged.isLive = true
-                merged.writer = .soulDesktop
+                //
+                // Intentionally preserve `existing.writer` and `existing.isLive`:
+                // opening a row to view it doesn't make us its author or
+                // revive a finalized session. Once the user sends, the
+                // controller's appendHook writes NativeSessionID/Title to
+                // the ledger and the next disk scan reflects writer=.soulDesktop
+                // naturally. Same for isLive — true real state, not derived
+                // from "is a controller pointed at this row."
                 merged.liveProvider = ctrl.provider.rawValue
                 merged.isWorking = ctrl.isWorking
                 merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count

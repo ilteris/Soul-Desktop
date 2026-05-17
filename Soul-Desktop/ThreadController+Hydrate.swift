@@ -16,12 +16,12 @@ extension ThreadController {
         guard !hasInitialized else { return }
         let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
         defer { SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval) }
-        // Hydrate handles Claude, Gemini-CLI, AND Codex. Pi still falls
-        // through to loadSession (no hydrate reader yet). The earlier
-        // guard explicitly skipped codex which bounced every codex click
-        // straight back to loadSession's fresh-thread fallback — the
-        // canvas-came-empty bug.
-        guard provider == .claude || provider == .geminiCLI || provider == .codex else {
+        // Hydrate handles all four providers. Claude / Gemini-CLI try their
+        // dedicated transcript readers first and fall back to the kernel
+        // hooks ledger when those return nil. Codex / Pi go straight to the
+        // kernel ledger — neither has a provider-side transcript reader,
+        // and pi-acp's chat file format isn't wired in yet (see -123).
+        guard provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi else {
             await loadSession(id: sid)
             return
         }
@@ -60,7 +60,14 @@ extension ThreadController {
             case .geminiCLI:
                 r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
             case .pi:
-                r.history = nil
+                // Same shape as Codex: no provider transcript reader, render
+                // from the kernel hooks ledger directly. Soul-Desktop pi-acp
+                // sessions fire UserPrompt + AfterAgent + AfterTool hooks
+                // into the ledger; terminal-origin pi sessions don't, but
+                // those rows surface a clean status row when the ledger is
+                // empty (see the empty-history block below).
+                let events = HooksReader.events(forSession: sid, project: proj)
+                r.history = events.map { $0.item }
             case .codex:
                 // Codex has no off-disk transcript file we can read (no
                 // rollout reader yet), but the kernel hooks ledger carries
@@ -76,14 +83,29 @@ extension ThreadController {
             return r
         }.value
 
-        // No on-disk transcript and no native-id mapping → this session
-        // can't be resumed from disk. For Claude we can still try the agent
-        // path (it owns the transcript at a different file). For Gemini,
-        // that path would just rpcError with "Invalid session identifier" —
-        // show a clean status row instead and let the user type to start
-        // fresh. Codex shows the same clean status (we have no off-disk
-        // reader and codex's session/load doesn't exist).
+        // Transcript reader returned nothing. Before falling through to the
+        // ACP eager loadSession (which fails noisily for externally-authored
+        // sessions whose provider-side UUID we never recorded), try the
+        // kernel hooks ledger — same Codex-style fallback. Externally-authored
+        // Claude/Gemini sessions have UserPrompt + AfterTool + AfterAgent in
+        // our hooks.jsonl; rendering those gives the user a visible canvas
+        // instead of staring at an empty thread. First send spawns a fresh
+        // provider session (no nativeId to resume against), matching Codex.
         if result.history == nil || result.history?.isEmpty == true {
+            let ledgerItems = HooksReader.events(forSession: sid, project: proj).map { $0.item }
+            if !ledgerItems.isEmpty {
+                if let t = result.title, !t.isEmpty { customTitle = t }
+                nativeSessionId = result.nativeId
+                historicalIDs.formUnion(ledgerItems.lazy.map(\.id))
+                items.append(contentsOf: ledgerItems)
+                injectSlashCommandPrompts(result.slashPrompts)
+                injectFinalizeSummary(sessionId: sid)
+                items.append(.status(id: UUID(), text: "ℹ rendered from kernel ledger — first message starts a fresh \(provider.rawValue) session"))
+                // Intentionally do NOT set pendingResumeOnFirstSend: without
+                // a native UUID, ACP session/load would rpcError on first
+                // send. Let ensureSession take the fresh-session path.
+                return
+            }
             if provider == .claude || provider == .geminiCLI {
                 await loadSession(id: sid)
                 return
