@@ -167,29 +167,29 @@ enum SoulRegistry {
             )
         }
 
-        // Sort by project creation time (oldest first) so the sidebar order
-        // is STABLE — doesn't reshuffle as you send prompts or files get
-        // touched. Creation time = the birth date of the project's
-        // sessions/ directory, falling back to the project's source path,
-        // then alphabetical for projects without either timestamp yet.
+        // Sort by recency: most-recently-active project first. Activity is
+        // measured at the sessions/<project>/ directory mtime — APFS bumps
+        // it whenever a session dir is added or removed (new chat, finalize,
+        // archive). One stat per project keeps `projects()` cheap enough to
+        // call from the sidebar body without blocking the main thread.
         return mapped.sorted { lhs, rhs in
-            let la = createdAt(for: lhs)
-            let ra = createdAt(for: rhs)
-            if la != ra { return la < ra }
+            let la = lastModifiedAt(for: lhs)
+            let ra = lastModifiedAt(for: rhs)
+            if la != ra { return la > ra }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
-    private static func createdAt(for p: SoulProject) -> Date {
-        let sessionsDir = "\(registryPath)/sessions/\(p.id)"
-        if let m = (try? FileManager.default.attributesOfItem(atPath: sessionsDir)[.creationDate]) as? Date {
-            return m
-        }
-        if !p.path.isEmpty,
-           let m = (try? FileManager.default.attributesOfItem(atPath: p.path)[.creationDate]) as? Date {
-            return m
-        }
-        return Date.distantPast
+    private static func lastModifiedAt(for p: SoulProject) -> Date {
+        // Use the sessions/<project>/ dir mtime as the recency signal. The
+        // prior shape that iterated every session UUID and called mtime() on
+        // each was O(N*sessions) per call — with ~430 sessions across 18
+        // projects, that was 430+ stats per `projects()` call. Since
+        // `projects()` is called from the sidebar body, that landed on the
+        // main thread on every paint and beachballed the Dev build. Dir
+        // mtime is one stat per project, ~24× cheaper, same ordering for
+        // the cases this sort actually surfaces (new chat, finalize).
+        mtime("\(registryPath)/sessions/\(p.id)")
     }
 
     static func activeProjects() -> [SoulProject] {
