@@ -461,13 +461,28 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// Active codex turn id, captured at `turn/start` and used to filter
     /// `turn/completed` notifications belonging to this turn.
     private var codexActiveTurnId: String?
-    /// Latest token count reported by codex's `thread/tokenUsage/updated`
-    /// notification (`last.totalTokens` from the payload). nil until the
-    /// first usage event lands.
-    var codexTokensUsed: Int?
-    /// Model context-window budget reported by the same notification
-    /// (`modelContextWindow`). Drives the toolbar chip's denominator.
-    var codexContextWindow: Int?
+    /// Per-thread ACP session state, constructed lazily on first need.
+    /// Owns codex token counters (and, in later refactor steps, the agent
+    /// client handles + event stream). Historical-only threads loaded from
+    /// disk never allocate one. See ACPSession.swift.
+    @ObservationIgnored private var _session: ACPSession?
+    private func ensureSession() -> ACPSession {
+        if let s = _session { return s }
+        let s = ACPSession(provider: provider, project: project)
+        _session = s
+        return s
+    }
+
+    /// Forwarders so external callers (AppShell toolbar etc.) keep their
+    /// existing read paths while storage lives on `ACPSession`.
+    var codexTokensUsed: Int? {
+        get { _session?.codexTokensUsed }
+        set { ensureSession().codexTokensUsed = newValue }
+    }
+    var codexContextWindow: Int? {
+        get { _session?.codexContextWindow }
+        set { ensureSession().codexContextWindow = newValue }
+    }
     /// Kernel/registry session id. This is the UUID Soul writes hooks under
     /// (~/soul_registry/sessions/<project>/<sessionId>/hooks.jsonl) and the
     /// id AppShell / SidebarView use to identify the chat row. Stable for
