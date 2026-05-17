@@ -1,13 +1,31 @@
 import SwiftUI
+import AppKit
 import Darwin
 
 @main
 struct Soul_DesktopApp: App {
     init() {
+        // SOUL-SOUL_DESKTOP-114: refuse to launch a second instance of the same
+        // bundle. Two Soul-Desktops spawn two gemini-cli child pools that race on
+        // claimNewSlug → ~/.gemini/tmp/<slug>-1 collisions (e.g. soul-1). Dev and
+        // Release have distinct bundle IDs so they still coexist freely.
+        Self.enforceSingleInstance()
+
         // Writing to a closed agent stdin would otherwise SIGPIPE the whole app.
         signal(SIGPIPE, SIG_IGN)
-        
+
         NotificationManager.shared.requestAuthorization()
+    }
+
+    private static func enforceSingleInstance() {
+        guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { return }
+        let me = NSRunningApplication.current
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != me.processIdentifier }
+        guard let firstOther = others.first else { return }
+        NSLog("[soul] another Soul-Desktop (\(bundleID)) instance is running (pid \(firstOther.processIdentifier)); activating it and exiting self (pid \(me.processIdentifier)).")
+        firstOther.activate()
+        exit(0)
     }
 
     var body: some Scene {
