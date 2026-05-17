@@ -1,0 +1,378 @@
+import Foundation
+
+/// Read-first hydration + finalize-summary injection helpers, lifted out
+/// of ThreadController. The big `hydrateFromDisk(id:)` method that
+/// rebuilds an archived session's transcript from the kernel ledger
+/// lives here, along with the recovery affordances around it (Claude/
+/// Gemini chat backup + quarantine, slash-prompt re-injection) and the
+/// FinalizeCard injection routines triggered by the FinalizeWatcher.
+///
+/// Pure file shuffle, no behavior change. Refactor 7/N — agent
+/// ergonomics: shrink ThreadController.swift below the threshold where
+/// a coding agent can hold it in context.
+extension ThreadController {
+
+    func hydrateFromDisk(id sid: String) async {
+        guard !hasInitialized else { return }
+        let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
+        defer { SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval) }
+        // Hydrate handles Claude, Gemini-CLI, AND Codex. Pi still falls
+        // through to loadSession (no hydrate reader yet). The earlier
+        // guard explicitly skipped codex which bounced every codex click
+        // straight back to loadSession's fresh-thread fallback — the
+        // canvas-came-empty bug.
+        guard provider == .claude || provider == .geminiCLI || provider == .codex else {
+            await loadSession(id: sid)
+            return
+        }
+        guard Self.looksLikeUUID(sid) else {
+            items.append(.error(id: UUID(), text: "session id is not a UUID; cannot resume"))
+            return
+        }
+        // Establish kernel identity immediately so subsequent appendHooks
+        // (e.g. a fast send() before hydrate finishes) write under the right
+        // directory.
+        sessionId = sid
+
+        // Off-main: a 33h Claude transcript is multi-MB of JSONL. Parsing on
+        // the main actor would beach-ball the sidebar click; mirror the
+        // ReplayController pattern and hand the file work to a detached task.
+        let proj = project
+        let prov = provider
+        struct HydrateResult {
+            var history: [ThreadItem]?
+            var title: String?
+            var nativeId: String?
+            var slashPrompts: [(text: String, timestamp: Date)] = []
+        }
+        let result: HydrateResult = await Task.detached(priority: .userInitiated) {
+            var r = HydrateResult()
+            // Native UUID lookup happens *before* the transcript read because
+            // terminal-origin Gemini sessions are filed under a gemini-side
+            // UUID that differs from the kernel UUID. Claude's identity-
+            // mapped sessions use sid for both — passing sid through still
+            // works when nativeId is nil.
+            r.nativeId = SoulRegistry.findNativeSessionID(projectKey: proj.id, sessionId: sid, provider: prov.rawValue)
+            let lookupId = r.nativeId ?? sid
+            switch prov {
+            case .claude:
+                r.history = ClaudeTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
+            case .geminiCLI:
+                r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
+            case .pi:
+                r.history = nil
+            case .codex:
+                // Codex has no off-disk transcript file we can read (no
+                // rollout reader yet), but the kernel hooks ledger carries
+                // every UserPrompt (always) and every AfterAgent reply
+                // (for sessions created/used after the codex AfterAgent
+                // capture landed). Render those so a click on a codex row
+                // shows prior content instead of a blank fresh thread.
+                let events = HooksReader.events(forSession: sid, project: proj)
+                r.history = events.map { $0.item }
+            }
+            r.title = SoulRegistry.findTitle(projectKey: proj.id, sessionId: sid)
+            r.slashPrompts = SoulRegistry.slashCommandPrompts(projectKey: proj.id, sessionId: sid)
+            return r
+        }.value
+
+        // No on-disk transcript and no native-id mapping → this session
+        // can't be resumed from disk. For Claude we can still try the agent
+        // path (it owns the transcript at a different file). For Gemini,
+        // that path would just rpcError with "Invalid session identifier" —
+        // show a clean status row instead and let the user type to start
+        // fresh. Codex shows the same clean status (we have no off-disk
+        // reader and codex's session/load doesn't exist).
+        if result.history == nil || result.history?.isEmpty == true {
+            if provider == .claude || provider == .geminiCLI {
+                await loadSession(id: sid)
+                return
+            }
+            if let t = result.title, !t.isEmpty { customTitle = t }
+            nativeSessionId = result.nativeId
+            items.append(.status(id: UUID(), text: "ℹ this session has no offline transcript on this machine — type to start a fresh chat"))
+            return
+        }
+        let history = result.history!
+
+        // Preserve a caller-seeded title (AppShell sets customTitle from the
+        // session row before this Task starts). Only overwrite if the
+        // registry returned a non-empty title — a nil/empty value here used
+        // to stomp the seed and leave the synthetic sidebar row reading
+        // "New chat".
+        if let t = result.title, !t.isEmpty { customTitle = t }
+        nativeSessionId = result.nativeId
+        // SOUL-SOUL_DESKTOP-097: bulk-update; see commit 88aead0.
+        historicalIDs.formUnion(history.lazy.map(\.id))
+        items.append(contentsOf: history)
+        // Slash-command UserPrompt hooks (captured by the kernel before the
+        // model API ever saw them) don't appear in the Claude transcript —
+        // merge them in by timestamp so chip rendering stays consistent.
+        injectSlashCommandPrompts(result.slashPrompts)
+        // Surface the Quad from any finalize JSON for this session. The
+        // structured summary (Intent / Summary / Rationale / Fixed / Next)
+        // lives in `~/soul_registry/sessions/<project>/<ts>_<sid>.json` —
+        // recorded by `/finalize` but otherwise never rendered to the user.
+        // Injecting it at the tail of the loaded transcript means clicking
+        // a finalized row immediately answers "what did we accomplish here?"
+        // without anyone needing to `cat` the JSON.
+        injectFinalizeSummary(sessionId: sid)
+        pendingResumeOnFirstSend = true
+    }
+
+    static func looksLikeUUID(_ s: String) -> Bool {
+        UUID(uuidString: s) != nil
+    }
+
+    /// Render a JSONValue payload as a compact string for the error row.
+    /// We don't try to be cute about it — JSON-encode and truncate so any
+    /// shape lands as a single readable line the user can copy back.
+    static func describeJSONValue(_ v: JSONValue?) -> String {
+        guard let v else { return "" }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes]
+        if let data = try? enc.encode(v), let s = String(data: data, encoding: .utf8) {
+            return s.count > 400 ? String(s.prefix(400)) + "…" : s
+        }
+        return ""
+    }
+
+    /// SOUL-SOUL_DESKTOP-103: matches the "agent doesn't know this sid"
+    /// rpcError surface across providers. Gemini-CLI raises -32602 / -32603
+    /// with messages mentioning "invalid session" or "session id"; Claude
+    /// raises -32002 with "resource not found." Used by both the session/load
+    /// recovery path (SOUL-SOUL_DESKTOP-022) and the mid-conversation
+    /// session/prompt recovery path (SOUL-SOUL_DESKTOP-103).
+    static func isInvalidSessionRPC(_ rpc: JSONRPCError) -> Bool {
+        let lowerMsg = rpc.message.lowercased()
+        return rpc.code == -32602
+            || rpc.code == -32002
+            || lowerMsg.contains("invalid session")
+            || lowerMsg.contains("session id")
+            || lowerMsg.contains("resource not found")
+    }
+
+    /// Best-effort snapshot of the agent's chat file before a resume attempt.
+    /// Copies `<chatsDir>/session-…-<first8>.json{,l}` → `<file>.bak-<epoch>`.
+    /// Returns the backup path if a copy was made, nil otherwise. Failures
+    /// are silent — this is belt-and-suspenders, not a correctness gate.
+    static func backupAgentChatIfPresent(provider: Provider, sessionId: String, cwd: String) -> String? {
+        guard provider == .geminiCLI else { return nil }
+        let basename = (cwd as NSString).lastPathComponent
+        let chatsDir = ("~/.gemini/tmp/\(basename)/chats" as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: chatsDir) else { return nil }
+        let needle = String(sessionId.prefix(8))
+        let candidates = entries.filter {
+            ($0.hasSuffix("-\(needle).json") || $0.hasSuffix("-\(needle).jsonl"))
+        }
+        // Pick the largest matching file — that's the one with real history,
+        // not a previous-attempt stub.
+        let resolved = candidates.max(by: { a, b in
+            let aSize = (try? fm.attributesOfItem(atPath: "\(chatsDir)/\(a)")[.size] as? Int) ?? 0
+            let bSize = (try? fm.attributesOfItem(atPath: "\(chatsDir)/\(b)")[.size] as? Int) ?? 0
+            return aSize < bSize
+        })
+        guard let match = resolved else { return nil }
+        let src = "\(chatsDir)/\(match)"
+        let stamp = Int(Date().timeIntervalSince1970)
+        let dst = "\(src).bak-\(stamp)"
+        do {
+            try fm.copyItem(atPath: src, toPath: dst)
+            return dst
+        } catch {
+            return nil
+        }
+    }
+
+    /// Move a broken gemini-cli chat file out of the way so future click-to-
+    /// resume attempts don't keep failing on the same parse error. The
+    /// matching file (selected the same way as `backupAgentChatIfPresent`)
+    /// is renamed to `.corrupt-<epoch>` alongside the `.bak` snapshot. After
+    /// this, `SessionLoadability.canLoadFromDisk` returns false for the row,
+    /// so the loadability gate in `AppShell.loadSession` routes the next
+    /// click to the Replay sheet instead of another fruitless `session/load`.
+    /// Returns the quarantined path on success.
+    ///
+    /// Called only after a `session/load` rpcError with a `.bak` already
+    /// produced — never on a healthy file.
+    static func quarantineCorruptGeminiChat(sessionId: String, cwd: String) -> String? {
+        let basename = (cwd as NSString).lastPathComponent
+        let chatsDir = ("~/.gemini/tmp/\(basename)/chats" as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: chatsDir) else { return nil }
+        let needle = String(sessionId.prefix(8))
+        let candidates = entries.filter {
+            ($0.hasSuffix("-\(needle).json") || $0.hasSuffix("-\(needle).jsonl"))
+        }
+        let resolved = candidates.max(by: { a, b in
+            let aSize = (try? fm.attributesOfItem(atPath: "\(chatsDir)/\(a)")[.size] as? Int) ?? 0
+            let bSize = (try? fm.attributesOfItem(atPath: "\(chatsDir)/\(b)")[.size] as? Int) ?? 0
+            return aSize < bSize
+        })
+        guard let match = resolved else { return nil }
+        let src = "\(chatsDir)/\(match)"
+        let stamp = Int(Date().timeIntervalSince1970)
+        let dst = "\(src).corrupt-\(stamp)"
+        do {
+            try fm.moveItem(atPath: src, toPath: dst)
+            return dst
+        } catch {
+            return nil
+        }
+    }
+
+    /// When ACP resume isn't possible, hydrate the canvas from the harness's own
+    /// transcript file so the user at least sees the conversation they clicked on.
+    /// New turns will go through session/new — no replay into the agent.
+    func renderHistoryIfAvailable(sid: String) {
+        guard provider == .claude,
+              let history = ClaudeTranscriptReader.transcript(forSession: sid, cwd: project.path),
+              !history.isEmpty
+        else { return }
+
+        // SOUL-SOUL_DESKTOP-097: bulk-update; see commit 88aead0.
+        historicalIDs.formUnion(history.lazy.map(\.id))
+        items.append(contentsOf: history)
+        items.append(.status(id: UUID(), text: "─ history above (read-only) ─"))
+    }
+
+
+    /// Live-canvas variant: after a turn completes, peek at the registry's
+    /// finalize JSON for this session and append a FinalizeCard IFF a
+    /// newer finalize was recorded than the last one we injected. Works
+    /// for any provider — the finalize JSON is written by the kernel's
+    /// `/finalize` flow (whatever agent ran it), and Soul-Desktop just
+    /// reads it and renders the Quad as a structured card. Without this,
+    /// the user would only ever see the card on session reopen (via
+    /// `hydrateFromDisk`); same session where /finalize ran would never
+    /// surface the structured summary.
+    func injectFinalizeSummaryIfFresh(sessionId sid: String) {
+        // SOUL-SOUL_DESKTOP-100: trace each branch.
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
+            return
+        }
+        let hasContent = (rec.intent?.isEmpty == false)
+            || (rec.summary?.isEmpty == false)
+            || (rec.rationale?.isEmpty == false)
+            || (rec.fixed?.isEmpty == false)
+            || (rec.nextStep?.isEmpty == false)
+        guard hasContent else {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.empty", "\(provLabel)")
+            return
+        }
+        // Dedup: only inject if this is a NEWER finalize than what we
+        // already rendered. First inject after spawn / hydrate always
+        // counts (lastFinalizeInjectedAt nil → unconditional first push).
+        if let ts = rec.timestamp,
+           let prev = lastFinalizeInjectedAt,
+           ts <= prev {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.stale", "\(provLabel)")
+            return
+        }
+        lastFinalizeInjectedAt = rec.timestamp ?? Date()
+        items.append(.finalize(
+            id: UUID(),
+            intent: rec.intent,
+            summary: rec.summary,
+            rationale: rec.rationale,
+            fixed: rec.fixed,
+            nextStep: rec.nextStep,
+            timestamp: rec.timestamp ?? Date()
+        ))
+        SoulSignposts.event("injectFinalizeSummaryIfFresh.appended", "\(provLabel)")
+    }
+
+    /// Append a `.finalize` card to the canvas if a finalize JSON exists for
+    /// `sid` in this project's registry. No-op when no finalize has been
+    /// recorded. Marked historical so it gets the muted/read-only styling
+    /// alongside the rest of the loaded transcript.
+    func injectFinalizeSummary(sessionId sid: String) {
+        // SOUL-SOUL_DESKTOP-100: trace each branch.
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+            SoulSignposts.event("injectFinalizeSummary.miss", "\(provLabel)")
+            return
+        }
+        let hasContent = (rec.intent?.isEmpty == false)
+            || (rec.summary?.isEmpty == false)
+            || (rec.rationale?.isEmpty == false)
+            || (rec.fixed?.isEmpty == false)
+            || (rec.nextStep?.isEmpty == false)
+        guard hasContent else {
+            SoulSignposts.event("injectFinalizeSummary.empty", "\(provLabel)")
+            return
+        }
+        let id = UUID()
+        historicalIDs.insert(id)
+        items.append(.finalize(
+            id: id,
+            intent: rec.intent,
+            summary: rec.summary,
+            rationale: rec.rationale,
+            fixed: rec.fixed,
+            nextStep: rec.nextStep,
+            timestamp: rec.timestamp ?? Date()
+        ))
+        // Remember this finalize so the post-turn live-injection helper
+        // doesn't push a duplicate card after the next turn completes.
+        lastFinalizeInjectedAt = rec.timestamp ?? Date()
+        SoulSignposts.event("injectFinalizeSummary.appended", "\(provLabel)")
+    }
+
+    /// SOUL-SOUL_DESKTOP-038: merge slash-command UserPrompt hooks back into
+    /// the canvas after a Claude session/load. Terminal Claude Code expands
+    /// `/decision` etc. client-side before the model API sees them, so the
+    /// ACP transcript Claude streams back has no record of the literal
+    /// invocation. The Soul harness captures them into hooks.jsonl; we
+    /// re-inject so the chip rendering in UserMessageRow stays consistent
+    /// across surfaces.
+    func injectSlashCommandPrompts(_ prompts: [(text: String, timestamp: Date)]) {
+        guard !prompts.isEmpty else { return }
+
+        for prompt in prompts {
+            // Skip if an existing userMessage already carries the same
+            // literal text near the same time — protects against double
+            // injection on a retry or a re-load.
+            let dedupWindow: TimeInterval = 2
+            let alreadyPresent = items.contains { item in
+                if case .userMessage(_, let text, let ts) = item,
+                   text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt.text,
+                   abs(ts.timeIntervalSince(prompt.timestamp)) <= dedupWindow {
+                    return true
+                }
+                return false
+            }
+            if alreadyPresent { continue }
+
+            // Find the first user/agent message in items whose timestamp is
+            // strictly after the hook's. Insert before it so narrative order
+            // is preserved. If none later, append at the end of the
+            // historical block (right before the load-complete status row).
+            let id = UUID()
+            let inserted: ThreadItem = .userMessage(id: id, text: prompt.text, timestamp: prompt.timestamp)
+            historicalIDs.insert(id)
+
+            var insertAt: Int? = nil
+            for (i, item) in items.enumerated() {
+                let ts: Date? = {
+                    if case .userMessage(_, _, let t) = item { return t }
+                    if case .agentMessage(_, _, _, let t) = item { return t }
+                    return nil
+                }()
+                if let ts, ts > prompt.timestamp {
+                    insertAt = i
+                    break
+                }
+            }
+            if let i = insertAt {
+                items.insert(inserted, at: i)
+            } else {
+                items.append(inserted)
+            }
+        }
+    }
+
+}
