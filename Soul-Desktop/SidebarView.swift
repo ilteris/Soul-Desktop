@@ -705,19 +705,43 @@ struct SidebarView: View {
     /// safe to call again on expand-toggle to refresh a stale folder. Result
     /// already carries `substantive`/`loadable`/`replayable` flags so the
     /// sidebar doesn't have to re-check disk.
+    ///
+    /// SOUL-SOUL_DESKTOP-145: two-stage to match the render-time pagination.
+    /// Stage 1 scans the most-recent `sessionPageSize` (20) sessions for
+    /// fast initial paint. Stage 2 runs the full 100-session scan in the
+    /// background and replaces sessionsByProject when ready. For projects
+    /// with hundreds of sessions (Soul OS at 111), users see rows in tens
+    /// of ms instead of hundreds.
     fileprivate func loadProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId })
             ?? SoulRegistry.activeProjects().first(where: { $0.id == projectId })
         else { return }
-        let rows: [SoulSession] = await Task.detached(priority: .userInitiated) {
-            SoulRegistry.allSessions(forProject: project.id, projectPath: project.path)
+
+        // Stage 1: fast scan, bounded to the page size we'll actually render.
+        let quickLimit = sessionPageSize
+        let quickRows: [SoulSession] = await Task.detached(priority: .userInitiated) {
+            SoulRegistry.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
+        }.value
+        await MainActor.run {
+            if !quickRows.isEmpty {
+                self.sessionsByProject[projectId] = quickRows
+            }
+        }
+
+        // Stage 2: full scan in background. The default limit (100) covers
+        // the "Show more" expanded case. Warm the cache so subsequent
+        // reloadSessions paint-instant paths see the full list.
+        let fullRows: [SoulSession] = await Task.detached(priority: .background) {
+            let r = SoulRegistry.allSessions(forProject: project.id, projectPath: project.path)
+            SoulRegistry.warmCache(forProject: project.id, sessions: r)
+            return r
         }.value
         await MainActor.run {
             // Preserve previous rows on empty (defensive against transient
             // disk-read churn). A genuinely empty project gets cleared
             // elsewhere when its row count is known to be zero.
-            if !rows.isEmpty {
-                self.sessionsByProject[projectId] = rows
+            if !fullRows.isEmpty {
+                self.sessionsByProject[projectId] = fullRows
             }
         }
     }
