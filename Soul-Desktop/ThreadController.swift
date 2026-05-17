@@ -137,16 +137,10 @@ final class ThreadController {
     /// toolbar chip on every chunk (which spun the main thread).
     @ObservationIgnored var traceLog: [String] = []
 
-    /// SOUL-SOUL_DESKTOP-063 diagnostic: cumulative time spent inside `apply(_:)`
-    /// bucketed by sessionUpdate kind. Off the observation graph so the
-    /// accounting itself can't invalidate any view. Flushed to
-    /// ~/Library/Logs/Soul-Desktop/acp-protocol.jsonl as method="apply_timing"
-    /// every `applyTimingFlushEveryNUpdates` updates.
-    @ObservationIgnored private var applyTimingNs: [String: UInt64] = [:]
-    @ObservationIgnored private var applyTimingCount: [String: Int] = [:]
-    @ObservationIgnored private var applyTimingSlowestNs: [String: UInt64] = [:]
-    @ObservationIgnored private var applyTimingUpdatesSinceFlush: Int = 0
-    private let applyTimingFlushEveryNUpdates = 100
+    /// SOUL-SOUL_DESKTOP-063 diagnostic: per-kind cost of `apply(_:)` lives
+    /// in ApplyTimingProbe.swift. Off the observation graph so the
+    /// accounting itself can't invalidate any view.
+    @ObservationIgnored private var applyTiming = ApplyTimingProbe()
     /// Seed value for `lastActivityAt` read before any ACPSession has been
     /// allocated. Without it, a controller hydrated from disk that has not
     /// spawned yet would either need to allocate an ACPSession just to
@@ -2799,47 +2793,6 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         )
     }
 
-    /// Accumulate one `apply(_:)` invocation into the per-kind counters. Flushes
-    /// a snapshot to acp-protocol.jsonl every `applyTimingFlushEveryNUpdates`
-    /// to keep disk pressure bounded.
-    private func recordApplyTiming(kind: String, elapsedNs: UInt64) {
-        applyTimingNs[kind, default: 0] &+= elapsedNs
-        applyTimingCount[kind, default: 0] += 1
-        if elapsedNs > applyTimingSlowestNs[kind, default: 0] {
-            applyTimingSlowestNs[kind] = elapsedNs
-        }
-        applyTimingUpdatesSinceFlush += 1
-        if applyTimingUpdatesSinceFlush >= applyTimingFlushEveryNUpdates {
-            applyTimingUpdatesSinceFlush = 0
-            flushApplyTiming()
-        }
-    }
-
-    private func flushApplyTiming() {
-        var perKind: [String: JSONValue] = [:]
-        for (kind, totalNs) in applyTimingNs {
-            let count = applyTimingCount[kind] ?? 0
-            let slowestNs = applyTimingSlowestNs[kind] ?? 0
-            perKind[kind] = .object([
-                "count": .double(Double(count)),
-                "total_ms": .double(Double(totalNs) / 1_000_000.0),
-                "avg_ms": .double(count > 0 ? Double(totalNs) / Double(count) / 1_000_000.0 : 0),
-                "max_ms": .double(Double(slowestNs) / 1_000_000.0),
-                "items_at_snapshot": .double(Double(items.count)),
-            ])
-        }
-        ACPProtocolLog.record(
-            direction: "internal",
-            method: "apply_timing",
-            params: .object([
-                "provider": .string(provider.rawValue),
-                "sessionId": sessionId.map(JSONValue.string) ?? .null,
-                "items_count": .double(Double(items.count)),
-                "per_kind": .object(perKind),
-            ])
-        )
-    }
-
     /// Format a thrown error into something a user can read, instead of the
     /// Swift-debug enum dump (`rpcError(JSONRPCError(code: -32603, …,
     /// data: Optional(JSONValue.object(["details": JSONValue.string(…)]))))`)
@@ -2948,7 +2901,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         let _applyKind = Self.kindLabel(update)
         defer {
             let elapsedNs = DispatchTime.now().uptimeNanoseconds &- _applyStart.uptimeNanoseconds
-            recordApplyTiming(kind: _applyKind, elapsedNs: elapsedNs)
+            applyTiming.record(
+                kind: _applyKind,
+                elapsedNs: elapsedNs,
+                provider: provider,
+                sessionId: sessionId,
+                itemsCount: items.count
+            )
         }
         // ACP trace: when the `soul.acp.trace` UserDefault is on, every
         // session/update lands as a one-line entry in the agent log
