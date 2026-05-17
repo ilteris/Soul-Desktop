@@ -141,14 +141,6 @@ final class ThreadController {
     /// in ApplyTimingProbe.swift. Off the observation graph so the
     /// accounting itself can't invalidate any view.
     @ObservationIgnored var applyTiming = ApplyTimingProbe()
-    /// Seed value for `lastActivityAt` read before any ACPSession has been
-    /// allocated. Without it, a controller hydrated from disk that has not
-    /// spawned yet would either need to allocate an ACPSession just to
-    /// answer reads (wasteful for historical-only threads) or lie with a
-    /// fresh `Date()` (inflates stall budgets, breaks sidebar duration).
-    /// Once `ensureSession()` runs, this value is passed through to the
-    /// session's `initialLastActivityAt` and reads route there.
-    @ObservationIgnored private var _seedLastActivityAt: Date = Date()
 
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each
@@ -464,50 +456,40 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// Owns codex token counters (and, in later refactor steps, the agent
     /// client handles + event stream). Historical-only threads loaded from
     /// disk never allocate one. See ACPSession.swift.
-    @ObservationIgnored private var _session: ACPSession?
-    func ensureSession() -> ACPSession {
-        if let s = _session { return s }
-        let s = ACPSession(provider: provider,
-                           project: project,
-                           initialLastActivityAt: _seedLastActivityAt)
-        _session = s
-        return s
-    }
+    // ACPSession (the lazy holder from earlier refactor) was reverted in
+    // SOUL-SOUL_DESKTOP-137 — its fields now live directly on
+    // ThreadController so @Observable propagation works for sessionId /
+    // nativeSessionId / lastActivityAt / codex token counters.
 
-    /// Forwarders so external callers (AppShell toolbar etc.) keep their
-    /// existing read paths while storage lives on `ACPSession`. Note: the
-    /// previous `fileprivate(set)` on `sessionId` and `private(set)` on
-    /// `nativeSessionId` are not preserved here — the access narrowing was
-    /// light protection against accidental external mutation, and no
-    /// external call site writes either field. Will tighten back via a
-    /// dedicated mutation method if a regression motivates it.
-    var sessionId: String? {
-        get { _session?.sessionId }
-        set { ensureSession().sessionId = newValue }
-    }
-    var nativeSessionId: String? {
-        get { _session?.nativeSessionId }
-        set { ensureSession().nativeSessionId = newValue }
-    }
-    /// Read returns the session's value when allocated, else the seed.
-    /// Write always allocates (creating the session at the seed's value
-    /// before overwriting), so a pre-spawn write — e.g. AppShell setting
-    /// `controller.lastActivityAt = session.timestamp` during resume
-    /// hydration — survives into the eventual session.
-    var lastActivityAt: Date {
-        get { _session?.lastActivityAt ?? _seedLastActivityAt }
-        set { ensureSession().lastActivityAt = newValue }
-    }
-    var codexTokensUsed: Int? {
-        get { _session?.codexTokensUsed }
-        set { ensureSession().codexTokensUsed = newValue }
-    }
-    var codexContextWindow: Int? {
-        get { _session?.codexContextWindow }
-        set { ensureSession().codexContextWindow = newValue }
-    }
-    // `sessionId`, `nativeSessionId`, `acpSessionId` now live on ACPSession
-    // (forwarded by computed properties above).
+    // SOUL-SOUL_DESKTOP-137: session state lives DIRECTLY on ThreadController
+    // (not forwarded through ACPSession). The earlier refactor (steps 2/3)
+    // routed these via a computed-property forwarder over an
+    // @ObservationIgnored _session reference — but the Observation framework
+    // only registers a view as a dependency when it reads an @Observable
+    // member through a tracked path. Reading `thread.sessionId` through the
+    // forwarder did NOT register tracking on ACPSession.sessionId, so views
+    // never re-rendered when `client.newSession()` assigned the id. Result:
+    // ThreadTitleCluster (gates on sessionId), ContextUsageChip (also gates
+    // on sessionId), and the sidebar's live-session match (looks up by
+    // sessionId) all failed to update for fresh chats. Stored properties
+    // here participate in ThreadController's @Observable tracking the way
+    // every other UI-bound field on this class does.
+
+    /// Kernel/registry session id. Stable for the entire thread lifetime.
+    var sessionId: String?
+    /// Agent-native session id used for ACP calls. nil until the first ACP
+    /// id is known.
+    var nativeSessionId: String?
+    /// Convenience: native id when known, else the kernel id.
+    var acpSessionId: String? { nativeSessionId ?? sessionId }
+    /// Last time we received any event from the agent. Used to compute
+    /// "quiet for Ns" once `isWorking` is true and nothing's streaming.
+    var lastActivityAt: Date = Date()
+    /// Latest token count reported by codex's `thread/tokenUsage/updated`
+    /// notification. nil until the first usage event lands.
+    var codexTokensUsed: Int?
+    /// Model context-window budget reported by the same notification.
+    var codexContextWindow: Int?
 
     /// Synchronously stake out the kernel session id before any async load
     /// kicks in. AppShell calls this right after wiring the controller into
@@ -537,10 +519,9 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         finalizeWatcher = watcher
         watcher.start()
     }
-    /// Convenience: native id when known, else the kernel id. Use this at
-    /// every ACPClient call site so we never accidentally ask the agent to
-    /// resume a UUID it didn't mint. Forwards to ACPSession when allocated.
-    private var acpSessionId: String? { _session?.acpSessionId }
+    // `acpSessionId` is declared as a computed property above (next to
+    // sessionId / nativeSessionId) — the duplicate definition that used to
+    // live here is removed in SOUL-SOUL_DESKTOP-137.
     var hasInitialized = false
     var supportsLoadSession = false
     var openAgentMessageId: UUID?
