@@ -147,9 +147,14 @@ final class ThreadController {
     @ObservationIgnored private var applyTimingSlowestNs: [String: UInt64] = [:]
     @ObservationIgnored private var applyTimingUpdatesSinceFlush: Int = 0
     private let applyTimingFlushEveryNUpdates = 100
-    /// Last time we received any event from the agent. Used to compute
-    /// "quiet for Ns" once `isWorking` is true and nothing's streaming.
-    var lastActivityAt: Date = Date()
+    /// Seed value for `lastActivityAt` read before any ACPSession has been
+    /// allocated. Without it, a controller hydrated from disk that has not
+    /// spawned yet would either need to allocate an ACPSession just to
+    /// answer reads (wasteful for historical-only threads) or lie with a
+    /// fresh `Date()` (inflates stall budgets, breaks sidebar duration).
+    /// Once `ensureSession()` runs, this value is passed through to the
+    /// session's `initialLastActivityAt` and reads route there.
+    @ObservationIgnored private var _seedLastActivityAt: Date = Date()
 
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each
@@ -468,13 +473,37 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     @ObservationIgnored private var _session: ACPSession?
     private func ensureSession() -> ACPSession {
         if let s = _session { return s }
-        let s = ACPSession(provider: provider, project: project)
+        let s = ACPSession(provider: provider,
+                           project: project,
+                           initialLastActivityAt: _seedLastActivityAt)
         _session = s
         return s
     }
 
     /// Forwarders so external callers (AppShell toolbar etc.) keep their
-    /// existing read paths while storage lives on `ACPSession`.
+    /// existing read paths while storage lives on `ACPSession`. Note: the
+    /// previous `fileprivate(set)` on `sessionId` and `private(set)` on
+    /// `nativeSessionId` are not preserved here — the access narrowing was
+    /// light protection against accidental external mutation, and no
+    /// external call site writes either field. Will tighten back via a
+    /// dedicated mutation method if a regression motivates it.
+    var sessionId: String? {
+        get { _session?.sessionId }
+        set { ensureSession().sessionId = newValue }
+    }
+    var nativeSessionId: String? {
+        get { _session?.nativeSessionId }
+        set { ensureSession().nativeSessionId = newValue }
+    }
+    /// Read returns the session's value when allocated, else the seed.
+    /// Write always allocates (creating the session at the seed's value
+    /// before overwriting), so a pre-spawn write — e.g. AppShell setting
+    /// `controller.lastActivityAt = session.timestamp` during resume
+    /// hydration — survives into the eventual session.
+    var lastActivityAt: Date {
+        get { _session?.lastActivityAt ?? _seedLastActivityAt }
+        set { ensureSession().lastActivityAt = newValue }
+    }
     var codexTokensUsed: Int? {
         get { _session?.codexTokensUsed }
         set { ensureSession().codexTokensUsed = newValue }
@@ -483,12 +512,8 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         get { _session?.codexContextWindow }
         set { ensureSession().codexContextWindow = newValue }
     }
-    /// Kernel/registry session id. This is the UUID Soul writes hooks under
-    /// (~/soul_registry/sessions/<project>/<sessionId>/hooks.jsonl) and the
-    /// id AppShell / SidebarView use to identify the chat row. Stable for
-    /// the entire thread lifetime — never overwritten by a successful
-    /// session/load, even when the agent's native UUID differs.
-    fileprivate(set) var sessionId: String?
+    // `sessionId`, `nativeSessionId`, `acpSessionId` now live on ACPSession
+    // (forwarded by computed properties above).
 
     /// Synchronously stake out the kernel session id before any async load
     /// kicks in. AppShell calls this right after wiring the controller into
@@ -518,16 +543,10 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         finalizeWatcher = watcher
         watcher.start()
     }
-    /// Agent-native session id used for ACP calls (session/prompt,
-    /// session/cancel, session/load). For Soul-Desktop spawns this equals
-    /// `sessionId` (identity mapping written at session/new). For divergent
-    /// legacy sessions resumed via backfill, this is the agent's UUID while
-    /// `sessionId` stays the kernel id. nil until the first ACP id is known.
-    private(set) var nativeSessionId: String?
     /// Convenience: native id when known, else the kernel id. Use this at
     /// every ACPClient call site so we never accidentally ask the agent to
-    /// resume a UUID it didn't mint.
-    private var acpSessionId: String? { nativeSessionId ?? sessionId }
+    /// resume a UUID it didn't mint. Forwards to ACPSession when allocated.
+    private var acpSessionId: String? { _session?.acpSessionId }
     private var hasInitialized = false
     private var supportsLoadSession = false
     private var openAgentMessageId: UUID?
