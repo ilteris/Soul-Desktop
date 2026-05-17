@@ -37,6 +37,13 @@ struct ThreadView: View {
     /// offset lands on different content).
     @State private var canvasWidth: CGFloat = 0
 
+    /// SOUL-SOUL_DESKTOP-146: drag-target state lifted from ComposerView so
+    /// the whole ThreadView accepts image/file drops, not just the composer
+    /// chip strip. Bound into ComposerView so the chips render and submit
+    /// behavior stays unchanged.
+    @State private var droppedAttachments: [String] = []
+    @State private var isImageDropTargeted: Bool = false
+
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry.
         let _ = SoulSignposts.event("ThreadView.body")
@@ -204,7 +211,9 @@ struct ThreadView: View {
                         set: { controller.permissionMode = $0 }
                     ),
                     provider: controller.provider,
-                    onPickHarness: onPickHarness
+                    onPickHarness: onPickHarness,
+                    isImageDropTargeted: $isImageDropTargeted,
+                    droppedAttachments: $droppedAttachments
                 )
                 .frame(maxWidth: 760)
             }
@@ -213,6 +222,25 @@ struct ThreadView: View {
             .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SOUL-SOUL_DESKTOP-146: whole-canvas drop target. Drops anywhere
+        // in the ThreadView area land in `droppedAttachments`, which the
+        // composer below renders as chips and submits as markdown links.
+        // The composer keeps its own inner `.onDrop` too — innermost wins
+        // for drops directly on it, which preserves the existing on-
+        // composer dashed-border targeting affordance.
+        .onDrop(
+            of: DropAttachmentHandler.acceptedTypes,
+            isTargeted: $isImageDropTargeted
+        ) { providers in
+            let new = DropAttachmentHandler.process(
+                providers: providers,
+                projectPath: controller.project.path,
+                existing: droppedAttachments
+            )
+            guard !new.isEmpty else { return false }
+            droppedAttachments.append(contentsOf: new)
+            return true
+        }
         .alert("Rename chat", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
             Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }

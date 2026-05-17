@@ -16,6 +16,8 @@ struct HeroEmptyState: View {
     var provider: Provider = .geminiCLI
     var onPickHarness: (Provider) -> Void = { _ in }
     @State private var builtInCommands: [SlashCommand] = []
+    @State private var droppedAttachments: [String] = []
+    @State private var isImageDropTargeted: Bool = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -41,7 +43,9 @@ struct HeroEmptyState: View {
                 onRunLocal: onRunLocal,
                 permissionMode: $pendingPermissionMode,
                 provider: provider,
-                onPickHarness: onPickHarness
+                onPickHarness: onPickHarness,
+                isImageDropTargeted: $isImageDropTargeted,
+                droppedAttachments: $droppedAttachments
             )
             .frame(maxWidth: 720)
 
@@ -50,6 +54,20 @@ struct HeroEmptyState: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SOUL-SOUL_DESKTOP-146: same whole-canvas drop target as ThreadView.
+        .onDrop(
+            of: DropAttachmentHandler.acceptedTypes,
+            isTargeted: $isImageDropTargeted
+        ) { providers in
+            let new = DropAttachmentHandler.process(
+                providers: providers,
+                projectPath: projectPath,
+                existing: droppedAttachments
+            )
+            guard !new.isEmpty else { return false }
+            droppedAttachments.append(contentsOf: new)
+            return true
+        }
         .task {
             builtInCommands = SkillsRegistry.builtInCommands()
         }

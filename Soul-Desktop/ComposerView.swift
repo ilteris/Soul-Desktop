@@ -46,14 +46,16 @@ struct ComposerView: View {
     @State private var branchName: String? = nil
     /// True while a drag with at least one image URL is hovering the
     /// composer. Drives the dashed accent overlay so the user knows the
-    /// drop will be accepted before they release.
-    @State private var isImageDropTargeted = false
-    /// Files dropped onto the composer. Rendered as a row of chips above the
-    /// text field; converted to markdown links at submit time. Storing them
-    /// out-of-band keeps the textarea clean (no inline `[name](file://…)`
-    /// noise the user has to scroll past) and lets the user remove a single
-    /// attachment without surgical text editing.
-    @State private var droppedAttachments: [String] = []
+    /// drop will be accepted before they release. Owned by the parent so
+    /// the outer canvas drop target (ThreadView) can share the targeting
+    /// state with the composer's own `.onDrop`.
+    @Binding var isImageDropTargeted: Bool
+    /// Files dropped onto the composer surface (or anywhere in the parent's
+    /// drop area — see ThreadView.swift / HeroEmptyState.swift). Rendered
+    /// as a row of chips above the text field; converted to markdown links
+    /// at submit time. Owned by the parent so multiple drop surfaces share
+    /// one attachment list.
+    @Binding var droppedAttachments: [String]
     /// Last submitted prompt, persisted across launches. Up-arrow recalls it
     /// when the field is empty (shell-history convention; single-entry).
     @AppStorage("soul.composer.lastSent") private var lastSent: String = ""
@@ -129,47 +131,6 @@ struct ComposerView: View {
         activeCommand = nil
     }
 
-    /// Handle a drop of one or more file URLs onto the composer. Copies any
-    /// image files into `<projectPath>/.soul/attachments/` (created on
-    /// demand) and appends a markdown link `[name](file:///abs/path)` for
-    /// each dropped file. Images get copied into the per-project
-    /// `.soul/attachments` dir so they survive if the source moves; other
-    /// files are referenced in place. The MarkdownView in the user bubble
-    /// renders the inserted tokens as clickable links.
-    private func handleFileDrop(_ urls: [URL]) -> Bool {
-        guard !urls.isEmpty else { return false }
-        let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        var attachmentsDir: String? = nil
-        if let project = projectPath, !project.isEmpty,
-           urls.contains(where: { Self.isImageURL($0) }) {
-            let dir = "\(project)/.soul/attachments"
-            try? FileManager.default.createDirectory(
-                atPath: dir, withIntermediateDirectories: true
-            )
-            attachmentsDir = dir
-        }
-        var added = 0
-        for (i, src) in urls.enumerated() {
-            let finalPath: String
-            if Self.isImageURL(src), let dir = attachmentsDir {
-                let dst = "\(dir)/\(stamp)-\(i)-\(src.lastPathComponent)"
-                do {
-                    try FileManager.default.copyItem(atPath: src.path, toPath: dst)
-                    finalPath = dst
-                } catch {
-                    finalPath = src.path
-                }
-            } else {
-                finalPath = src.path
-            }
-            if !droppedAttachments.contains(finalPath) {
-                droppedAttachments.append(finalPath)
-                added += 1
-            }
-        }
-        return added > 0
-    }
-
     /// `[file.ext](file:///abs/path)` — file URLs need percent-encoding for
     /// spaces and other path characters or the markdown link will only
     /// capture up to the first space.
@@ -179,103 +140,20 @@ struct ComposerView: View {
         return "[\(name)](\(url))"
     }
 
-    private static func isImageURL(_ url: URL) -> Bool {
-        let exts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif"]
-        return exts.contains(url.pathExtension.lowercased())
-    }
-
-    /// Handle a mixed-payload drop. Each provider may carry a file URL
-    /// (Finder, Cmd-Shift-4 to disk) or raw image bytes (Messages, Mail,
-    /// browser drag-from-page, screenshot drag-from-Preview). File URLs go
-    /// through the existing path; raw image bytes are written into the
-    /// per-project attachments dir then appended as an attachment chip.
+    /// Forward a drop to the shared DropAttachmentHandler and append any
+    /// new paths to the parent-owned binding. Used by the composer's own
+    /// inner `.onDrop` (drops directly on the composer); the same helper
+    /// is also called from parents (ThreadView / HeroEmptyState) for the
+    /// wider canvas drop area.
     private func handleProviderDrop(_ providers: [NSItemProvider]) -> Bool {
-        var accepted = false
-        let group = DispatchGroup()
-        var fileURLs: [URL] = []
-        var dataDrops: [(Data, String?)] = []
-        for provider in providers {
-            if provider.canLoadObject(ofClass: URL.self) {
-                group.enter()
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    if let u = url, u.isFileURL { fileURLs.append(u) }
-                    group.leave()
-                }
-                continue
-            }
-            // Probe image type identifiers in order of fidelity (PNG → JPEG
-            // → TIFF → GIF → generic). Whichever responds first wins; we
-            // stop after one to avoid loading the same bytes twice.
-            let imageTypes = ["public.png", "public.jpeg", "public.tiff", "com.compuserve.gif", "public.image"]
-            for type in imageTypes where provider.hasItemConformingToTypeIdentifier(type) {
-                group.enter()
-                provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-                    if let data { dataDrops.append((data, Self.extHint(forType: type))) }
-                    group.leave()
-                }
-                break
-            }
-        }
-        // The drop callback is called on the main thread; we need to wait
-        // for the async provider loads before mutating state. Caller cares
-        // about the return Bool so we synchronously wait — bounded by the
-        // OS's drop timeout anyway.
-        _ = group.wait(timeout: .now() + 2.0)
-        if !fileURLs.isEmpty {
-            accepted = handleFileDrop(fileURLs) || accepted
-        }
-        for (data, hint) in dataDrops {
-            if let path = writeImageDataAsAttachment(data, hint: hint),
-               !droppedAttachments.contains(path) {
-                droppedAttachments.append(path)
-                accepted = true
-            }
-        }
-        return accepted
-    }
-
-    private static func extHint(forType uti: String) -> String? {
-        switch uti {
-        case "public.png":          return "png"
-        case "public.jpeg":         return "jpg"
-        case "public.tiff":         return "tiff"
-        case "com.compuserve.gif":  return "gif"
-        default:                    return nil
-        }
-    }
-
-    /// Persist raw image bytes (from a non-file drag — Messages, Mail, web
-    /// browsers all flatten an image to a Transferable image payload, not a
-    /// file URL) into the project's attachments dir and return the on-disk
-    /// path. Returns nil if the bytes couldn't be decoded or there's no
-    /// project to write into.
-    private func writeImageDataAsAttachment(_ data: Data, hint: String?) -> String? {
-        guard let project = projectPath, !project.isEmpty else { return nil }
-        let dir = "\(project)/.soul/attachments"
-        try? FileManager.default.createDirectory(
-            atPath: dir, withIntermediateDirectories: true
+        let new = DropAttachmentHandler.process(
+            providers: providers,
+            projectPath: projectPath,
+            existing: droppedAttachments
         )
-        let ext: String = {
-            if let h = hint?.lowercased(), !h.isEmpty,
-               ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp"].contains(h) {
-                return h
-            }
-            // Sniff by magic header — cheaper than NSImage round-trip, and
-            // we keep the original encoding so the agent sees the original
-            // bytes rather than a re-encoded PNG.
-            if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
-            if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
-            if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "gif" }
-            return "png"
-        }()
-        let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        let dst = "\(dir)/\(stamp)-drag.\(ext)"
-        do {
-            try data.write(to: URL(fileURLWithPath: dst))
-            return dst
-        } catch {
-            return nil
-        }
+        guard !new.isEmpty else { return false }
+        droppedAttachments.append(contentsOf: new)
+        return true
     }
 
     var body: some View {
