@@ -554,7 +554,7 @@ struct SidebarView: View {
                 intent: ctrl.displayTitle,
                 source: ctrl.provider.rawValue,
                 isLive: true,
-                origin: .desktop,
+                writer: .soulDesktop,
                 liveProvider: ctrl.provider.rawValue,
                 loadable: true,
                 replayable: true,
@@ -571,7 +571,7 @@ struct SidebarView: View {
                 // the live controller's startedAt / lastActivityAt. Live
                 // activity should NOT reorder the sidebar.
                 merged.isLive = true
-                merged.origin = .desktop
+                merged.writer = .soulDesktop
                 merged.liveProvider = ctrl.provider.rawValue
                 merged.isWorking = ctrl.isWorking
                 merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count

@@ -49,7 +49,11 @@ extension SoulRegistry {
         var worktreePath: String? = nil
         var firstUserPrompt: String? = nil
         var titleHook: String? = nil
-        var hasNativeOrUserPrompt: Bool = false
+        /// True iff `NativeSessionID` or `Title` event present — i.e. a
+        /// Soul-Desktop `ThreadController` wrote this ledger. `UserPrompt`
+        /// alone does NOT count: terminal Claude / Pi fire UserPrompt hooks
+        /// into the kernel ledger from outside Soul-Desktop.
+        var hasDesktopSignature: Bool = false
         var hasTerminalSignal: Bool = false
         var firstEventTimestamp: Date? = nil
         var lastEventTimestamp: Date? = nil
@@ -94,11 +98,12 @@ extension SoulRegistry {
                 }
                 if event == "Title", meta.titleHook == nil {
                     meta.titleHook = (obj["text"] as? String) ?? (obj["title"] as? String)
+                    meta.hasDesktopSignature = true
                 }
                 if (event == "UserPrompt" || event == "UserMessage") && meta.firstUserPrompt == nil {
                     let text = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
                     if let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
-                        meta.firstUserPrompt = String(t.prefix(120))
+                        meta.firstUserPrompt = String(stripCommandTags(t).prefix(120))
                     }
                 }
                 if event == "NativeSessionID" {
@@ -106,10 +111,7 @@ extension SoulRegistry {
                        let nid = obj["native_session_id"] as? String {
                         meta.nativeSessionIDs[prov] = nid
                     }
-                    meta.hasNativeOrUserPrompt = true
-                }
-                if event == "UserPrompt" {
-                    meta.hasNativeOrUserPrompt = true
+                    meta.hasDesktopSignature = true
                 }
                 if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
                     meta.hasTerminalSignal = true
@@ -138,10 +140,11 @@ extension SoulRegistry {
         }
 
         // 5. Deep presence fallback: scan whole file only if signals not in head.
-        if !meta.hasNativeOrUserPrompt {
+        if !meta.hasDesktopSignature {
             let nsidNeedle = Data("\"event\":\"NativeSessionID\"".utf8)
-            if data.range(of: nsidNeedle) != nil || data.range(of: userPromptNeedle) != nil {
-                meta.hasNativeOrUserPrompt = true
+            let titleNeedle = Data("\"event\":\"Title\"".utf8)
+            if data.range(of: nsidNeedle) != nil || data.range(of: titleNeedle) != nil {
+                meta.hasDesktopSignature = true
             }
         }
         if !meta.hasTerminalSignal {
@@ -285,12 +288,12 @@ extension SoulRegistry {
                     s.intent = meta.firstUserPrompt
                 }
                 if s.summary == nil { s.summary = s.intent }
-                if meta.hasNativeOrUserPrompt {
-                    s.origin = .desktop
+                if meta.hasDesktopSignature {
+                    s.writer = .soulDesktop
                 } else if meta.hasTerminalSignal {
-                    s.origin = .terminal
+                    s.writer = .external
                 } else {
-                    s.origin = .unknown
+                    s.writer = .unknown
                 }
                 s.startedAt = meta.firstEventTimestamp
             }
@@ -561,25 +564,33 @@ extension SoulRegistry {
         return true
     }
 
-    private static func detectOrigin(path: String, projectPath: String?, sessionId: String) -> SessionOrigin {
-        if agentHasSession(sessionId: sessionId, projectPath: projectPath) {
-            return .desktop
-        }
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return .unknown }
-        var hasTerminalSignal = false
-        for line in blob.split(separator: "\n", omittingEmptySubsequences: true).prefix(20) {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
-            let event = obj["event"] as? String ?? ""
-            if event == "NativeSessionID" || event == "UserPrompt" {
-                return .desktop
+    /// Strip Claude's slash-command stub from a user-prompt body. Terminal
+    /// `claude` wraps slash commands in `<command-message>…</command-message>`
+    /// + `<command-name>/…</command-name>` tags inside the first UserPrompt
+    /// payload, which leaks straight into sidebar titles. Drop the tags and
+    /// keep the human-readable remainder; if nothing's left, surface the
+    /// command name itself ("/pulse") as a usable fallback.
+    static func stripCommandTags(_ raw: String) -> String {
+        guard raw.contains("<command-") else { return raw }
+        var fallbackCmd: String? = nil
+        var s = raw
+        while let openRange = s.range(of: "<command-"),
+              let closeOpen = s.range(of: ">", range: openRange.upperBound..<s.endIndex) {
+            let tagName = String(s[openRange.upperBound..<closeOpen.lowerBound])
+            let endTag = "</command-\(tagName)>"
+            guard let endRange = s.range(of: endTag, range: closeOpen.upperBound..<s.endIndex) else {
+                s.removeSubrange(openRange.lowerBound..<closeOpen.upperBound)
+                continue
             }
-            if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
-                hasTerminalSignal = true
+            if tagName == "name" {
+                fallbackCmd = String(s[closeOpen.upperBound..<endRange.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
             }
+            s.removeSubrange(openRange.lowerBound..<endRange.upperBound)
         }
-        return hasTerminalSignal ? .terminal : .unknown
+        let cleaned = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty { return cleaned }
+        return fallbackCmd ?? raw
     }
 
     private static func worktreePathFromHooks(path: String) -> String? {
@@ -610,41 +621,6 @@ extension SoulRegistry {
         var s = p
         if s.hasSuffix("/") { s.removeLast() }
         return (s as NSString).standardizingPath
-    }
-
-    private static func agentHasSession(sessionId: String, projectPath: String?) -> Bool {
-        return agentMatch(sessionId: sessionId, projectPath: projectPath) != nil
-    }
-
-    private static func agentMatch(sessionId: String, projectPath: String?) -> String? {
-        let first8 = String(sessionId.prefix(8))
-        let fm = FileManager.default
-        if let projectPath {
-            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
-            let base = (trimmed as NSString).lastPathComponent
-            let geminiBase = "\(homePath)/.gemini/tmp"
-            if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
-                for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
-                    let chatsDir = "\(geminiBase)/\(proj)/chats"
-                    guard let files = try? fm.contentsOfDirectory(atPath: chatsDir) else { continue }
-                    let matches = files.filter {
-                        $0.hasSuffix("-\(first8).json") || $0.hasSuffix("-\(first8).jsonl")
-                    }
-                    if matches.contains(where: { isResumableGeminiChatFile("\(chatsDir)/\($0)") }) {
-                        return "geminiCLI"
-                    }
-                }
-            }
-        }
-        if let projectPath {
-            let trimmed = projectPath.hasSuffix("/") ? String(projectPath.dropLast()) : projectPath
-            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-            let path = "\(homePath)/.claude/projects/\(encoded)/\(sessionId).jsonl"
-            if fm.fileExists(atPath: path) {
-                return "claude"
-            }
-        }
-        return nil
     }
 
     private static func isResumableGeminiChatFile(_ path: String) -> Bool {

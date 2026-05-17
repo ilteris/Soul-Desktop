@@ -12,16 +12,19 @@ struct SoulProject: Identifiable, Hashable {
     var devURL: String?            // optional URL to open after dev server starts, e.g. "http://localhost:3002"
 }
 
-/// Where a live session was started from. Derived from the shape of events
-/// in its hooks.jsonl. Drives sidebar styling: terminal-origin rows get a
-/// muted look + different icon + tooltip, because Soul-Desktop can't resume
-/// them (the kernel and the agent CLI mint UUIDs in separate namespaces) until
-/// SOUL-SOUL-004 lands. Desktop-spawned rows resume cleanly via ACP
-/// session/load.
-enum SessionOrigin: String, Hashable {
-    case desktop   // ledger has UserPrompt / NativeSessionID / Title written by Soul-Desktop
-    case terminal  // ledger has only kernel events (SESSION_START / AfterTool / AfterAgent)
-    case unknown   // empty or ambiguous
+/// Who authored this session's hooks.jsonl ledger. Pure provenance — does
+/// NOT gate resumability on its own. The resume decision is `canSafelyResume`,
+/// which combines writer + isLive + isStale.
+///
+/// The discriminating signal is `NativeSessionID` / `Title` — only
+/// `ThreadController` writes those events. Terminal-started Claude / Pi
+/// sessions DO fire `UserPrompt` hooks into the kernel ledger (because
+/// kernel hooks are installed globally in `~/.claude/settings.json` etc.),
+/// so `UserPrompt` alone is not a desktop-authorship signal.
+enum SessionWriter: String, Hashable {
+    case soulDesktop   // ledger has NativeSessionID or Title (only ThreadController writes these)
+    case external      // ledger has SESSION_START / AfterTool / AfterAgent but no desktop signature
+    case unknown       // no signals either way (crashed before first hook, or empty file)
 }
 
 struct SoulSession: Identifiable, Hashable {
@@ -46,10 +49,8 @@ struct SoulSession: Identifiable, Hashable {
     /// Finalized but has activity since: hooks.jsonl mtime > json mtime. The
     /// summary in the Chats row is stale; user should /finalize again to refresh.
     var isDirty: Bool = false
-    /// Where this session was started from. Drives `AppShell.loadSession`
-    /// routing — terminal-origin live rows go to Replay because the kernel
-    /// and the agent occupy different UUID namespaces.
-    var origin: SessionOrigin = .unknown
+    /// Who wrote this session's hooks ledger. See `SessionWriter` doc.
+    var writer: SessionWriter = .unknown
     /// Absolute path of the git worktree the session was started in, when
     /// the kernel detected one. Null for main-tree sessions and pre-007
     /// sessions. Read from hooks.jsonl `SESSION_START` (live) or the
@@ -84,6 +85,15 @@ struct SoulSession: Identifiable, Hashable {
     /// True iff a live session has no activity in the last N minutes.
     /// Used to distinguish active terminal sessions from abandoned ones.
     var isStale: Bool = false
+
+    /// Single resume gate, applies to every provider:
+    ///   - finalized → safe (no live writer)
+    ///   - desktop-authored live → safe (we own the writer in-process)
+    ///   - externally-authored live, idle ≥1h → safe (terminal almost certainly closed)
+    ///   - externally-authored live, recently active → unsafe (dual-writer risk)
+    var canSafelyResume: Bool {
+        !isLive || isStale || writer == .soulDesktop
+    }
 }
 
 enum SoulRegistry {

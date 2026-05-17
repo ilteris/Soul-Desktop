@@ -46,6 +46,17 @@ struct ChatRow: View {
                         .overlay(Circle().stroke(SoulColor.sidebar, lineWidth: 1))
                         .offset(x: 3, y: -2)
                 }
+                if session.writer == .external {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                        .padding(1)
+                        .background(
+                            Circle().fill(SoulColor.sidebar)
+                        )
+                        .offset(x: 4, y: 6)
+                        .help("Started outside Soul-Desktop — kernel ledger only, no in-app transcript")
+                }
             }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -118,8 +129,11 @@ if isActiveReplay {
     }
 
     private var sourceIcon: String {
-        if session.origin == .terminal { return "terminal" }
-        return ProviderIcon.symbol(for: session.source ?? session.liveProvider)
+        // Always show the provider glyph as the leading icon — the small
+        // inline `terminal` badge next to the title carries the external-
+        // writer signal. Hiding the provider behind a terminal icon for
+        // external sessions made it hard to tell which CLI authored a row.
+        ProviderIcon.symbol(for: session.source ?? session.liveProvider)
     }
 
     private func relative(_ d: Date) -> String {
@@ -174,9 +188,13 @@ if isActiveReplay {
     }
 
     private func cleanTitle(_ raw: String?) -> String {
-        guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "untitled"
         }
+        // Strip Claude's `<command-message>` / `<command-name>` tag noise
+        // from legacy sessions whose firstUserPrompt was captured before
+        // the producer-side strip landed.
+        var s = SoulRegistry.stripCommandTags(raw).trimmingCharacters(in: .whitespacesAndNewlines)
         let noise = CharacterSet(charactersIn: "#[]-*> ")
         while let first = s.unicodeScalars.first, noise.contains(first) {
             s.removeFirst()
@@ -412,43 +430,48 @@ private struct LiveSessionRow: View {
     let session: SoulSession
     var isSelected: Bool = false
 
-    /// Terminal-origin live rows aren't resumable by default (the kernel and
-    /// agent CLI mint UUIDs in separate namespaces). Exception for Gemini:
-    /// SOUL-SOUL_DESKTOP-058 verified `gemini --acp session/load` accepts
-    /// CLI-minted UUIDs when the cwd basename matches, and agentMatchCached
-    /// only stamps `liveProvider == "geminiCLI"` when that match holds. So
-    /// for those rows we lift the visual gate too — they get the Gemini
-    /// glyph + tooltip and click resumes via -059's relaxed routing.
-    private var isResumable: Bool {
-        if session.origin != .terminal { return true }
-        // For terminal-origin sessions, only allow resume if it's Gemini
-        // AND the session is abandoned (stale). Active terminal sessions
-        // stay read-only to prevent dual-writer corruption.
-        return session.liveProvider == "geminiCLI" && session.isStale
+    /// Single resume gate: `SoulSession.canSafelyResume`. Generalizes the
+    /// previous origin+provider+stale ladder into one provider-agnostic
+    /// check — desktop-authored OR finalized OR externally-authored-but-idle.
+    private var canResume: Bool { session.canSafelyResume }
+
+    /// True iff the writer is currently active (external + not stale).
+    /// Drives the "active" chip and blue accent.
+    private var isExternalActive: Bool {
+        session.writer == .external && !session.isStale
     }
 
-    /// Provider-distinguishing glyph for live rows. Falls back to terminal
-    /// when we can't resume (no agent file at all).
+    /// Always show the provider glyph as the leading icon; the inline
+    /// `terminal` badge next to the title carries the external-writer
+    /// signal. Keeps "which CLI authored this" visible across all states.
     private var liveIcon: String {
-        if session.origin == .terminal && !session.isStale {
-            return "terminal.fill" // Active terminal session
-        }
-        guard isResumable else { return "terminal" }
-        return ProviderIcon.symbol(for: session.liveProvider ?? session.source)
+        ProviderIcon.symbol(for: session.liveProvider ?? session.source)
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: liveIcon)
-                .font(.system(size: 11))
-                .foregroundStyle(iconColor)
-                .padding(.leading, 14)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: liveIcon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 14)
+                if session.writer == .external {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(isExternalActive ? .blue : SoulColor.fgSubtle)
+                        .padding(1)
+                        .background(Circle().fill(SoulColor.sidebar))
+                        .offset(x: 4, y: 6)
+                        .help("External writer (terminal CLI)")
+                }
+            }
+            .padding(.leading, 14)
             Text(title)
                 .font(SoulFont.ui(13, weight: isSelected ? .medium : .regular))
                 .foregroundStyle(textColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            if session.origin == .terminal && !session.isStale {
+            if isExternalActive {
                 Text("active")
                     .font(SoulFont.ui(9, weight: .bold))
                     .foregroundStyle(.blue)
@@ -475,23 +498,22 @@ private struct LiveSessionRow: View {
 
     private var iconColor: Color {
         if isSelected { return SoulColor.accent }
-        if session.origin == .terminal && !session.isStale { return .blue }
-        if !isResumable { return SoulColor.fgMuted }
+        if isExternalActive { return .blue }
+        if !canResume { return SoulColor.fgMuted }
         return SoulColor.fgSubtle
     }
 
     private var textColor: Color {
         if isSelected { return SoulColor.accent }
-        if session.origin == .terminal && !session.isStale { return SoulColor.fg }
-        if !isResumable { return SoulColor.fgMuted }
+        if !canResume { return SoulColor.fgMuted }
         return SoulColor.fg
     }
 
     private var tooltip: String {
-        if session.origin == .terminal && !session.isStale {
+        if isExternalActive {
             return "Currently active in a terminal. Resume disabled to prevent data loss."
         }
-        return isResumable
+        return canResume
             ? "Click to resume this conversation."
             : "Started outside Soul-Desktop — clicking will not resume the original conversation (starts fresh)."
     }

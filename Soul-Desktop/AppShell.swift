@@ -252,25 +252,18 @@ struct AppShell: View {
             return
         }
 
-        // SOUL-SOUL_DESKTOP-035: refuse to ACP-load a live session that's
-        // owned by an external writer (terminal-origin row whose hooks.jsonl
-        // is being actively appended by Claude / Gemini-CLI in a terminal).
+        // Refuse to ACP-load a session whose hooks.jsonl is being actively
+        // appended by an external writer (terminal Claude/Gemini/Pi/Codex).
         // session/load would stream the entire transcript back and we'd end
-        // up with two writers on the same session — a SwiftUI layout storm
-        // AND a semantic disaster. Offer Replay (read-only) instead.
-        //
-        // SOUL-SOUL_DESKTOP-059: Gemini-CLI exception. The probe in -058
-        // confirmed `gemini --acp` accepts session/load with a CLI-minted
-        // UUID as long as the cwd basename matches the session's origin
-        // (~/.gemini/tmp/<basename>(-N)/chats/). agentMatchCached only sets
-        // liveProvider == "geminiCLI" when the chats dir basename already
-        // matches project.path's basename (sibling walk included), so by
-        // construction passing project.path as cwd is the correct call.
-        // The "concurrent terminal writer" risk is real but rare in practice
-        // — sidebar rows tend to be stale terminal sessions the user moved
-        // on from. Accept the trade-off to unlock cross-surface resume.
-        let isResumableGeminiTerminal = (provider == .geminiCLI && session.liveProvider == "geminiCLI" && session.isStale)
-        if session.isLive, session.origin == .terminal, !isResumableGeminiTerminal {
+        // up with two writers on the same session — corruption + a SwiftUI
+        // storm. The `canSafelyResume` gate generalizes the prior pair of
+        // rules (SOUL-035 terminal-origin block + SOUL-058/059 stale-Gemini
+        // exception) into a single provider-agnostic check:
+        //   - finalized: always safe
+        //   - desktop-authored live: safe (we own the writer in-process)
+        //   - externally-authored live, idle ≥1h: safe (writer likely gone)
+        //   - externally-authored live, recently active: unsafe → Replay
+        if !session.canSafelyResume {
             pendingActiveId = nil
             externalLiveSession = session
             return
@@ -403,7 +396,7 @@ struct AppShell: View {
                 source: nil,
                 status: nil,
                 isLive: true,
-                origin: .desktop
+                writer: .soulDesktop
             )
             draftSession = draft
             pendingActiveId = draft.id
@@ -432,21 +425,31 @@ struct AppShell: View {
                 Image(systemName: "person.crop.circle.badge.exclamationmark")
                     .font(.system(size: 22))
                     .foregroundStyle(SoulColor.accent)
-                Text(session.origin == .terminal ? "Session is running elsewhere" : "Session can't be loaded here")
+                Text(session.writer == .external ? "Session is running elsewhere" : "Session can't be loaded here")
                     .font(SoulFont.ui(15)).bold()
             }
-            Text(session.origin == .terminal
-                ? "This chat is being driven by a terminal Claude/Gemini-CLI session, not by Soul-Desktop. Loading it here would spawn a second writer on the same session and stream the entire transcript back. You can open it in read-only Replay instead."
+            Text(session.writer == .external
+                ? "This chat is being driven by a terminal Claude/Gemini/Pi/Codex session, not by Soul-Desktop. Loading it here would spawn a second writer on the same session and stream the entire transcript back. You can open it in read-only Replay instead."
                 : "The agent transcript for this session isn't available on disk — it may have been rotated out, force-quit, or never written. You can replay the kernel hooks ledger (prompts + decisions) in read-only mode.")
                 .font(SoulFont.ui(12))
                 .foregroundStyle(SoulColor.fgMuted)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                let title = (session.intent ?? session.summary ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty {
+                    Text(title)
+                        .font(SoulFont.ui(12)).bold()
+                        .foregroundStyle(SoulColor.fg)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text(session.id)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(SoulColor.fgSubtle)
-                Spacer()
+                    .textSelection(.enabled)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Button("Cancel") { externalLiveSession = nil }
                 Spacer()
@@ -543,7 +546,7 @@ struct AppShell: View {
             intent: ctx.title,
             source: "gemini",
             isLive: true,
-            origin: .desktop
+            writer: .soulDesktop
         )
     }
 
