@@ -60,6 +60,11 @@ struct SidebarView: View {
     @AppStorage("soul.sidebar.showUnreadable") private var showUnreadable: Bool = false
     @State private var archiveStore = ArchiveStore.shared
     @State private var archivedExpanded: [String: Bool] = [:]
+    /// Per-project "show all sessions" toggle. Default-collapsed: only the
+    /// most-recent `sessionPageSize` chats render until the user clicks
+    /// "Show N more" on a project with a deeper history.
+    @State private var sessionListExpanded: Set<String> = []
+    private let sessionPageSize: Int = 20
     @State private var pendingDelete: DeleteConfirmation? = nil
 
     /// One-shot confirmation context for the destructive delete action.
@@ -348,13 +353,62 @@ struct SidebarView: View {
             let archivedSet = archiveStore.archivedIDs(forProject: project.id)
             let active = all.filter { !archivedSet.contains($0.id) }
             let archived = all.filter { archivedSet.contains($0.id) }
-            ForEach(active) { session in
+            let showAll = sessionListExpanded.contains(project.id)
+            let visible = showAll ? active : Array(active.prefix(sessionPageSize))
+            ForEach(visible) { session in
                 chatRow(session)
+            }
+            if active.count > visible.count {
+                showMoreButton(for: project, hiddenCount: active.count - visible.count)
+            } else if showAll && active.count > sessionPageSize {
+                showLessButton(for: project)
             }
             if !archived.isEmpty {
                 archivedDisclosure(for: project, archived: archived)
             }
         }
+    }
+
+    @ViewBuilder
+    private func showMoreButton(for project: SoulProject, hiddenCount: Int) -> some View {
+        Button {
+            sessionListExpanded.insert(project.id)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Text("Show \(hiddenCount) more")
+                    .font(SoulFont.ui(12, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Spacer()
+            }
+            .padding(.leading, 18)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func showLessButton(for project: SoulProject) -> some View {
+        Button {
+            sessionListExpanded.remove(project.id)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Text("Show less")
+                    .font(SoulFont.ui(12, weight: .regular))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                Spacer()
+            }
+            .padding(.leading, 18)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

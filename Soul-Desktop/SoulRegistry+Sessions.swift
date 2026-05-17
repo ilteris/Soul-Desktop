@@ -564,25 +564,38 @@ extension SoulRegistry {
         return true
     }
 
-    /// Strip Claude's slash-command stub from a user-prompt body. Terminal
-    /// `claude` wraps slash commands in `<command-message>…</command-message>`
-    /// + `<command-name>/…</command-name>` tags inside the first UserPrompt
-    /// payload, which leaks straight into sidebar titles. Drop the tags and
-    /// keep the human-readable remainder; if nothing's left, surface the
-    /// command name itself ("/pulse") as a usable fallback.
+    /// Strip Claude's system-tag noise from a user-prompt body so it
+    /// doesn't leak into sidebar/toolbar titles. Terminal `claude` wraps
+    /// slash-command stubs and various execution metadata in XML-ish tags
+    /// inside the first UserPrompt payload:
+    ///
+    ///   - `<command-message>…</command-message>` / `<command-name>…</command-name>`
+    ///     / `<command-args>…</command-args>` — slash command stub
+    ///   - `<local-command-stdout>…</local-command-stdout>` /
+    ///     `<local-command-stderr>` / `<local-command-caveat>` —
+    ///     captured shell-execution context Claude pastes in
+    ///
+    /// Strip every tag pair whose name starts with one of the recognized
+    /// noise prefixes. Keep the human-readable remainder; if nothing's
+    /// left, surface the slash command name itself (`/pulse`) as a
+    /// usable fallback.
     static func stripCommandTags(_ raw: String) -> String {
-        guard raw.contains("<command-") else { return raw }
+        let prefixes = ["<command-", "<local-command-"]
+        guard prefixes.contains(where: { raw.contains($0) }) else { return raw }
         var fallbackCmd: String? = nil
         var s = raw
-        while let openRange = s.range(of: "<command-"),
-              let closeOpen = s.range(of: ">", range: openRange.upperBound..<s.endIndex) {
-            let tagName = String(s[openRange.upperBound..<closeOpen.lowerBound])
-            let endTag = "</command-\(tagName)>"
+        while let opener = nextNoiseTagOpen(in: s, prefixes: prefixes) {
+            let openRange = opener.openRange
+            let closeOpen = opener.closeOpenRange
+            let tagName = opener.tagName  // e.g. "command-name", "local-command-stdout"
+            let endTag = "</\(tagName)>"
             guard let endRange = s.range(of: endTag, range: closeOpen.upperBound..<s.endIndex) else {
+                // Unclosed tag — drop the opening token and continue so we
+                // don't loop on a malformed payload.
                 s.removeSubrange(openRange.lowerBound..<closeOpen.upperBound)
                 continue
             }
-            if tagName == "name" {
+            if tagName == "command-name" {
                 fallbackCmd = String(s[closeOpen.upperBound..<endRange.lowerBound])
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
@@ -591,6 +604,28 @@ extension SoulRegistry {
         let cleaned = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleaned.isEmpty { return cleaned }
         return fallbackCmd ?? raw
+    }
+
+    private struct NoiseTagOpen {
+        let openRange: Range<String.Index>
+        let closeOpenRange: Range<String.Index>
+        let tagName: String  // full tag name without `<` / `>` (e.g. "command-name")
+    }
+
+    private static func nextNoiseTagOpen(in s: String, prefixes: [String]) -> NoiseTagOpen? {
+        var best: NoiseTagOpen? = nil
+        for prefix in prefixes {
+            guard let openRange = s.range(of: prefix),
+                  let closeOpen = s.range(of: ">", range: openRange.upperBound..<s.endIndex)
+            else { continue }
+            let nameStart = s.index(openRange.lowerBound, offsetBy: 1)  // skip the `<`
+            let tagName = String(s[nameStart..<closeOpen.lowerBound])
+            let hit = NoiseTagOpen(openRange: openRange, closeOpenRange: closeOpen, tagName: tagName)
+            if best == nil || openRange.lowerBound < best!.openRange.lowerBound {
+                best = hit
+            }
+        }
+        return best
     }
 
     private static func worktreePathFromHooks(path: String) -> String? {
