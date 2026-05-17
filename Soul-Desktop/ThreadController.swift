@@ -302,8 +302,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     var displayTitle: String {
         if let t = customTitle, !t.isEmpty { return t }
 
+        // Strip Claude slash-command stub tags from the captured user prompt
+        // so the toolbar reads the same as the sidebar (which runs the same
+        // strip via cleanTitle). Without this, terminal-origin Claude rows
+        // showed `<command-message>pulse</command-message>` in the toolbar
+        // while the sidebar correctly showed `/pulse`.
         let firstUser: String? = items.lazy.compactMap {
-            if case .userMessage(_, let t, _) = $0 { return t } else { return nil }
+            if case .userMessage(_, let t, _) = $0 { return SoulRegistry.stripCommandTags(t) } else { return nil }
         }.first
 
         if let user = firstUser, !isBareSlashCommand(user) {
