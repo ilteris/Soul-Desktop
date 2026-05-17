@@ -650,14 +650,24 @@ private struct ComposerTextField: NSViewRepresentable {
 
     func updateNSView(_ scroll: ClampedComposerScrollView, context: Context) {
         guard let tv = scroll.documentView as? BackspaceInterceptingTextView else { return }
-        if tv.string != text { tv.string = text }
-        tv.placeholderString = placeholder
+        // SOUL-SOUL_DESKTOP-118: only invalidate intrinsic size when the text
+        // actually changed. Unconditional invalidation here created a layout
+        // feedback loop: parent re-renders (TimelineView, ContextUsage, etc.)
+        // → updateNSView → invalidate → AppKit calls intrinsicContentSize →
+        // lm.ensureLayout runs full layout → parent re-renders → repeat.
+        // For a composer with long pasted content the per-pass cost
+        // beachballs the main thread.
+        let textChanged = tv.string != text
+        if textChanged { tv.string = text }
+        if tv.placeholderString != placeholder { tv.placeholderString = placeholder }
         tv.onBackspaceWhenEmpty = onBackspaceWhenEmpty
         tv.onCommit = onSubmit
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
-        tv.invalidateIntrinsicContentSize()
-        scroll.invalidateIntrinsicContentSize()
+        if textChanged {
+            tv.invalidateIntrinsicContentSize()
+            scroll.invalidateIntrinsicContentSize()
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
