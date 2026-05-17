@@ -21,13 +21,13 @@ struct SoulProject: Identifiable, Hashable {
 /// sessions DO fire `UserPrompt` hooks into the kernel ledger (because
 /// kernel hooks are installed globally in `~/.claude/settings.json` etc.),
 /// so `UserPrompt` alone is not a desktop-authorship signal.
-enum SessionWriter: String, Hashable {
+enum SessionWriter: String, Hashable, Codable {
     case soulDesktop   // ledger has NativeSessionID or Title (only ThreadController writes these)
     case external      // ledger has SESSION_START / AfterTool / AfterAgent but no desktop signature
     case unknown       // no signals either way (crashed before first hook, or empty file)
 }
 
-struct SoulSession: Identifiable, Hashable {
+struct SoulSession: Identifiable, Hashable, Codable {
     var id: String                 // session_id
     var project: String
     var timestamp: Date
@@ -112,18 +112,76 @@ enum SoulRegistry {
     nonisolated(unsafe) private static var cache: [String: ProjectCache] = [:]
 
     /// Read cached scan results if the registry directory hasn't changed.
-    /// Returns nil on miss / stale. Callers should fall back to a fresh scan.
+    /// Returns nil on miss / stale. Falls through to disk on in-memory miss
+    /// so a cold-start launch (process restarted) still gets instant sidebar
+    /// without re-parsing every project's hooks ledgers — see SOUL-149.
+    /// Callers should fall back to a fresh scan on nil.
     static func cachedSessions(forProject key: String) -> [SoulSession]? {
         let now = projectStamp(key: key)
-        cacheLock.lock(); defer { cacheLock.unlock() }
-        guard let hit = cache[key], hit.dirMtime == now else { return nil }
-        return hit.sessions
+        cacheLock.lock()
+        if let hit = cache[key], hit.dirMtime == now {
+            cacheLock.unlock()
+            return hit.sessions
+        }
+        cacheLock.unlock()
+        // Cold-start disk fallback. Validated against the same projectStamp
+        // so a project whose ledger changed since the cache was written
+        // returns nil and forces a re-scan.
+        if let disk = readDiskCache(forProject: key, expecting: now) {
+            cacheLock.lock()
+            cache[key] = ProjectCache(dirMtime: now, sessions: disk)
+            cacheLock.unlock()
+            return disk
+        }
+        return nil
     }
 
     static func warmCache(forProject key: String, sessions: [SoulSession]) {
         let m = projectStamp(key: key)
-        cacheLock.lock(); defer { cacheLock.unlock() }
+        cacheLock.lock()
         cache[key] = ProjectCache(dirMtime: m, sessions: sessions)
+        cacheLock.unlock()
+        // Persist to disk best-effort. Off the cache lock; failures are
+        // silent (next launch just falls back to a fresh scan).
+        Task.detached(priority: .background) {
+            writeDiskCache(forProject: key, sessions: sessions, stamp: m)
+        }
+    }
+
+    /// On-disk cache layout:
+    ///   ~/soul_registry/cache/sessions/<projectKey>.json
+    ///   { "stamp": <unix-seconds>, "sessions": [SoulSession...] }
+    /// The stamp is the same projectStamp(key:) we use for in-memory
+    /// validation, so disk and memory share one freshness contract.
+    private static func diskCachePath(forProject key: String) -> String {
+        "\(registryPath)/cache/sessions/\(key).json"
+    }
+
+    private struct DiskCacheEnvelope: Codable {
+        let stamp: TimeInterval
+        let sessions: [SoulSession]
+    }
+
+    private static func readDiskCache(forProject key: String, expecting stamp: Date) -> [SoulSession]? {
+        let path = diskCachePath(forProject: key)
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        guard let env = try? dec.decode(DiskCacheEnvelope.self, from: data) else { return nil }
+        // Mtime mismatch → cache is stale, ignore. Fresh scan will overwrite.
+        guard abs(env.stamp - stamp.timeIntervalSince1970) < 0.001 else { return nil }
+        return env.sessions
+    }
+
+    private static func writeDiskCache(forProject key: String, sessions: [SoulSession], stamp: Date) {
+        let dir = "\(registryPath)/cache/sessions"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let env = DiskCacheEnvelope(stamp: stamp.timeIntervalSince1970, sessions: sessions)
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        guard let data = try? enc.encode(env) else { return }
+        let path = diskCachePath(forProject: key)
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     /// Cache-validity stamp for a project's sessions tree. Combines the

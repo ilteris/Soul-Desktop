@@ -702,12 +702,32 @@ struct SidebarView: View {
                 selectedProject = projs.first?.id
             }
         }
-        // Prime any project the user already had expanded from a prior launch
-        // so badges + rows are present on first paint. No auto-expansion at
-        // startup — every project starts collapsed unless the user has
-        // explicitly opened it in a prior session. The previous behavior of
-        // force-expanding the active-session's project added noise the user
-        // didn't ask for; they can click the project to drill in.
+        // SOUL-SOUL_DESKTOP-149: prime sessionsByProject from the on-disk
+        // session cache for EVERY project, not just the ones the user had
+        // expanded last launch. Cold-start launches inherit the previous
+        // session's parsed data so badges show filtered counts and first
+        // expand renders instantly. Cache is mtime-validated — projects
+        // whose ledgers changed since the last write get nil here and
+        // hit Stage-1 on first expand.
+        let primed: [(String, [SoulSession])] = await Task.detached(priority: .userInitiated) {
+            var out: [(String, [SoulSession])] = []
+            for p in projs {
+                if let cached = SoulRegistry.cachedSessions(forProject: p.id), !cached.isEmpty {
+                    out.append((p.id, cached))
+                }
+            }
+            return out
+        }.value
+        await MainActor.run {
+            for (key, rows) in primed where sessionsByProject[key] == nil {
+                sessionsByProject[key] = rows
+            }
+        }
+        // Refresh any project the user already had expanded from a prior
+        // launch so freshly-changed sessions get re-rendered (cache may
+        // have been invalidated above, in which case loadProject does the
+        // full disk scan). No auto-expansion at startup — every project
+        // starts collapsed unless the user has explicitly opened it.
         for p in projs where isExpanded(p.id) {
             await loadProject(p.id)
         }
