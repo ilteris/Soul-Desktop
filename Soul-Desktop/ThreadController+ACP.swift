@@ -605,4 +605,34 @@ extension ThreadController {
         return path.isEmpty ? nil : path
     }
 
+    func handleACPRequest(id: JSONRPCID, method: String, params: JSONValue?) async {
+        // By the time this reaches handleACPRequest, ACPClient has already
+        // checked its own built-ins (fs/*, session/request_permission).
+        // Anything here is an unknown provider request.
+        // Respond with an error so the provider doesn't stall, and log it.
+        await client?.respondError(id: id, code: -32601, message: "method not implemented: \(method)")
+
+        let text = "■ ACP request ignored: \(method)"
+        items.append(.status(id: UUID(), text: text))
+
+        // Log to kernel hooks for -056 auditing
+        if let sid = sessionId {
+            var hook: [String: Any] = [
+                "event": "ACPRequestIgnored",
+                "method": method,
+                "provider": provider.rawValue
+            ]
+            if let params {
+                hook["params"] = compactJSONString(params)
+            }
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: hook)
+        }
+    }
+
+    private func compactJSONString(_ value: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let text = String(data: data, encoding: .utf8)
+        else { return String(describing: value) }
+        return text
+    }
 }

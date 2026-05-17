@@ -39,12 +39,20 @@ enum ClaudeTranscriptReader {
                 flush(&items, pending: &pendingAgentText)
 
                 let msg = rec["message"] as? [String: Any]
-                if let raw = msg?["content"] as? String, !raw.isEmpty {
+                let contentRaw: String = {
+                    if let s = msg?["content"] as? String { return s }
+                    if let blocks = msg?["content"] as? [[String: Any]] {
+                        return blocks.compactMap { $0["text"] as? String }.joined()
+                    }
+                    return ""
+                }()
+
+                if !contentRaw.isEmpty {
                     // Run the shared `<local-command-*>` classifier first so
                     // caveat/stdout scaffolding in stored transcripts renders
                     // identically to the live ACP path (compact status row
                     // for command output, dropped for pure caveat reminders).
-                    switch LocalCommandClassifier.classify(raw) {
+                    switch LocalCommandClassifier.classify(contentRaw) {
                     case .skip:
                         break
                     case .status(let inner):
