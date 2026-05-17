@@ -300,7 +300,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     var silentCapture: String? = nil
 
     var displayTitle: String {
-        if let t = customTitle, !t.isEmpty { return t }
+        if let t = customTitle, !t.isEmpty {
+            // customTitle gets seeded from SoulRegistry.findTitle (raw Title
+            // hook text) and AppShell's session.intent seed (which is already
+            // stripped). Run through the strip again so the raw-Title-hook
+            // path doesn't leak `<command-message>…` into the toolbar.
+            return SoulRegistry.stripCommandTags(t)
+        }
 
         // Strip Claude slash-command stub tags from the captured user prompt
         // so the toolbar reads the same as the sidebar (which runs the same
