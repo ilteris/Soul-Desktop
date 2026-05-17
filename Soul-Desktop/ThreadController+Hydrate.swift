@@ -60,14 +60,12 @@ extension ThreadController {
             case .geminiCLI:
                 r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
             case .pi:
-                // Same shape as Codex: no provider transcript reader, render
-                // from the kernel hooks ledger directly. Soul-Desktop pi-acp
-                // sessions fire UserPrompt + AfterAgent + AfterTool hooks
-                // into the ledger; terminal-origin pi sessions don't, but
-                // those rows surface a clean status row when the ledger is
-                // empty (see the empty-history block below).
-                let events = HooksReader.events(forSession: sid, project: proj)
-                r.history = events.map { $0.item }
+                // Try pi-acp's own chat file first (SOUL-SOUL_DESKTOP-140).
+                // Matches the Claude/Gemini happy path: rich content from
+                // the provider transcript when we have its native UUID,
+                // kernel-ledger fallback when we don't. The fallback runs
+                // in the empty-history block below.
+                r.history = PiTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
             case .codex:
                 // Codex has no off-disk transcript file we can read (no
                 // rollout reader yet), but the kernel hooks ledger carries
