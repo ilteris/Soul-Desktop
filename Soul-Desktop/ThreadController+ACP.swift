@@ -233,6 +233,16 @@ extension ThreadController {
     /// provider re-emits the same logical call under a new toolCallId so
     /// the toolId-keyed dedup misses. Returns the index in `items` if a
     /// match is found within the window, nil otherwise.
+    ///
+    /// SOUL-SOUL_DESKTOP-172: widened from 8 → 64 to handle alternating
+    /// duplicate patterns (the live repro was +67/+71/+67/+71 stuttering
+    /// 17 pairs deep). Fingerprint loosened to `(kind, lineCount(new),
+    /// lineCount(old))` instead of byte-exact hashValue — a single agent
+    /// turn making 30+ distinct edits to one file each with byte-identical
+    /// line counts is implausible, while edits that are *logically* the
+    /// same retry but have a trailing-whitespace difference broke the old
+    /// strict fingerprint. Same-tool kind + same file path + same line
+    /// counts = same logical edit.
     private func findContentDuplicate(
         kind: String,
         title: String,
@@ -258,14 +268,21 @@ extension ThreadController {
     private func detailsFingerprint(_ d: ToolCallDetails) -> String {
         switch d.kind {
         case .edit(let oldS, let newS):
-            return "edit|\(oldS.count)|\(newS.count)|\(oldS.hashValue)|\(newS.hashValue)"
+            return "edit|\(lineCount(oldS))|\(lineCount(newS))"
         case .write(let content):
-            return "write|\(content.count)|\(content.hashValue)"
+            return "write|\(lineCount(content))"
         case .output(let text):
-            return "output|\(text.count)|\(text.hashValue)"
+            return "output|\(text.count)"
         case .subagent:
             return "subagent"
         }
+    }
+
+    private func lineCount(_ s: String) -> Int {
+        if s.isEmpty { return 0 }
+        var n = s.components(separatedBy: "\n").count
+        if s.hasSuffix("\n") { n -= 1 }
+        return max(n, 1)
     }
 
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
@@ -532,7 +549,7 @@ extension ThreadController {
                title: title,
                location: location,
                details: incomingDetails,
-               searchWindow: 8
+               searchWindow: 64
            ),
            case .toolCall(let id, let oldKind, let oldTitle, _, let oldLoc, _) = items[dupIdx] {
             items[dupIdx] = .toolCall(
