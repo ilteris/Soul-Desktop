@@ -9,33 +9,65 @@ struct SoulTrace: Hashable {
     let nextStep: String
     let rationale: String
 
-    /// Pull a `<soul_trace>` block out of an agent reply. Returns the visible
-    /// text (block stripped) plus the parsed trace when present and well-formed.
-    /// Malformed JSON inside a valid block yields `(visible: stripped, trace: nil)`
-    /// so the chip silently degrades to no-chip rather than crashing the row.
+    /// Pull `<soul_trace>` blocks out of an agent reply. Returns the visible
+    /// text (every block stripped) plus the most recent parsed trace when
+    /// present and well-formed. Hardened against the leak modes seen in the
+    /// wild:
+    ///   * Multiple traces in one reply — strip all, surface the last.
+    ///   * Case / whitespace variants (`<SOUL_TRACE>`, `< soul_trace >`).
+    ///   * Optional attributes on the opener (`<soul_trace v="1">`).
+    ///   * Code-fence wrappers — strip the surrounding empty ```…``` fence
+    ///     when stripping the block leaves nothing else inside it.
+    ///   * Streaming truncation — an opener with no closer yet (still typing)
+    ///     hides everything from the opener to end-of-text so the raw JSON
+    ///     doesn't flash into the bubble mid-stream.
+    /// Malformed JSON inside an otherwise valid block yields a stripped
+    /// `visible` with `trace: nil` — the chip silently degrades rather than
+    /// the raw envelope leaking through.
     static func extract(from raw: String) -> (visible: String, trace: SoulTrace?) {
-        guard let range = raw.range(of: #"<soul_trace>([\s\S]*?)</soul_trace>"#, options: .regularExpression) else {
+        var working = raw
+        var lastParsed: SoulTrace? = nil
+
+        // Strip every well-formed block. NSRegularExpression so we can match
+        // case-insensitively and tolerate whitespace + attributes inside the
+        // opening tag.
+        let pattern = #"(?:`{3,}[a-zA-Z]*\s*\n)?\s*<\s*soul[_-]trace\b[^>]*>([\s\S]*?)<\s*/\s*soul[_-]trace\s*>\s*(?:\n`{3,})?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return (raw, nil)
         }
-        let block = String(raw[range])
-        let inner = block
-            .replacingOccurrences(of: "<soul_trace>", with: "")
-            .replacingOccurrences(of: "</soul_trace>", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let parsed: SoulTrace? = {
-            guard let data = inner.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            return SoulTrace(
-                intent:    obj["intent"]    as? String ?? "",
-                nextStep:  obj["next_step"] as? String ?? "",
-                rationale: obj["rationale"] as? String ?? ""
-            )
-        }()
+        while true {
+            let range = NSRange(working.startIndex..<working.endIndex, in: working)
+            guard let match = regex.firstMatch(in: working, options: [], range: range) else { break }
+            if let innerRange = Range(match.range(at: 1), in: working) {
+                let inner = String(working[innerRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let data = inner.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    lastParsed = SoulTrace(
+                        intent:    obj["intent"]    as? String ?? "",
+                        nextStep:  obj["next_step"] as? String ?? "",
+                        rationale: obj["rationale"] as? String ?? ""
+                    )
+                }
+            }
+            guard let fullRange = Range(match.range, in: working) else { break }
+            working.replaceSubrange(fullRange, with: "")
+        }
 
-        var stripped = raw
-        stripped.replaceSubrange(range, with: "")
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), parsed)
+        // Streaming guard: an opener with no closer means the model is still
+        // typing the JSON body. Hide from the opener to end so the raw `{`
+        // doesn't flash into the rendered bubble before the closer lands.
+        if let openerPattern = try? NSRegularExpression(
+            pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
+            options: [.caseInsensitive]
+        ) {
+            let range = NSRange(working.startIndex..<working.endIndex, in: working)
+            if let match = openerPattern.firstMatch(in: working, options: [], range: range),
+               let r = Range(match.range, in: working) {
+                working.removeSubrange(r.lowerBound..<working.endIndex)
+            }
+        }
+
+        return (working.trimmingCharacters(in: .whitespacesAndNewlines), lastParsed)
     }
 }
