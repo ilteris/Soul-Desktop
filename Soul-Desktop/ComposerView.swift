@@ -291,6 +291,8 @@ struct ComposerView: View {
                 HStack(spacing: 10) {
                     Button(action: openFilePicker) {
                         ToolbarChip(icon: "plus", label: nil)
+                            .frame(minWidth: 28, minHeight: 28)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("Attach a file — routes through the same drop pipeline as drag-and-drop")
