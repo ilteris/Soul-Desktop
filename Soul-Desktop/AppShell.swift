@@ -693,6 +693,7 @@ struct AppShell: View {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(showSidebar ? SoulColor.accent : SoulColor.fgMuted)
+                .padding(6)
                 .background(
                     showSidebar
                         ? AnyShapeStyle(SoulColor.surface)

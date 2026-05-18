@@ -263,6 +263,8 @@ struct ReviewPanel: View {
                     .font(.system(size: 9))
                     .foregroundStyle(SoulColor.fgSubtle)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }

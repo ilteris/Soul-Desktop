@@ -89,8 +89,11 @@ private struct SoulHoverButtonContent: View {
     }
 
     private func background() -> Color {
-        if configuration.isPressed { return SoulColor.accent.opacity(0.25) }
-        if isActive || hovering { return SoulColor.accentMuted }
+        // Neutral muted gray for hover/active — NOT accent-tinted. Accent
+        // tint belongs to the icon (set per call site), not the bg. Press
+        // deepens to a stronger neutral so click feedback is visible.
+        if configuration.isPressed { return SoulColor.fg.opacity(0.16) }
+        if isActive || hovering { return SoulColor.fg.opacity(0.08) }
         return .clear
     }
 }
