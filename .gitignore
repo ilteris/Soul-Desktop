@@ -47,3 +47,7 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Composer drag-drop staging — images copied here when the user
+# drag-drops or +-attaches into a chat. Per-project ephemera, not source.
+.soul/attachments/
