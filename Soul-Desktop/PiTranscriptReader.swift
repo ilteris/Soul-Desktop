@@ -91,7 +91,8 @@ enum PiTranscriptReader {
             }
         }
         flushAgent(&items, pending: &pendingAgentText)
-        return items.isEmpty ? nil : items
+        let deduped = dedupAdjacentToolCalls(items)
+        return deduped.isEmpty ? nil : deduped
     }
 
     /// Pi files sessions under `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<sid>.jsonl`.

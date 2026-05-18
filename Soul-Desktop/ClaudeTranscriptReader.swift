@@ -130,7 +130,8 @@ enum ClaudeTranscriptReader {
         }
 
         flush(&items, pending: &pendingAgentText)
-        return items.isEmpty ? nil : items
+        let deduped = dedupAdjacentToolCalls(items)
+        return deduped.isEmpty ? nil : deduped
     }
 
     // MARK: - helpers

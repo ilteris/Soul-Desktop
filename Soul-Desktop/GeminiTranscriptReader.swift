@@ -122,7 +122,8 @@ enum GeminiTranscriptReader {
             items.insert(.status(id: UUID(), text: text), at: 0)
         }
 
-        return items.isEmpty ? nil : items
+        let deduped = dedupAdjacentToolCalls(items)
+        return deduped.isEmpty ? nil : deduped
     }
 
     // MARK: - path resolution

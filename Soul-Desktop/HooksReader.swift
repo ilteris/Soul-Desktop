@@ -109,6 +109,65 @@ func enumerateJSONLines(atPath path: String, _ body: (Data) -> Void) -> JSONLine
     return stats
 }
 
+/// SOUL-SOUL_DESKTOP-174: hydrate-time dedup. Mirrors the live-stream
+/// dedup in `ThreadController+ACP.insertToolCall` (-170/-172/-173).
+/// Transcript files on disk can contain duplicated tool_use blocks
+/// when an older Claude Code (pre-v2.1.132 streaming-retry bug) wrote
+/// the same logical Edit multiple times. We can't rewrite the
+/// transcript, but we can dedup at read time so the canvas shows one
+/// row per logical call regardless of how many copies the file holds.
+///
+/// Collapses consecutive toolCall items with matching
+/// `(kind, title, locationHint, lineCount-fingerprint of details)`.
+/// Non-toolCall items (user/agent messages, status rows) break the
+/// run — only adjacent dups collapse, which keeps a legitimate
+/// "Edit-then-Edit-again-later" pair separated by a model reply
+/// intact.
+func dedupAdjacentToolCalls(_ items: [ThreadItem]) -> [ThreadItem] {
+    var out: [ThreadItem] = []
+    out.reserveCapacity(items.count)
+    var lastFingerprint: String? = nil
+    for item in items {
+        guard case .toolCall(_, let kind, let title, _, let loc, let details) = item else {
+            out.append(item)
+            lastFingerprint = nil
+            continue
+        }
+        let fingerprint = toolCallFingerprint(kind: kind, title: title, loc: loc, details: details)
+        if fingerprint == lastFingerprint, fingerprint != nil {
+            continue   // duplicate of the immediately-preceding toolCall — drop
+        }
+        out.append(item)
+        lastFingerprint = fingerprint
+    }
+    return out
+}
+
+private func toolCallFingerprint(kind: String, title: String, loc: String?, details: ToolCallDetails?) -> String? {
+    // Without details we have no safe way to distinguish two real edits
+    // from two duplicates — bail out and let the row through.
+    guard let d = details else { return nil }
+    let body: String
+    switch d.kind {
+    case .edit(let oldS, let newS):
+        body = "edit|\(transcriptLineCount(oldS))|\(transcriptLineCount(newS))"
+    case .write(let content):
+        body = "write|\(transcriptLineCount(content))"
+    case .output(let text):
+        body = "output|\(text.count)"
+    case .subagent:
+        body = "subagent"
+    }
+    return "\(kind)|\(title)|\(loc ?? "")|\(body)"
+}
+
+private func transcriptLineCount(_ s: String) -> Int {
+    if s.isEmpty { return 0 }
+    var n = s.components(separatedBy: "\n").count
+    if s.hasSuffix("\n") { n -= 1 }
+    return max(n, 1)
+}
+
 enum HooksReader {
     static func events(forSession sid: String, project: SoulProject) -> [ReplayEvent] {
         return SoulSignposts.interval("HooksReader.events", id: sid) {
