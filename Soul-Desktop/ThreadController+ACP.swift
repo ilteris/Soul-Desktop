@@ -265,6 +265,31 @@ extension ThreadController {
         return nil
     }
 
+    /// Companion to `findContentDuplicate` for edit/write calls whose
+    /// structured details haven't streamed yet. Walks backward while items
+    /// are still pending/in_progress AND match (kind, title, location).
+    /// Stops at the first completed/failed/stopped item to avoid colliding
+    /// with a previous, finished edit on the same path.
+    private func findPendingWriteDuplicate(
+        kind: String,
+        title: String,
+        location: String?,
+        searchWindow: Int
+    ) -> Int? {
+        let lower = max(0, items.count - searchWindow)
+        for idx in stride(from: items.count - 1, through: lower, by: -1) {
+            guard case .toolCall(_, let k, let t, let status, let loc, _) = items[idx] else { continue }
+            if status == "completed" || status == "failed" || status == "stopped" {
+                return nil   // stop scanning — anything older is a finished call, not a stream-mate
+            }
+            if k != kind { continue }
+            if t != title { continue }
+            if (loc ?? "") != (location ?? "") { continue }
+            return idx
+        }
+        return nil
+    }
+
     private func detailsFingerprint(_ d: ToolCallDetails) -> String {
         switch d.kind {
         case .edit(let oldS, let newS):
@@ -559,6 +584,44 @@ extension ThreadController {
                 status: status,
                 locationHint: location ?? oldLoc,
                 details: incomingDetails
+            )
+            seenToolCallIds[toolId] = id
+            return
+        }
+
+        // SOUL-SOUL_DESKTOP-173: details-nil dedup for write-class tools.
+        // The provider sometimes emits multiple `tool_call` notifications
+        // with fresh toolCallIds before any of them has structured details
+        // attached (rawInput hasn't streamed yet). Both rows land with
+        // `details == nil`, the fingerprint dedup above bails, and the
+        // canvas shows a stack of empty "edit foo.json" chips. Once the
+        // updates arrive each one binds to a different row, so they never
+        // collapse.
+        //
+        // For edit/write specifically, two consecutive calls with same
+        // (title, location) in a single turn is overwhelmingly a duplicate
+        // — the legitimate "Edit, then Edit again with different content"
+        // pattern lands seconds apart with details already present (this
+        // path only fires when details haven't streamed yet). Conservative
+        // window: search backward only while items remain status="pending"
+        // or "in_progress" so a completed earlier edit doesn't absorb a
+        // legitimately-new follow-up.
+        if structuredDetails == nil,
+           (kind == "edit" || kind == "write"),
+           let dupIdx = findPendingWriteDuplicate(
+               kind: kind,
+               title: title,
+               location: location,
+               searchWindow: 32
+           ),
+           case .toolCall(let id, let oldKind, let oldTitle, _, let oldLoc, let oldDetails) = items[dupIdx] {
+            items[dupIdx] = .toolCall(
+                id: id,
+                kind: oldKind,
+                title: title.isEmpty ? oldTitle : title,
+                status: status,
+                locationHint: location ?? oldLoc,
+                details: oldDetails
             )
             seenToolCallIds[toolId] = id
             return
