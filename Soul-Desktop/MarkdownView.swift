@@ -22,17 +22,27 @@ struct MarkdownView: View {
         // suspected to dominate AgentMessageRow's body cost during scroll.
         // Per-body event so we can quantify materialization rate.
         let _ = SoulSignposts.event("MarkdownView.body")
+        // SOUL-SOUL_DESKTOP-167: cross-paragraph selection. SwiftUI's
+        // `.textSelection(.enabled)` lets you drag *within* a single `Text`
+        // but not across sibling `Text`s in a VStack. The user's complaint
+        // was that they couldn't cmd-drag from the middle of paragraph 1
+        // through paragraph 3 to grab a multi-paragraph quote. Fix: group
+        // consecutive prose blocks (paragraph/bullet/blank) into a single
+        // merged AttributedString rendered as ONE `Text`, so the run is
+        // natively selectable end-to-end. Headings, code blocks, and tables
+        // remain selection boundaries — they have non-Text layout anyway.
+        let groups = groupForSelection(blocks)
         return Group {
             if lazy {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                        render(block)
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                        renderGroup(group)
                     }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                        render(block)
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                        renderGroup(group)
                     }
                 }
             }
@@ -146,13 +156,105 @@ struct MarkdownView: View {
         }
     }
 
-    private func inline(_ s: String) -> Text { MarkdownView.inline(s) }
+    /// Selection groups: either a run of prose blocks (paragraph/bullet/
+    /// blank) we can merge into one selectable `Text`, or a single
+    /// "structural" block (heading/code/table/inline-code-row) rendered
+    /// alone. Inline-code-row paragraphs stay alone too — they own their
+    /// own click-to-copy affordance, which would be lost if we collapsed
+    /// them into the prose stream.
+    private enum SelectionGroup {
+        case prose([Block])
+        case standalone(Block)
+    }
 
-    /// Public so children (TableView cells, anyone else rendering markdown
-    /// chunks) can produce the same bold/italic/code styling that paragraph
-    /// rows get. Without this, `**bold**` and `` `code` `` leak through as
-    /// raw asterisks/backticks in table cells.
-    static func inline(_ s: String) -> Text {
+    private func groupForSelection(_ blocks: [Block]) -> [SelectionGroup] {
+        var out: [SelectionGroup] = []
+        var bucket: [Block] = []
+        func flush() {
+            if !bucket.isEmpty {
+                // Drop a trailing blank — its only job was paragraph
+                // separation inside the merged Text, but the merge already
+                // inserts \n\n between paragraphs.
+                while case .blank? = bucket.last { bucket.removeLast() }
+                if !bucket.isEmpty { out.append(.prose(bucket)) }
+                bucket.removeAll(keepingCapacity: true)
+            }
+        }
+        for block in blocks {
+            switch block {
+            case .paragraph(let line) where MarkdownView.bareInlineCode(line) != nil:
+                flush(); out.append(.standalone(block))
+            case .paragraph, .blank:
+                bucket.append(block)
+            case .bullet:
+                bucket.append(block)
+            case .heading, .codeBlock, .table:
+                flush(); out.append(.standalone(block))
+            }
+        }
+        flush()
+        return out
+    }
+
+    @ViewBuilder
+    private func renderGroup(_ group: SelectionGroup) -> some View {
+        switch group {
+        case .standalone(let block):
+            render(block)
+        case .prose(let merged):
+            mergedProse(merged)
+        }
+    }
+
+    /// Builds one `Text` from the AttributedStrings of every block in the
+    /// group. Paragraphs separated by `\n\n`; bullets get a leading
+    /// "•  " marker. Path linkification runs on the merged string so cross-
+    /// paragraph links keep working.
+    @ViewBuilder
+    private func mergedProse(_ blocks: [Block]) -> some View {
+        let attr = MarkdownView.mergedAttributed(for: blocks)
+        let hasLink = attr.runs.contains { $0.link != nil }
+        Text(attr)
+            .font(bodyFont)
+            .foregroundStyle(bodyColor)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .modifier(LinkHoverCursor(active: hasLink))
+    }
+
+    fileprivate static func mergedAttributed(for blocks: [Block]) -> AttributedString {
+        var out = AttributedString()
+        var first = true
+        func appendBreak() {
+            if first { first = false; return }
+            out.append(AttributedString("\n\n"))
+        }
+        for block in blocks {
+            switch block {
+            case .paragraph(let line):
+                appendBreak()
+                out.append(attributedInline(line))
+            case .bullet(let items):
+                appendBreak()
+                for (idx, item) in items.enumerated() {
+                    if idx > 0 { out.append(AttributedString("\n")) }
+                    var bullet = AttributedString("•  ")
+                    bullet.foregroundColor = SoulColor.fgSubtle
+                    out.append(bullet)
+                    out.append(attributedInline(item))
+                }
+            case .blank:
+                appendBreak()
+            case .heading, .codeBlock, .table:
+                continue // grouping invariant — never present in a prose group
+            }
+        }
+        return out
+    }
+
+    /// Same styling pipeline as `inline(_:)` but returns the raw
+    /// AttributedString so callers can concatenate runs before rendering.
+    static func attributedInline(_ s: String) -> AttributedString {
         guard var attr = try? AttributedString(
             markdown: s,
             options: AttributedString.MarkdownParsingOptions(
@@ -160,11 +262,8 @@ struct MarkdownView: View {
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
         ) else {
-            return Text(s)
+            return AttributedString(s)
         }
-        // Walk inlinePresentationIntent runs and apply the right PostScript
-        // face explicitly. `.weight(.bold)` on `.custom()` Nerd Font is a
-        // no-op — bold falls back to system-bold and breaks visual unity.
         for run in attr.runs {
             let intent = run.inlinePresentationIntent ?? []
             let isBold = intent.contains(.stronglyEmphasized)
@@ -182,7 +281,20 @@ struct MarkdownView: View {
         }
         linkifyPaths(&attr)
         stripLinkUnderlines(&attr)
-        return Text(attr)
+        return attr
+    }
+
+    private func inline(_ s: String) -> Text { MarkdownView.inline(s) }
+
+    /// Public so children (TableView cells, anyone else rendering markdown
+    /// chunks) can produce the same bold/italic/code styling that paragraph
+    /// rows get. Without this, `**bold**` and `` `code` `` leak through as
+    /// raw asterisks/backticks in table cells.
+    static func inline(_ s: String) -> Text {
+        // Single pipeline shared with mergedAttributed — both produce the
+        // same styled run, only the wrapper (Text vs AttributedString)
+        // differs. Keeps bold/italic/code/link behavior identical.
+        Text(attributedInline(s))
     }
 
     /// SwiftUI underlines `.link`-bearing runs by default. We want the system
