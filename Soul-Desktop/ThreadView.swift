@@ -67,7 +67,8 @@ struct ThreadView: View {
                                 projectKey: controller.project.id,
                                 item: item,
                                 isHistorical: controller.historicalIDs.contains(item.id),
-                                isQueued: false
+                                isQueued: false,
+                                showAgentFooter: isLastInAgentRun(at: i, items: mainItems)
                             )
                                 .id(item.id)
                                 .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
@@ -295,6 +296,17 @@ struct ThreadView: View {
         return true
     }
 
+    /// True only when `items[i]` is an agentMessage AND the next item (if any)
+    /// is not also an agentMessage. Used to gate the action-button footer so
+    /// multi-step turns with frequent narration don't render a noisy
+    /// copy/feedback strip between every short line.
+    private func isLastInAgentRun(at i: Int, items: [ThreadItem]) -> Bool {
+        guard case .agentMessage = items[i] else { return true }
+        let next = i + 1 < items.count ? items[i + 1] : nil
+        if let next, case .agentMessage = next { return false }
+        return true
+    }
+
     private func splitGroupedItems(_ items: [ThreadItem], queuedIds: Set<UUID>) -> (main: [ThreadItem], queued: [ThreadItem]) {
         guard !queuedIds.isEmpty else { return (items, []) }
         var main: [ThreadItem] = []
@@ -339,6 +351,11 @@ struct ThreadItemRow: View {
     var isHistorical: Bool = false
     var isQueued: Bool = false
     var isGrouped: Bool = false
+    /// True only when this row is the FINAL `.agentMessage` in a consecutive
+    /// run. Other rows (or non-final agent messages in a run) hide the
+    /// copy/feedback/fork/timestamp footer to cut the noisy action-button
+    /// strip between every short narration line in multi-step turns.
+    var showAgentFooter: Bool = true
 
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: per-item scroll-perf telemetry.
@@ -352,7 +369,7 @@ struct ThreadItemRow: View {
         case .agentMessage(_, let text, _, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
             // MarkdownView rebuild when the row's inputs haven't changed.
-            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical)
+            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, showFooter: showAgentFooter)
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)

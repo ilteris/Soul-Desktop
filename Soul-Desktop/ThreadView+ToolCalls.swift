@@ -708,6 +708,16 @@ private struct DefaultToolRow<Trailing: View>: View {
     }
 }
 
+/// One aligned row in a side-by-side diff. `.unchanged` fills both columns
+/// with the same text and no tint; `.removed` / `.added` fill only one side
+/// and accent it with a thin colored left border + sign glyph (no full-line
+/// background fill — that was the visual mud problem with the old renderer).
+private enum DiffRow {
+    case unchanged(leftNum: Int, rightNum: Int, text: String)
+    case removed(num: Int, text: String)
+    case added(num: Int, text: String)
+}
+
 private struct DiffView: View {
     let details: ToolCallDetails
 
@@ -715,19 +725,11 @@ private struct DiffView: View {
         VStack(alignment: .leading, spacing: 0) {
             switch details.kind {
             case .edit(let oldString, let newString):
-                HStack(alignment: .top, spacing: 1) {
-                    column(text: oldString, sign: "-", tint: .red,
-                           start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
-                    column(text: newString, sign: "+", tint: .green,
-                           start: details.startLine, gutterWidth: gutterWidth(oldString, newString))
-                }
+                diffRows(old: oldString, new: newString, startLine: details.startLine ?? 1)
             case .write(let content):
-                HStack(alignment: .top, spacing: 1) {
-                    column(text: "", sign: " ", tint: SoulColor.fgSubtle,
-                           start: nil, gutterWidth: gutterWidth("", content))
-                    column(text: content, sign: "+", tint: .green,
-                           start: details.startLine ?? 1, gutterWidth: gutterWidth("", content))
-                }
+                // Pure addition: every line is `.added`. Same renderer; the
+                // left column shows blank for each row.
+                diffRows(old: "", new: content, startLine: details.startLine ?? 1)
             case .output(let text):
                 Text(text)
                     .font(SoulFont.code(12))
@@ -757,49 +759,135 @@ private struct DiffView: View {
         )
     }
 
-    /// Width of the line-number gutter sized to the longest line number we'll
-    /// display. Each character ~7pt in monospace at 11pt. Falls back to 3
-    /// chars (room for up to 999) when startLine is unknown.
-    private func gutterWidth(_ a: String, _ b: String) -> CGFloat {
-        let aLines = a.components(separatedBy: "\n").count
-        let bLines = b.components(separatedBy: "\n").count
-        let maxNum = (details.startLine ?? 1) + max(aLines, bLines)
-        let chars = max(3, String(maxNum).count)
-        return CGFloat(chars) * 7 + 4
-    }
-
-    private func column(text: String, sign: String, tint: Color,
-                        start: Int?, gutterWidth: CGFloat) -> some View {
-        let lines = text.isEmpty ? [" "] : text.components(separatedBy: "\n")
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
-                HStack(alignment: .top, spacing: 8) {
-                    Text(start.map { "\($0 + i)" } ?? "")
-                        .font(SoulFont.code(12))
-                        .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
-                        .frame(width: gutterWidth, alignment: .trailing)
-                    Text(sign)
-                        .font(SoulFont.code(12, weight: .bold))
-                        .foregroundStyle(tint.opacity(0.7))
-                        .frame(width: 10, alignment: .leading)
-                    // No per-line .textSelection / no per-line .frame on the
-                    // Text. The whole DiffView declares selection once at the
-                    // outer HStack; the flex anchor moves down to the line
-                    // HStack (single layout node) so the tint background
-                    // still spans the column without promoting each Text to
-                    // an NSTextView. Both modifiers on the Text triggered the
-                    // layout-recursion storm during drag-select (sample
-                    // 2026-05-14: 100% main thread inside _bellerophonTrack).
-                    Text(line.isEmpty ? " " : line)
-                        .font(SoulFont.code(12))
-                        .foregroundStyle(SoulColor.fg)
-                }
-                .padding(.vertical, 1)
-                .padding(.horizontal, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(tint.opacity(0.08))
+    /// Compute aligned diff rows via Swift's `CollectionDifference` so
+    /// unchanged lines render once across both columns (no tint) instead of
+    /// once per column (full red + full green wash). Drops the wholesale-
+    /// rewrite case from 600+ noisy rows to ~the actual change count.
+    @ViewBuilder
+    private func diffRows(old: String, new: String, startLine: Int) -> some View {
+        let rows = Self.computeRows(old: old, new: new, startLine: startLine)
+        let gutter = Self.gutterWidth(for: rows)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                diffRowView(row, gutterWidth: gutter)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func diffRowView(_ row: DiffRow, gutterWidth: CGFloat) -> some View {
+        switch row {
+        case .unchanged(let lNum, let rNum, let text):
+            HStack(alignment: .top, spacing: 1) {
+                cell(num: lNum, sign: " ", text: text, tint: nil, gutterWidth: gutterWidth)
+                cell(num: rNum, sign: " ", text: text, tint: nil, gutterWidth: gutterWidth)
+            }
+        case .removed(let num, let text):
+            HStack(alignment: .top, spacing: 1) {
+                cell(num: num, sign: "-", text: text, tint: .red, gutterWidth: gutterWidth)
+                cell(num: nil, sign: " ", text: "", tint: nil, gutterWidth: gutterWidth)
+            }
+        case .added(let num, let text):
+            HStack(alignment: .top, spacing: 1) {
+                cell(num: nil, sign: " ", text: "", tint: nil, gutterWidth: gutterWidth)
+                cell(num: num, sign: "+", text: text, tint: .green, gutterWidth: gutterWidth)
+            }
+        }
+    }
+
+    /// One column-cell. `tint == nil` means unchanged — no background, no
+    /// border, neutral sign. Tinted rows get a 2pt colored left border
+    /// instead of the old full-width background fill: same signal, ~70%
+    /// less visual weight on long diffs.
+    private func cell(num: Int?, sign: String, text: String, tint: Color?,
+                      gutterWidth: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(num.map(String.init) ?? "")
+                .font(SoulFont.code(12))
+                .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
+                .frame(width: gutterWidth, alignment: .trailing)
+            Text(sign)
+                .font(SoulFont.code(12, weight: .bold))
+                .foregroundStyle((tint ?? SoulColor.fgSubtle).opacity(0.7))
+                .frame(width: 10, alignment: .leading)
+            Text(text.isEmpty ? " " : text)
+                .font(SoulFont.code(12))
+                .foregroundStyle(SoulColor.fg)
+        }
+        .padding(.vertical, 1)
+        .padding(.leading, 6)
+        .padding(.trailing, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            if let tint {
+                Rectangle()
+                    .fill(tint.opacity(0.65))
+                    .frame(width: 2)
+            }
+        }
+    }
+
+    /// Walk `oldLines` and `newLines` in tandem using the diff's
+    /// removed/added offset sets as an oracle. Unchanged lines emit a single
+    /// aligned row; removed and added lines emit one-sided rows.
+    private static func computeRows(old: String, new: String, startLine: Int) -> [DiffRow] {
+        let oldLines = old.isEmpty ? [] : old.components(separatedBy: "\n")
+        let newLines = new.isEmpty ? [] : new.components(separatedBy: "\n")
+        let diff = newLines.difference(from: oldLines)
+        // CollectionDifference.removals/insertions are arrays of `Change`
+        // enum cases — pattern-match to extract the offset.
+        var removedOffsets: Set<Int> = []
+        for change in diff.removals {
+            if case let .remove(offset, _, _) = change { removedOffsets.insert(offset) }
+        }
+        var addedOffsets: Set<Int> = []
+        for change in diff.insertions {
+            if case let .insert(offset, _, _) = change { addedOffsets.insert(offset) }
+        }
+
+        var rows: [DiffRow] = []
+        var i = 0  // oldLines cursor
+        var j = 0  // newLines cursor
+        let lBase = startLine
+        let rBase = startLine
+
+        while i < oldLines.count || j < newLines.count {
+            if i < oldLines.count, removedOffsets.contains(i) {
+                rows.append(.removed(num: lBase + i, text: oldLines[i]))
+                i += 1
+            } else if j < newLines.count, addedOffsets.contains(j) {
+                rows.append(.added(num: rBase + j, text: newLines[j]))
+                j += 1
+            } else if i < oldLines.count, j < newLines.count {
+                // Both cursors on common (unchanged) content.
+                rows.append(.unchanged(leftNum: lBase + i, rightNum: rBase + j, text: oldLines[i]))
+                i += 1
+                j += 1
+            } else if i < oldLines.count {
+                // Defensive: trailing old past the diff's known removals.
+                rows.append(.removed(num: lBase + i, text: oldLines[i]))
+                i += 1
+            } else {
+                rows.append(.added(num: rBase + j, text: newLines[j]))
+                j += 1
+            }
+        }
+        return rows
+    }
+
+    /// Gutter wide enough for the largest line number that appears in any
+    /// row. Each char ~7pt in 12pt monospace, plus 4pt of breathing room.
+    private static func gutterWidth(for rows: [DiffRow]) -> CGFloat {
+        var maxNum = 1
+        for row in rows {
+            switch row {
+            case .unchanged(let l, let r, _): maxNum = max(maxNum, l, r)
+            case .removed(let n, _): maxNum = max(maxNum, n)
+            case .added(let n, _): maxNum = max(maxNum, n)
+            }
+        }
+        let chars = max(3, String(maxNum).count)
+        return CGFloat(chars) * 7 + 4
     }
 }

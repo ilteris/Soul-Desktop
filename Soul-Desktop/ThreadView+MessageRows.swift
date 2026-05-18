@@ -96,6 +96,11 @@ struct AgentMessageRow: View, Equatable {
     let text: String
     let timestamp: Date
     var isHistorical: Bool = false
+    /// Only the final agent message in a consecutive run shows the footer
+    /// (copy / feedback / fork / timestamp). Without this, multi-step turns
+    /// where the agent narrates 5-10 short paragraphs render a noisy
+    /// action-row strip between every line.
+    var showFooter: Bool = true
     @State private var isHovering = false
     @State private var feedback: Feedback = .none
 
@@ -108,6 +113,7 @@ struct AgentMessageRow: View, Equatable {
         lhs.text == rhs.text
             && lhs.timestamp == rhs.timestamp
             && lhs.isHistorical == rhs.isHistorical
+            && lhs.showFooter == rhs.showFooter
     }
 
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
@@ -135,6 +141,7 @@ struct AgentMessageRow: View, Equatable {
             // every reply lacking copy/feedback after a session reload —
             // you couldn't act on prior content. Historical rows just get
             // slightly more muted styling via the parent `mutedFg`.
+            if showFooter {
             HStack(spacing: 4) {
                 FooterButton(systemName: "doc.on.doc", help: "Copy as Markdown") {
                     NSPasteboard.general.clearContents()
@@ -168,6 +175,7 @@ struct AgentMessageRow: View, Equatable {
             }
             .opacity(isHovering ? 1 : 0.55)
             .animation(.easeInOut(duration: 0.12), value: isHovering)
+            }
         }
         .onHover { isHovering = $0 }
     }

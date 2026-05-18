@@ -201,13 +201,15 @@ struct ComposerView: View {
                         .foregroundStyle(SoulColor.fgMuted)
                     Spacer(minLength: 0)
                     Button(action: onSteer) {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "forward.fill")
                                 .font(.system(size: 9, weight: .semibold))
                             Text("Steer")
                                 .font(SoulFont.ui(10, weight: .semibold))
                         }
                         .foregroundStyle(SoulColor.fg)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
                         .background(SoulColor.fg.opacity(0.08), in: Capsule())
                     }
                     .buttonStyle(.soulChip)
