@@ -31,6 +31,11 @@ struct AppShell: View {
     /// each ThreadController owns its own `composerDraft` so keystrokes
     /// don't invalidate AppShell.body.
     @State private var prompt: String = ""
+    /// True while a background `claude -p` subprocess is composing a branch-
+    /// seed sentence for a freshly-spawned cross-provider draft. The composer
+    /// uses this to show a "Summarizing previous chat…" placeholder while the
+    /// LLM is thinking; the seed populates `prompt` when it lands.
+    @State private var branchSeedLoading: Bool = false
     @State private var showSmoke = false
     @State private var codexSmokeModel = CodexSmokeViewModel()
     @State private var showSettings = false
@@ -376,6 +381,62 @@ struct AppShell: View {
             Task { await controller.hydrateFromDisk(id: session.id) }
         } else {
             Task { await controller.loadSession(id: session.id) }
+        }
+    }
+
+    /// Resolve a SoulSession to a live ThreadController (if currently open
+    /// in-process) and trigger the branch flow. For v0.1 only the
+    /// already-open case is supported — branching from an unopen session
+    /// would need a kernel-ledger hydrate first, which we defer to a
+    /// follow-up. Provides quiet no-op when target == source's provider.
+    private func handleBranch(session: SoulSession, target: Provider) {
+        guard let source = threads.values.first(where: { $0.sessionId == session.id }) else {
+            // Source isn't open. Open it first; user re-clicks to branch.
+            // Surfacing a sheet here would over-engineer v0.1 — the user
+            // typically branches a session they're already chatting in.
+            loadSession(session)
+            return
+        }
+        guard target != source.provider else { return }
+        branchFrom(source, to: target)
+    }
+
+    /// Cross-provider branch: spawn a fresh draft session in `target` and
+    /// kick off a background LLM that summarizes `source`'s conversation
+    /// into a 1-3 sentence opener. When the opener lands it pre-fills the
+    /// composer, ready for the user to edit + send. Original `source`
+    /// session is left intact (true branch semantics — two rows in the
+    /// sidebar, both continuable).
+    ///
+    /// Why an LLM seed instead of a deterministic concat: empirically the
+    /// user's own one-line bridge prompt is what makes cross-provider
+    /// handoff work. A model produces that bridge from intent + current
+    /// state better than any static template; the user just edits/sends.
+    private func branchFrom(_ source: ThreadController, to target: Provider) {
+        let items = source.items
+        let sourceProvider = source.provider
+        // Switch harness so the next-spawned agent uses the target provider,
+        // then mint a fresh draft. Same path as the regular "New chat"
+        // button — branch is conceptually a new chat with a head-start
+        // opener pre-filled into the composer.
+        harness = target
+        newChat(targetProjectID: source.project.id)
+        branchSeedLoading = true
+        prompt = ""
+        Task {
+            let seed = await ComposeBranchSeed.run(
+                items: items,
+                sourceProvider: sourceProvider,
+                targetProvider: target
+            )
+            await MainActor.run {
+                branchSeedLoading = false
+                guard !seed.isEmpty else { return }
+                // Only pre-fill if the user hasn't started typing in the
+                // gap between click and LLM-return. Don't stomp their
+                // partial input.
+                if prompt.isEmpty { prompt = seed }
+            }
         }
     }
 
@@ -762,7 +823,8 @@ struct AppShell: View {
                                 controller: ctrl,
                                 prompt: bindingForDraft(ctrl.id),
                                 onCancel: { if isActive { cancelTurn() } },
-                                onPickHarness: onPickHarness
+                                onPickHarness: onPickHarness,
+                                branchSeedLoading: isActive && branchSeedLoading
                             )
                             .opacity(isActive ? 1 : 0)
                             .allowsHitTesting(isActive)
@@ -784,7 +846,8 @@ struct AppShell: View {
                                 onRunLocal: runLocal,
                                 pendingPermissionMode: $pendingPermissionMode,
                                 provider: harness,
-                                onPickHarness: onPickHarness
+                                onPickHarness: onPickHarness,
+                                branchSeedLoading: branchSeedLoading
                             )
                             .zIndex(100)
                         }
@@ -901,7 +964,18 @@ struct AppShell: View {
     private func rightPaneTabButton(_ tab: RightTab) -> some View {
         let isActive = effectiveActiveRightTab == tab
         HStack(spacing: 6) {
-            Button(action: { activeRightTab = tab }) {
+            Button(action: {
+                // First click on an inactive tab activates it; clicking the
+                // already-active File tab reveals the file in Finder. Matches
+                // the Finder convention where re-selecting a selected item
+                // opens / reveals it. Right-click also exposes the action via
+                // contextMenu below for discoverability.
+                if isActive, tab == .file, let path = filePreviewPath {
+                    revealInFinder(path)
+                } else {
+                    activeRightTab = tab
+                }
+            }) {
                 HStack(spacing: 5) {
                     Image(systemName: tab == .review ? "checklist" : "doc.text")
                         .font(.system(size: 10))
@@ -913,6 +987,20 @@ struct AppShell: View {
                 .foregroundStyle(isActive ? SoulColor.fg : SoulColor.fgMuted)
             }
             .buttonStyle(.soulHover)
+            .help(isActive && tab == .file ? "Click again to reveal in Finder" : "")
+            .contextMenu {
+                if tab == .file, let path = filePreviewPath {
+                    Button("Reveal in Finder") { revealInFinder(path) }
+                    Button("Open with Default App") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
+                    }
+                    Divider()
+                    Button("Copy Path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString((path as NSString).expandingTildeInPath, forType: .string)
+                    }
+                }
+            }
 
             Button(action: { closeRightTab(tab) }) {
                 Image(systemName: "xmark")
@@ -937,6 +1025,14 @@ struct AppShell: View {
                     lineWidth: 0.5
                 )
         )
+    }
+
+    /// Open a Finder window with `path` selected. Used by the file-tab
+    /// re-click and its context menu so the user can jump from the in-app
+    /// preview to the file's actual location on disk.
+    private func revealInFinder(_ path: String) {
+        let expanded = (path as NSString).expandingTildeInPath
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
     }
 
     private func rightPaneTabLabel(_ tab: RightTab) -> String {
@@ -964,6 +1060,7 @@ struct AppShell: View {
                 onSelectSession: loadSession,
                 onReplaySession: startReplay,
                 onNewChat: { target in newChat(targetProjectID: target) },
+                onBranch: { session, target in handleBranch(session: session, target: target) },
                 onOpenSettings: { showSettings = true },
                 onToggleSidebar: toggleSidebar,
                 activeReplaySessionId: replay?.sessionId,

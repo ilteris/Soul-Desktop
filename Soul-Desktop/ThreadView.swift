@@ -8,6 +8,7 @@ struct ThreadView: View {
     var onCancel: () -> Void = {}
     var onPickHarness: (Provider) -> Void = { _ in }
     var onNewChat: () -> Void = {}
+    var branchSeedLoading: Bool = false
 
     @State private var renaming = false
     @State private var renameDraft = ""
@@ -219,7 +220,8 @@ struct ThreadView: View {
                     provider: controller.provider,
                     onPickHarness: onPickHarness,
                     isImageDropTargeted: $isImageDropTargeted,
-                    droppedAttachments: $droppedAttachments
+                    droppedAttachments: $droppedAttachments,
+                    branchSeedLoading: branchSeedLoading
                 )
                 .frame(maxWidth: 760)
             }

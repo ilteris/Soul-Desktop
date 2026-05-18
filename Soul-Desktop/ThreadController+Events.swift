@@ -73,6 +73,13 @@ extension ThreadController {
         // truncate mid-word.
         let strip = CharacterSet(charactersIn: "\"'`.")
         title = title.trimmingCharacters(in: strip)
+        // LLMs sometimes hallucinate `<command-name>` / `<local-command-*>`
+        // wrappers around the title text because they see these tags in the
+        // prompt context and reflect them back. Strip before persisting so a
+        // bad title can't get cached into the Title hook and re-loaded as
+        // customTitle on every subsequent session open.
+        title = SoulRegistry.stripCommandTags(title).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
         if title.count > 60 { title = String(title.prefix(60)) }
         await MainActor.run { self.customTitle = title }
         // Persist so the disk-driven sidebar surfaces it on the next scan,

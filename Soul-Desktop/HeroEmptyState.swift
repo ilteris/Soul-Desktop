@@ -15,6 +15,7 @@ struct HeroEmptyState: View {
     @Binding var pendingPermissionMode: PermissionMode
     var provider: Provider = .geminiCLI
     var onPickHarness: (Provider) -> Void = { _ in }
+    var branchSeedLoading: Bool = false
     @State private var builtInCommands: [SlashCommand] = []
     @State private var droppedAttachments: [String] = []
     @State private var isImageDropTargeted: Bool = false
@@ -45,7 +46,8 @@ struct HeroEmptyState: View {
                 provider: provider,
                 onPickHarness: onPickHarness,
                 isImageDropTargeted: $isImageDropTargeted,
-                droppedAttachments: $droppedAttachments
+                droppedAttachments: $droppedAttachments,
+                branchSeedLoading: branchSeedLoading
             )
             .frame(maxWidth: 720)
 

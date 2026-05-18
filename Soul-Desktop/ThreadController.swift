@@ -305,7 +305,13 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             // hook text) and AppShell's session.intent seed (which is already
             // stripped). Run through the strip again so the raw-Title-hook
             // path doesn't leak `<command-message>…` into the toolbar.
-            return SoulRegistry.stripCommandTags(t)
+            // SOUL-SOUL_DESKTOP-163: stripCommandTags now returns "" when all
+            // content was noise tags (used to return the raw input — bad
+            // titles like `<local-command-caveat>…` leaked through). Fall
+            // through to the per-message fallbacks below instead of
+            // returning empty.
+            let stripped = SoulRegistry.stripCommandTags(t)
+            if !stripped.isEmpty { return stripped }
         }
 
         // Strip Claude slash-command stub tags from the captured user prompt

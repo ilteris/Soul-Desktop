@@ -603,7 +603,15 @@ extension SoulRegistry {
         }
         let cleaned = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleaned.isEmpty { return cleaned }
-        return fallbackCmd ?? raw
+        if let cmd = fallbackCmd { return cmd }
+        // Used to `return raw` here — that defeated the entire strip pass for
+        // sessions whose user prompt was nothing but `<local-command-caveat>
+        // …</local-command-caveat>` (and no <command-name> inside). Title
+        // display would then show the literal tag in the toolbar + sidebar.
+        // Returning empty lets the caller substitute their own fallback
+        // ("untitled" in the sidebar, "New chat" in the toolbar) instead of
+        // leaking the raw envelope.
+        return ""
     }
 
     private struct NoiseTagOpen {

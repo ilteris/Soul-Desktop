@@ -60,6 +60,11 @@ struct ComposerView: View {
     /// at submit time. Owned by the parent so multiple drop surfaces share
     /// one attachment list.
     @Binding var droppedAttachments: [String]
+    /// True while AppShell's branch-seed background LLM is composing the
+    /// pre-fill text for a freshly-spawned cross-provider draft. Drives
+    /// the "Summarizing previous chat…" placeholder until the seed lands
+    /// in `prompt`.
+    var branchSeedLoading: Bool = false
     /// Last submitted prompt, persisted across launches. Up-arrow recalls it
     /// when the field is empty (shell-history convention; single-entry).
     @AppStorage("soul.composer.lastSent") private var lastSent: String = ""
@@ -243,7 +248,9 @@ struct ComposerView: View {
                     }
                     ComposerTextField(
                         text: $prompt,
-                        placeholder: activeCommand?.inputHint ?? "Ask Soul anything. @ to use plugins or mention files",
+                        placeholder: branchSeedLoading
+                            ? "Summarizing previous chat…"
+                            : (activeCommand?.inputHint ?? "Ask Soul anything. @ to use plugins or mention files"),
                         onSubmit: submit,
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }

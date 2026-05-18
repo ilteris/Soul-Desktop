@@ -5,6 +5,10 @@ struct SidebarView: View {
     var onSelectSession: (SoulSession) -> Void = { _ in }
     var onReplaySession: (SoulSession) -> Void = { _ in }
     var onNewChat: (_ targetProjectID: String?) -> Void = { _ in }
+    /// Cross-provider branch: AppShell looks up the active ThreadController
+    /// for the session (or hydrates from kernel ledger), then composes a
+    /// branch-seed via background LLM and pre-fills the composer.
+    var onBranch: (SoulSession, Provider) -> Void = { _, _ in }
     var onOpenSettings: () -> Void = {}
     var onToggleSidebar: () -> Void = {}
     var activeReplaySessionId: String? = nil
@@ -476,6 +480,11 @@ struct SidebarView: View {
         .contextMenu {
             Button("Open chat") { onSelectSession(session) }
             Button("Replay…") { onReplaySession(session) }
+            Menu("Branch to") {
+                ForEach(Provider.allCases, id: \.self) { p in
+                    Button(p.label) { onBranch(session, p) }
+                }
+            }
             Divider()
             if archiveStore.isArchived(session.id, project: session.project) {
                 Button("Unarchive") {
