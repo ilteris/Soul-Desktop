@@ -498,7 +498,12 @@ enum SoulRegistry {
                   let type = obj["type"] as? String,
                   type == "user"
             else { continue }
-            return (sid, obj["text"] as? String)
+            // Parity with readClaudeFirstUserPrompt — gemini-cli doesn't
+            // currently emit `<command-*>` / `<local-command-*>` blocks
+            // but stripCommandTags is a no-op when none are present, so
+            // applying it costs nothing and closes the parity gap.
+            let raw = obj["text"] as? String
+            return (sid, raw.map { stripCommandTags($0) })
         }
         return (sid, nil)
     }
