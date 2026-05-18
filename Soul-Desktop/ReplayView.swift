@@ -208,8 +208,6 @@ private struct ChapterHeader: View {
                     .font(SoulFont.code(10))
                     .foregroundStyle(SoulColor.fgSubtle)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
             .background(SoulColor.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }

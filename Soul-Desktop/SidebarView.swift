@@ -383,8 +383,6 @@ struct SidebarView: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                 Spacer()
             }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.soulHover)
@@ -404,8 +402,6 @@ struct SidebarView: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                 Spacer()
             }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.soulHover)
@@ -434,8 +430,6 @@ struct SidebarView: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                 Spacer()
             }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.soulHover)

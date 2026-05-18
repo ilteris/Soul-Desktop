@@ -83,7 +83,6 @@ struct ToolCallRow: View {
                     Image(systemName: diffExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10))
                         .foregroundStyle(SoulColor.fgSubtle)
-                        .padding(6)
                 }
                 .buttonStyle(.soulHover)
             }
@@ -309,7 +308,6 @@ struct ToolCallCarouselRow: View {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 10))
                             .foregroundStyle(SoulColor.fgSubtle)
-                            .padding(6)
                     }
                     .buttonStyle(.soulHover)
                     .help("Copy all \(kind) arguments")
@@ -442,7 +440,6 @@ struct ToolCallGroupRow: View {
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 10))
                     .foregroundStyle(SoulColor.fgSubtle)
-                    .padding(6)
             }
             .buttonStyle(.soulHover)
         }

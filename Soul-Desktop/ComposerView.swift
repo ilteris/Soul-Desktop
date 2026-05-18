@@ -44,6 +44,10 @@ struct ComposerView: View {
     @State private var showingCommandPalette = false
     @State private var activeCommand: SlashCommand? = nil
     @State private var branchName: String? = nil
+    /// True while the NSOpenPanel triggered by + is on-screen. Drives the
+    /// button's active-state tint so the affordance reads as engaged
+    /// while the modal is up.
+    @State private var filePickerOpen: Bool = false
     /// True while a drag with at least one image URL is hovering the
     /// composer. Drives the dashed accent overlay so the user knows the
     /// drop will be accepted before they release. Owned by the parent so
@@ -161,17 +165,28 @@ struct ComposerView: View {
     /// URL as an NSItemProvider and feeds the same pipeline drag drops
     /// go through. Images get copied into `<project>/.soul/attachments/`;
     /// non-image files reference in place — identical semantics to drag.
+    ///
+    /// SOUL-SOUL_DESKTOP-158: switched to async `panel.begin` so we can
+    /// flip `filePickerOpen` on entry and off on close — the button paints
+    /// its active state while the modal is up. `runModal()` would block
+    /// the main thread and SwiftUI couldn't repaint.
     private func openFilePicker() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.message = "Choose files to attach"
-        guard panel.runModal() == .OK else { return }
-        let providers = panel.urls.map { url in
-            NSItemProvider(object: url as NSURL)
+        filePickerOpen = true
+        panel.begin { response in
+            DispatchQueue.main.async {
+                filePickerOpen = false
+                guard response == .OK else { return }
+                let providers = panel.urls.map { url in
+                    NSItemProvider(object: url as NSURL)
+                }
+                _ = handleProviderDrop(providers)
+            }
         }
-        _ = handleProviderDrop(providers)
     }
 
     var body: some View {
@@ -193,8 +208,6 @@ struct ComposerView: View {
                                 .font(SoulFont.ui(10, weight: .semibold))
                         }
                         .foregroundStyle(SoulColor.fg)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
                         .background(SoulColor.fg.opacity(0.08), in: Capsule())
                     }
                     .buttonStyle(.soulHover)
@@ -292,6 +305,7 @@ struct ComposerView: View {
                     HoverableToolbarButton(
                         icon: "plus",
                         help: "Attach a file — routes through the same drop pipeline as drag-and-drop",
+                        isActive: filePickerOpen,
                         action: openFilePicker
                     )
                     HarnessPicker(selection: provider, onSelect: onPickHarness)

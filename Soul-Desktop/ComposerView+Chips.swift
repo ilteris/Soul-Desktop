@@ -14,17 +14,21 @@ import AppKit
 
 /// Hoverable wrapper that pairs a ToolbarChip with the help tooltip.
 /// Hover/active treatment + hit-area expansion are inherited from the
-/// global SoulHoverButtonStyle applied at the app root — this wrapper
-/// no longer paints its own background or tracks hover state.
+/// global SoulHoverButtonStyle applied at the app root.
+/// When `isActive` is true, paints the accent hover bg permanently —
+/// used while an external modal (file picker, dropdown menu) tied to
+/// this button is open.
 struct HoverableToolbarButton: View {
     let icon: String
     let help: String
+    var isActive: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             ToolbarChip(icon: icon, label: nil)
         }
+        .buttonStyle(SoulHoverButtonStyle(isActive: isActive))
         .help(help)
     }
 }
@@ -203,8 +207,6 @@ struct SlashCommandPalette: View {
                                 .truncationMode(.tail)
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
@@ -232,8 +234,6 @@ struct RunLocalChip: View {
                     .font(SoulFont.ui(12))
                     .foregroundStyle(SoulColor.fg)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
             .background(
                 (isRunning ? Color.red.opacity(0.12) : SoulColor.accentMuted),
                 in: Capsule()

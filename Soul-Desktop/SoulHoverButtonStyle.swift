@@ -29,6 +29,12 @@ struct SoulHoverButtonStyle: ButtonStyle {
     /// (capsule chips, circle send-buttons, pill toggles) — painting an
     /// additional bg underneath produces visible double-bg artifacts.
     var paintHoverBackground: Bool = true
+    /// When true, paint the hover bg permanently — used for buttons whose
+    /// associated UI is currently active (e.g. + while file picker open,
+    /// dropdown chevron while menu visible). Driven by per-call-site
+    /// @State; ButtonStyle's own isPressed only fires while the mouse is
+    /// held down, which doesn't cover external-modal-open scenarios.
+    var isActive: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
         SoulHoverButtonContent(
@@ -36,7 +42,8 @@ struct SoulHoverButtonStyle: ButtonStyle {
             cornerRadius: cornerRadius,
             minSize: minSize,
             padding: padding,
-            paintHoverBackground: paintHoverBackground
+            paintHoverBackground: paintHoverBackground,
+            isActive: isActive
         )
     }
 }
@@ -62,6 +69,7 @@ private struct SoulHoverButtonContent: View {
     let minSize: CGFloat
     let padding: CGFloat
     let paintHoverBackground: Bool
+    let isActive: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -76,12 +84,13 @@ private struct SoulHoverButtonContent: View {
             .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
             .animation(.easeInOut(duration: 0.12), value: hovering)
             .animation(.easeInOut(duration: 0.08), value: configuration.isPressed)
+            .animation(.easeInOut(duration: 0.12), value: isActive)
             .onHover { hovering = $0 }
     }
 
     private func background() -> Color {
         if configuration.isPressed { return SoulColor.accent.opacity(0.25) }
-        if hovering { return SoulColor.accentMuted }
+        if isActive || hovering { return SoulColor.accentMuted }
         return .clear
     }
 }

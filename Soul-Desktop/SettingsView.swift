@@ -76,8 +76,6 @@ struct SettingsView: View {
                         .font(SoulFont.ui(12))
                 }
                 .foregroundStyle(SoulColor.fgMuted)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.soulHover)
@@ -95,8 +93,6 @@ struct SettingsView: View {
                                 .foregroundStyle(SoulColor.fg)
                             Spacer()
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
                         .background(
                             selected == pane
                                 ? AnyShapeStyle(SoulColor.surface)
@@ -783,8 +779,6 @@ private struct SegmentedRow: View {
                         Text(label)
                             .font(SoulFont.ui(11, weight: .regular))
                             .foregroundStyle(selection == key ? SoulColor.fg : SoulColor.fgMuted)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
                             .background(
                                 selection == key
                                     ? AnyShapeStyle(SoulColor.surface)

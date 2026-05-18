@@ -56,7 +56,6 @@ struct AgentThoughtRow: View {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10))
                         .foregroundStyle(SoulColor.fgSubtle)
-                        .padding(4)
                 }
                 .buttonStyle(.soulHover)
             }

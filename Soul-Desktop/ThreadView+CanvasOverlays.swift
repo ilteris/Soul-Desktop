@@ -185,8 +185,6 @@ struct WorkingIndicator: View {
                                 }
                                 .font(SoulFont.ui(10, weight: .bold))
                                 .foregroundStyle(Color.orange)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
                                 .background(Color.orange.opacity(0.12), in: Capsule())
                             }
                             .buttonStyle(.soulHover)

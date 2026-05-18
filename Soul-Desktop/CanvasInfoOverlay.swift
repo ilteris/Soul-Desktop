@@ -320,8 +320,6 @@ private struct ActionButton: View {
                 Text(label)
                     .font(SoulFont.ui(12))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(active ? (hovering ? SoulColor.accent.opacity(0.2) : SoulColor.accent.opacity(0.1)) : Color.clear)
@@ -366,8 +364,6 @@ private struct ArtifactRow: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                     .opacity(hovering ? 1 : 0)
             }
-            .padding(.vertical, 3)
-            .padding(.horizontal, 6)
             .background(
                 RoundedRectangle(cornerRadius: 5)
                     .fill(hovering ? SoulColor.accent.opacity(0.12) : Color.clear)

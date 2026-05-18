@@ -32,8 +32,6 @@ struct SoulTraceChip: View {
                         .foregroundStyle(SoulColor.fgSubtle)
                 }
                 .foregroundStyle(SoulColor.fgMuted)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
                 .background(SoulColor.surface.opacity(0.6), in: Capsule())
                 .overlay(
                     Capsule().strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5)
