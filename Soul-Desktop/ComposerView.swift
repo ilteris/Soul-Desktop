@@ -156,6 +156,24 @@ struct ComposerView: View {
         return true
     }
 
+    /// SOUL-SOUL_DESKTOP-154: + toolbar button companion to drag-and-drop.
+    /// Opens an NSOpenPanel allowing multi-select, then wraps each chosen
+    /// URL as an NSItemProvider and feeds the same pipeline drag drops
+    /// go through. Images get copied into `<project>/.soul/attachments/`;
+    /// non-image files reference in place — identical semantics to drag.
+    private func openFilePicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose files to attach"
+        guard panel.runModal() == .OK else { return }
+        let providers = panel.urls.map { url in
+            NSItemProvider(object: url as NSURL)
+        }
+        _ = handleProviderDrop(providers)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if queuedCount > 0 {
@@ -271,7 +289,11 @@ struct ComposerView: View {
                 .padding(.horizontal, 14)
 
                 HStack(spacing: 10) {
-                    ToolbarChip(icon: "plus", label: nil)
+                    Button(action: openFilePicker) {
+                        ToolbarChip(icon: "plus", label: nil)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Attach a file — routes through the same drop pipeline as drag-and-drop")
                     HarnessPicker(selection: provider, onSelect: onPickHarness)
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
