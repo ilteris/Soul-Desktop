@@ -288,7 +288,7 @@ struct ToolCallCarouselRow: View {
                             .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
                     )
                 }
-                .buttonStyle(.soulHover)
+                .buttonStyle(.soulChip)
                 .onHover { paused = $0 }
 
                 Circle()
@@ -433,7 +433,7 @@ struct ToolCallGroupRow: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                     .padding(6)
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .help("Copy combined diff")
 
             Button {
@@ -602,7 +602,7 @@ private struct FileChipRow<Trailing: View>: View {
                         .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
                 )
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
 
             Circle()
                 .fill(statusColor)
@@ -671,7 +671,7 @@ private struct DefaultToolRow<Trailing: View>: View {
                             .background(SoulColor.bgElevated, in: Circle())
                             .overlay(Circle().strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5))
                     }
-                    .buttonStyle(.soulHover)
+                    .buttonStyle(.soulChip)
                     .padding(.leading, 2)
                 }
             }

@@ -34,7 +34,7 @@ struct PlaybackBar: View {
                 .frame(width: 22, height: 22)
                 .background(SoulColor.accentMuted, in: Circle())
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .keyboardShortcut(.space, modifiers: [])
             .disabled(controller.finished)
 
@@ -46,7 +46,7 @@ struct PlaybackBar: View {
                     .frame(width: 22, height: 22)
                     .background(SoulColor.surface, in: Circle())
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .keyboardShortcut(.rightArrow, modifiers: [.command])
             .help("Jump to end (⌘→)")
             .disabled(controller.finished)
@@ -91,7 +91,7 @@ struct PlaybackBar: View {
                     .padding(.vertical, 4)
                     .background(SoulColor.surface, in: Capsule())
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .keyboardShortcut(.escape, modifiers: [])
         }
         .padding(.horizontal, 16)
@@ -121,7 +121,7 @@ struct PlaybackBar: View {
             .padding(.vertical, 3)
             .background(SoulColor.surface, in: Capsule())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
         .disabled(controller.workingSet.isEmpty)
         .opacity(controller.workingSet.isEmpty ? 0.5 : 1)
         .help("Files touched in this session")

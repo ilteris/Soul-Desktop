@@ -268,7 +268,7 @@ private struct AgentLogChip: View {
             .padding(.vertical, 3)
             .background(SoulColor.surface, in: Capsule())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
         .help("Agent log (\(controller.agentLogCount) lines)")
         .popover(isPresented: $showing, arrowEdge: .top) {
             AgentLogPanel(lines: controller.agentLog + controller.traceLog)

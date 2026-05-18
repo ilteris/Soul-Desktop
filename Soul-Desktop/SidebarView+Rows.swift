@@ -103,7 +103,7 @@ if isActiveReplay {
                     .padding(.vertical, 3)
                     .background(SoulColor.accentMuted, in: Capsule())
                 }
-                .buttonStyle(.soulHover)
+                .buttonStyle(.soulChip)
                 .fixedSize()
                 .help("Replay this session")
             }
@@ -266,7 +266,7 @@ struct ProjectSidebarRow: View {
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .onHover { buttonHover = $0 }
             .opacity(hovering ? 1 : 0)
             .allowsHitTesting(hovering)

@@ -23,19 +23,37 @@ struct SoulHoverButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 6
     var minSize: CGFloat = 24
     var padding: CGFloat = 4
+    /// When false, the style still removes macOS chrome and applies the
+    /// press-scale feedback, but does NOT paint a hover background. Use
+    /// for buttons whose labels already render their own background
+    /// (capsule chips, circle send-buttons, pill toggles) — painting an
+    /// additional bg underneath produces visible double-bg artifacts.
+    var paintHoverBackground: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         SoulHoverButtonContent(
             configuration: configuration,
             cornerRadius: cornerRadius,
             minSize: minSize,
-            padding: padding
+            padding: padding,
+            paintHoverBackground: paintHoverBackground
         )
     }
 }
 
 extension ButtonStyle where Self == SoulHoverButtonStyle {
+    /// Default treatment: hit-area expansion + accent-muted hover bg +
+    /// press-scale feedback. Use for icon-only / text-only buttons that
+    /// don't have their own background.
     static var soulHover: SoulHoverButtonStyle { SoulHoverButtonStyle() }
+
+    /// Chip-shaped buttons (capsule, circle, etc.) that paint their own
+    /// background. Keeps the hit-area expansion + press feedback but
+    /// suppresses the hover bg layer so the label's own bg is the only
+    /// thing rendered.
+    static var soulChip: SoulHoverButtonStyle {
+        SoulHoverButtonStyle(minSize: 0, padding: 0, paintHoverBackground: false)
+    }
 }
 
 private struct SoulHoverButtonContent: View {
@@ -43,6 +61,7 @@ private struct SoulHoverButtonContent: View {
     let cornerRadius: CGFloat
     let minSize: CGFloat
     let padding: CGFloat
+    let paintHoverBackground: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -51,7 +70,7 @@ private struct SoulHoverButtonContent: View {
             .frame(minWidth: minSize, minHeight: minSize)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
             .background(
-                background(),
+                paintHoverBackground ? background() : .clear,
                 in: RoundedRectangle(cornerRadius: cornerRadius)
             )
             .scaleEffect(configuration.isPressed ? 0.94 : 1.0)

@@ -308,7 +308,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.accent, in: Circle())
                         }
-                        .buttonStyle(.soulHover)
+                        .buttonStyle(.soulChip)
                         .help("Stop the current turn")
 
                         Button(action: submit) {
@@ -316,7 +316,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
-                        .buttonStyle(.soulHover)
+                        .buttonStyle(.soulChip)
                         .keyboardShortcut(.return, modifiers: [])
                         .help("Queue this message — will send when the current turn finishes")
                     } else {
@@ -325,7 +325,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
-                        .buttonStyle(.soulHover)
+                        .buttonStyle(.soulChip)
                         .keyboardShortcut(.return, modifiers: [])
                     }
                 }

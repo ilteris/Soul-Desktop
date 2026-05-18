@@ -703,7 +703,7 @@ private struct WorkModeCard: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
     }
 }
 
