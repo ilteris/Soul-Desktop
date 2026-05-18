@@ -536,7 +536,11 @@ enum SoulRegistry {
                   let content = message["content"] as? String,
                   !content.isEmpty
             else { continue }
-            return content
+            // Strip Claude's `<command-*>` / `<local-command-*>` noise tags
+            // before returning so sidebar titles + cache entries don't leak
+            // the raw `<local-command-caveat>` blocks that terminal Claude
+            // wraps into the first message body. SOUL-SOUL_DESKTOP-150.
+            return stripCommandTags(content)
         }
         return nil
     }

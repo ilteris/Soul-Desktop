@@ -435,7 +435,9 @@ struct AppShell: View {
                 .foregroundStyle(SoulColor.fgMuted)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 2) {
-                let title = (session.intent ?? session.summary ?? "")
+                let rawTitle = (session.intent ?? session.summary ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = SoulRegistry.stripCommandTags(rawTitle)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !title.isEmpty {
                     Text(title)
