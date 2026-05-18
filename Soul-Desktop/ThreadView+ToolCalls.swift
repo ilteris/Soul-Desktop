@@ -6,8 +6,7 @@ import Combine
 /// subagent) and renders the appropriate body (inline diff, file chip,
 /// status capsule). The carousel and group rows handle consecutive
 /// same-kind tool calls. DefaultToolRow is the generic catch-all.
-/// MissingFilePlaceholder and DiffView are helpers used by the Edit/Write
-/// paths.
+/// DiffView is the helper used by the Edit/Write paths.
 ///
 /// Pure file shuffle, no behavior change. ThreadView refactor 1/N —
 /// agent ergonomics: shrink ThreadView.swift below the threshold where
@@ -30,18 +29,6 @@ struct ToolCallRow: View {
         return nil
     }
 
-    private var resolvedPath: String? {
-        guard let path = filePath else { return nil }
-        if path.hasPrefix("/" ) { return path }
-        guard let projectPath = projectPath else { return path }
-        return (projectPath as NSString).appendingPathComponent(path)
-    }
-
-    private var fileExists: Bool {
-        guard let path = resolvedPath else { return true }
-        return FileManager.default.fileExists(atPath: path)
-    }
-
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: tool-call scroll-perf telemetry.
         let _ = SoulSignposts.event("ToolCallRow.body")
@@ -61,13 +48,14 @@ struct ToolCallRow: View {
                     trailing: { chevron }
                 )
             }
+            // SOUL-SOUL_DESKTOP-168: diff content is embedded in `details`
+            // (old/new strings); it never reads the live file off disk. The
+            // prior `fileExists` gate hid valid historical diffs whenever
+            // path resolution missed — renamed files, edits outside
+            // `projectPath`, symlinks, sandbox quirks. The diff is the
+            // record of what the agent *did*; render it unconditionally.
             if diffExpanded, let details {
-                if !fileExists && filePath != nil {
-                    MissingFilePlaceholder(path: filePath!)
-                        .padding(.leading, 12)
-                } else {
-                    DiffView(details: details)
-                }
+                DiffView(details: details)
             }
         }
     }
@@ -158,33 +146,6 @@ struct ToolCallRow: View {
 
     private func looksLikePath(_ s: String) -> Bool {
         s.contains("/") || s.contains(".")
-    }
-}
-
-private struct MissingFilePlaceholder: View {
-    let path: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "questionmark.folder")
-                .font(.system(size: 11))
-                .foregroundStyle(SoulColor.fgSubtle)
-            Text("File no longer on disk")
-                .font(SoulFont.ui(11))
-                .foregroundStyle(SoulColor.fgMuted)
-            Text((path as NSString).lastPathComponent)
-                .font(SoulFont.code(11))
-                .foregroundStyle(SoulColor.fgSubtle)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5)
-        )
     }
 }
 
