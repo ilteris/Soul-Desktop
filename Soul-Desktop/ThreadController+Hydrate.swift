@@ -205,6 +205,63 @@ extension ThreadController {
         }
     }
 
+    /// SOUL-SOUL_DESKTOP-153: detect-and-undo gemini-cli's destructive-stub
+    /// behavior on cold-spawn session/load. When `client.loadSession(sid)`
+    /// is issued against a freshly-spawned gemini-cli process, the server's
+    /// `ChatRecordingService.initialize()` else branch (verified at
+    /// chatRecordingService.ts:368-436) writes a new header-only file with
+    /// a fresh timestamp + the requested sid AND drops the original. The
+    /// subsequent session/prompt rpcErrors with `Invalid session identifier`
+    /// because that stub has `hasUserOrAssistantMessage: false` and is
+    /// filtered out of `listSessions()` (sessionUtils.ts:283).
+    ///
+    /// Recovery: if the backup we took before the failed loadSession is
+    /// strictly larger than any live chat file matching this sid, restore
+    /// the backup over the stub. The next session/load retry sees the
+    /// real history.
+    ///
+    /// Returns true if a restore happened.
+    static func restoreBackupOverStubIfPresent(
+        backupPath: String,
+        sessionId sid: String,
+        cwd: String
+    ) -> Bool {
+        let basename = (cwd as NSString).lastPathComponent
+        let chatsDir = ("~/.gemini/tmp/\(basename)/chats" as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: chatsDir) else { return false }
+        let needle = String(sid.prefix(8))
+        let liveCandidates = entries.filter {
+            ($0.hasSuffix("-\(needle).json") || $0.hasSuffix("-\(needle).jsonl")) &&
+            !$0.contains(".bak-") && !$0.contains(".corrupt-")
+        }
+        guard let backupSize = (try? fm.attributesOfItem(atPath: backupPath)[.size] as? Int),
+              backupSize > 0
+        else { return false }
+
+        var restored = false
+        for entry in liveCandidates {
+            let livePath = "\(chatsDir)/\(entry)"
+            guard let liveSize = (try? fm.attributesOfItem(atPath: livePath)[.size] as? Int)
+            else { continue }
+            // Heuristic: a stub is dramatically smaller than the backup
+            // (just a single header line, typically <500 bytes vs multi-KB
+            // for a real conversation). Use strict less-than so we never
+            // overwrite a real file that's somehow grown larger than what
+            // we snapshotted.
+            if liveSize < backupSize {
+                do {
+                    try fm.removeItem(atPath: livePath)
+                    try fm.copyItem(atPath: backupPath, toPath: livePath)
+                    restored = true
+                } catch {
+                    continue
+                }
+            }
+        }
+        return restored
+    }
+
     /// Move a broken gemini-cli chat file out of the way so future click-to-
     /// resume attempts don't keep failing on the same parse error. The
     /// matching file (selected the same way as `backupAgentChatIfPresent`)

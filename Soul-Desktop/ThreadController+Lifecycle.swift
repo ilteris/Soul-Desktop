@@ -79,6 +79,40 @@ extension ThreadController {
                         || lowerMsg.contains("session id")
                         || lowerMsg.contains("resource not found")
                     
+                    // SOUL-SOUL_DESKTOP-153: gemini-cli destructive-stub recovery.
+                    // Source-trace (gemini-cli chatRecordingService.ts:368-436)
+                    // confirms the failure path writes a header-only stub with
+                    // our requested sid. If the backup we took before this call
+                    // is larger than the stub, restore it and retry session/load
+                    // once. Claude + Pi don't have this bug — Claude reads
+                    // append-only transcripts; pi-acp throws cleanly before
+                    // any write (verified pi-acp/dist/index.js:2086-2088).
+                    if isInvalidSession, provider == .geminiCLI, let backupPath {
+                        let didRestore = Self.restoreBackupOverStubIfPresent(
+                            backupPath: backupPath,
+                            sessionId: resumeId,
+                            cwd: project.path
+                        )
+                        if didRestore {
+                            items.append(.status(
+                                id: UUID(),
+                                text: "↻ gemini-cli wrote a stub on cold-spawn; restored your conversation from backup and retrying"
+                            ))
+                            do {
+                                isReplayingLoad = true
+                                try await client.loadSession(sessionId: resumeId, cwd: project.path)
+                                isReplayingLoad = false
+                                nativeSessionId = resumeId
+                                hasInitialized = true
+                                injectSlashCommandPrompts(meta.slashPrompts)
+                                return
+                            } catch {
+                                isReplayingLoad = false
+                                // Retry failed; fall through to existing backfill.
+                            }
+                        }
+                    }
+
                     if isInvalidSession {
                         let result = SoulRegistry.backfillNativeSessionID(
                             projectKey: project.id,
