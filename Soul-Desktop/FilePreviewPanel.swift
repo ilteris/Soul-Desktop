@@ -78,14 +78,14 @@ struct FilePreviewPanel: View {
                         .font(.system(size: 12))
                         .foregroundStyle(SoulColor.fgMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
                 .help("Open externally")
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(SoulColor.fgMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
                 .help("Close preview")
             }
             HStack(spacing: 8) {

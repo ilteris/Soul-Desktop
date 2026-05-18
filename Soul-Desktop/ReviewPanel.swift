@@ -96,7 +96,7 @@ struct ReviewPanel: View {
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(.soulHover)
             Button(action: onClose) {
                 Image(systemName: "sidebar.right")
                     .font(.system(size: 12))
@@ -104,7 +104,7 @@ struct ReviewPanel: View {
                     .frame(width: 22, height: 22)
                     .background(RoundedRectangle(cornerRadius: 5).fill(SoulColor.accentMuted))
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(.soulHover)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -268,7 +268,7 @@ struct ReviewPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .background(
             SoulColor.bg
                 .overlay(alignment: .bottom) {

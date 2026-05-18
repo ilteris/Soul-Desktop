@@ -84,7 +84,7 @@ struct CanvasToolbar: View {
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                     .disabled(replayActive)
                     .help("Smoke-test the active provider (Debug)")
                 }
@@ -129,7 +129,7 @@ private struct ThreadTitleCluster: View {
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .help("Rename chat")
 
             // Suppress the title text while it still reads "New chat" — the
@@ -240,7 +240,7 @@ private struct ToolbarIcon: View {
                 )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
     }
 }
 
@@ -268,7 +268,7 @@ private struct AgentLogChip: View {
             .padding(.vertical, 3)
             .background(SoulColor.surface, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .help("Agent log (\(controller.agentLogCount) lines)")
         .popover(isPresented: $showing, arrowEdge: .top) {
             AgentLogPanel(lines: controller.agentLog + controller.traceLog)

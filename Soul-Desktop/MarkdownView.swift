@@ -418,7 +418,7 @@ private struct CodeBlockView: View {
                     }
                     .foregroundStyle(SoulColor.fgMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

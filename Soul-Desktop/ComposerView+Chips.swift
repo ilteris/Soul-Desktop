@@ -32,7 +32,7 @@ struct HoverableToolbarButton: View {
                 .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .onHover { hovering = $0 }
         .help(help)
     }
@@ -149,13 +149,13 @@ private struct AttachmentChip: View {
                     .foregroundStyle(SoulColor.fg)
                     .lineLimit(1)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(SoulColor.fgMuted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .opacity(hovering ? 1 : 0.5)
             .help("Remove attachment")
         }
@@ -221,7 +221,7 @@ struct SlashCommandPalette: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
             }
         }
         .padding(6)
@@ -253,7 +253,7 @@ struct RunLocalChip: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
     }
 }
 

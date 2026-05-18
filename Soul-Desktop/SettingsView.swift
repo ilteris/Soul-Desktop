@@ -80,7 +80,7 @@ struct SettingsView: View {
                 .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .keyboardShortcut(.cancelAction)
             .padding(.top, 38)
             .padding(.horizontal, 8)
@@ -105,7 +105,7 @@ struct SettingsView: View {
                         )
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                 }
             }
             .padding(.top, 12)
@@ -401,7 +401,7 @@ private struct AppearancePane: View {
                                     )
                                 )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.soulHover)
                         .help(preset.label)
                     }
                     Divider().frame(height: 22)
@@ -703,7 +703,7 @@ private struct WorkModeCard: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
     }
 }
 
@@ -793,7 +793,7 @@ private struct SegmentedRow: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                 }
             }
             .padding(2)

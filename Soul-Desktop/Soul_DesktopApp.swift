@@ -32,6 +32,11 @@ struct Soul_DesktopApp: App {
         WindowGroup {
             AppShell()
                 .frame(minWidth: 1000, minHeight: 700)
+                // SOUL-SOUL_DESKTOP-156: every Button without an explicit
+                // .buttonStyle override picks up the global hover+active
+                // treatment. .plain callers are swept to .soulHover too
+                // so the look is consistent app-wide.
+                .buttonStyle(SoulHoverButtonStyle())
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)

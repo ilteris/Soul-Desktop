@@ -256,7 +256,7 @@ struct ACPSmokeView: View {
                     .font(SoulFont.ui(16, weight: .semibold))
                     .foregroundStyle(SoulColor.fg)
                 Spacer()
-                Button("Close") { dismiss() }.buttonStyle(.plain)
+                Button("Close") { dismiss() }.buttonStyle(.soulHover)
                     .foregroundStyle(SoulColor.fgMuted)
             }
 

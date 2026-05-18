@@ -588,9 +588,9 @@ Standard architectural oversight.
 </manager_brief>
 
 > ## 🎯 ACTIVE TASK — authoritative imperative
-> **ID:** `SOUL-SOUL_DESKTOP-121` | **Status:** pending
-> **Subject:** Move handleACPRequest out of ThreadController+Codex.swift (cosmetic cleanup)
-> **Definition of Done:** ['handleACPRequest declared outside ThreadController+Codex.swift', 'ThreadController+Codex.swift contains only codex-specific methods']
+> **ID:** `SOUL-SOUL_DESKTOP-069` | **Status:** wont_fix
+> **Subject:** Sidebar 'registry drift' badge: detect duplicate gemini tmp dirs claiming the same project root + one-click consolidate
+> **Definition of Done:** ["On sidebar render, for each project with provider=geminiCLI, scan ~/.gemini/tmp/* for directories whose .project_root resolves to the project's path; if >1 match exists, the project row shows a small 'registry drift' badge", "Hovering the badge surfaces a tooltip listing the conflicting tmp dirs + chat counts in each ('soul: 76 chats, soul-1: 5 chats')", "Right-clicking the badge (or clicking it) opens a confirmation sheet: 'Consolidate soul-1 into soul? Will move N chats and update ~/.gemini/projects.json. Backup at <path>.'", 'Consolidate action: backup projects.json, merge chats (skip name collisions and surface them), merge history dir, rewrite projects.json mapping to bare slug, trash the -N dirs via /usr/bin/trash', 'If a chat-filename collision is detected, abort with a clear message naming the conflicting files and leave state unchanged', "Detection cached per sidebar refresh (~30s TTL) so the disk walk isn't repeated on every keystroke", 'Does not auto-consolidate — user always confirms; backup path is shown in the success toast']
 > _All other sections (Last Session, Recent Arc, Next Step) are historical context. If they reference a different task ID, prefer this block._
 
 ## Manager Brief
@@ -598,32 +598,32 @@ Standard architectural oversight.
 Standard architectural oversight.
 
 ## Last Session
-_2026-05-17 09:13_
-**Intent:** Move handleACPRequest out of ThreadController+Codex.swift (cosmetic cleanup)
-**Summary:** Moved handleACPRequest and its compactJSONString helper from ThreadController+Codex.swift to ThreadController+ACP.swift. Verified that handleACPRequest remains accessible to the main ThreadController and that the project builds successfully.
-**Rationale:** handleACPRequest is a provider-agnostic fallback for unhandled ACP requests and belongs in the general ACP extension. Pure cosmetic file shuffle with no behavior change.
+_2026-05-17 10:54_
+**Intent:** Carry the ThreadController refactor across the rest of the project's biggest files, then chase the regressions it introduced
+**Summary:** Pushed the agent-ergonomics refactor across six of the project's biggest Swift files via 17 file-extension commits — ThreadController 3578→789 (-78%), ThreadView 1751→353 (-80%), SidebarView 1384→845, AppShell 1667→1144, SoulRegistry 1331→650, ComposerView 1106→537, totalling ~6500 lines moved out into 14 new extension/helper files (ThreadController+Codex/+ACP/+Hydrate/+Turn/+Lifecycle/+Events, ThreadView+ToolCalls/+MessageRows/+CanvasOverlays, SidebarView+Rows, AppShell+Toolbar, ComposerView+TextField/+Chips, SoulRegistry+Sessions, plus SoulTrace/ACPSession/ApplyTimingProbe). Mid-session live-test surfaced three correlated regressions in fresh Gemini chats — missing title, missing context-window chip, missing sidebar live row — all traced to one root cause: routing sessionId/nativeSessionId/lastActivityAt through a lazy @ObservationIgnored ACPSession indirection broke @Observable propagation because computed forwarders over an untracked reference don't register view dependencies on the underlying tracked state. Reverted that piece (-137), keeping the file-level splits. Also shipped auto-expand-on-new-chat in the sidebar (-138) via an explicit user-action nonce after the first 'skip first observation' heuristic failed for the cold-launch case the user identified. Diagnosed a kernel-side decision-spam loop (PostToolUse firing soul_decision.py + soul_critic_llm.py per Claude tool call), filed -020/-021, and Gemini-CLI shipped the Safe Mkdir Policy fix mid-session.
+**Rationale:** File-level extensions are pure shuffles with @Observable preserved; data-isolation extractions through @ObservationIgnored indirections need a tracked-path design that this session lacked time to engineer correctly
 
 ## Recent Arc
 _Last 10 sessions (past 3 days)_
 
-### 2026-05-17
+### 2026-05-17 (2 sessions)
+- **09:13** [Gemini] Moved handleACPRequest and its compactJSONString helper from ThreadController+Codex.swift to ThreadController+ACP.swift. Verified that handleACPRequest remains accessible to the...
 - **07:00** [Gemini] Sampled live beachball #1 → GitReview.swift run() was deadlocking on Process+Pipe (waitUntilExit before draining stdout); shipped -117 to drain first, killed 4 stuck git-diff zo...
 
-### 2026-05-16 (7 sessions)
+### 2026-05-16 (6 sessions)
 - **22:06** [Gemini] Continued the stability/perf push past the first finalize. Investigated soul-1 reincarnation root cause: traced through gemini-cli source (claimNewSlug + findExistingSlugForPath...
 - **20:49** [Gemini] Implemented gemini-cli drift detection and consolidation in Soul-Desktop. 1. Added geminiDriftDirs to SoulProject struct. 2. Added detectGeminiDrifts() to SoulRegistry to identi...
 - **20:35** [Gemini] Marathon 2026-05-16 stability/perf session. Shipped 8 commits to soul-desktop (HEAD): -083/-084 Gemini .project_root marker resolution; -094/-096 ref-type ScrollAnchor + Equatab...
 - **20:13** [Gemini] Shipped SOUL-FINALIZE-PARITY-001 unifying /finalize across Claude/Gemini/Pi/Codex by routing through the soul finalize CLI, regenerating CLAUDE.md/GEMINI.md/AGENTS.md presence-g...
 - **12:58** [Claude] Shipped two commits today. 66c2509 (-083 + -084): replaced case-sensitive Gemini tmp-dir basename matching in SoulRegistry.agentMatchCached and SessionLoadability.projectPathFor...
 - **08:50** [Claude] Late-night stability push continued, capping at the gemini-cli marker-file discovery. Shipped: -080 Pi edit diff card (added rawInput.edits[].oldText/newText branch + diagnostic...
-- **01:51** [Claude] Stability-focused push. Shipped: ToolCallCarouselRow for consecutive same-kind tool calls; floating-thinking-headers fix in appendAgentThoughtChunk; FinalizeWatcher (SOUL-SOUL_D...
 
 ###  (2 sessions)
 - **** [Pi] Unified tool UI grouping, background notifications, and sidebar performance optimizations.
 - **** [Pi] Optimized UI via semantic tool grouping, background notifications, and toolbar metric refinement.
 
 ## Next Step
-Monitor for further ThreadController extension cleanup opportunities.
+Pick from: AppShell deeper surgery (extract behavior not just subviews), SettingsView (next biggest at 868), or SoulRegistry+NativeSessions second extraction; or pause refactor and resume product work
 
 ## Active Specialists
 `@systems_architect`
@@ -1044,4 +1044,4 @@ Keep the whole block under 240 chars. Skip on trivial conversational turns (gree
 _Schema violations cause "undefined" in dashboards and API responses._
 
 
-<!-- Teddy Hydration Stamp: 2026-05-17 09:13:52 | Project: soul-desktop -->
+<!-- Teddy Hydration Stamp: 2026-05-17 10:54:24 | Project: soul-desktop -->

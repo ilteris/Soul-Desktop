@@ -58,7 +58,7 @@ struct AgentThoughtRow: View {
                         .foregroundStyle(SoulColor.fgSubtle)
                         .padding(4)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
             }
             if expanded {
                 // Inline-markdown rendering via AttributedString: `**bold**`,
@@ -220,7 +220,7 @@ private struct FooterButton: View {
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .help(help)
     }
 }

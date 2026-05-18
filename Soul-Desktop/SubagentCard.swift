@@ -206,7 +206,7 @@ struct SubagentCard: View {
             .font(SoulFont.ui(10, weight: .medium))
             .foregroundStyle(SoulColor.fgSubtle)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .padding(.leading, 16)
         .padding(.top, 4)
     }
@@ -223,7 +223,7 @@ struct SubagentCard: View {
             .font(SoulFont.ui(10, weight: .medium))
             .foregroundStyle(SoulColor.fgSubtle)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .padding(.leading, 16)
         .padding(.top, 4)
     }
@@ -243,7 +243,7 @@ struct SubagentCard: View {
             }
             .foregroundStyle(specialistColor)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .padding(.leading, 16)
         .help("Open finding: \(path)")
     }

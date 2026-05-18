@@ -701,7 +701,7 @@ struct AppShell: View {
                     in: RoundedRectangle(cornerRadius: 6)
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         .help("Toggle sidebar (⌘\\)")
         .padding(.leading, 32)
         .padding(.top, 10)
@@ -879,7 +879,7 @@ struct AppShell: View {
                     .frame(width: 24, height: 22)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .help("Close pane")
         }
         .padding(.horizontal, 10)
@@ -909,7 +909,7 @@ struct AppShell: View {
                 }
                 .foregroundStyle(isActive ? SoulColor.fg : SoulColor.fgMuted)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
 
             Button(action: { closeRightTab(tab) }) {
                 Image(systemName: "xmark")
@@ -918,7 +918,7 @@ struct AppShell: View {
                     .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .help("Close tab")
         }
         .padding(.horizontal, 8)

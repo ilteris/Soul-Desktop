@@ -197,14 +197,14 @@ struct ComposerView: View {
                         .padding(.vertical, 2)
                         .background(SoulColor.fg.opacity(0.08), in: Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                     .help("Cancel the current turn and send the next queued prompt now")
                     Button(action: onClearQueue) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(SoulColor.fgMuted)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                     .help("Clear queued messages")
                 }
                 .padding(.horizontal, 10)
@@ -308,7 +308,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.accent, in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.soulHover)
                         .help("Stop the current turn")
 
                         Button(action: submit) {
@@ -316,7 +316,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.soulHover)
                         .keyboardShortcut(.return, modifiers: [])
                         .help("Queue this message — will send when the current turn finishes")
                     } else {
@@ -325,7 +325,7 @@ struct ComposerView: View {
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.soulHover)
                         .keyboardShortcut(.return, modifiers: [])
                     }
                 }

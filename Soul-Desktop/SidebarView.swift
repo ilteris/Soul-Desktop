@@ -198,7 +198,7 @@ struct SidebarView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
 
                 Spacer()
 
@@ -387,7 +387,7 @@ struct SidebarView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
     }
 
     @ViewBuilder
@@ -408,7 +408,7 @@ struct SidebarView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
     }
 
     @ViewBuilder
@@ -438,7 +438,7 @@ struct SidebarView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.soulHover)
         if expanded {
             ForEach(archived) { session in
                 chatRow(session)
@@ -958,7 +958,7 @@ struct SidebarView: View {
                         Text("Use this").font(SoulFont.ui(12)).foregroundStyle(SoulColor.accent)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.soulHover)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 8)
                 .background(SoulColor.sidebar, in: RoundedRectangle(cornerRadius: 4))

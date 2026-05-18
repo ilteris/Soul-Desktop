@@ -165,7 +165,7 @@ struct TerminalPanel: View {
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.soulHover)
                     .help("New tab")
                 }
                 .padding(.leading, 10)
@@ -179,7 +179,7 @@ struct TerminalPanel: View {
                     .frame(width: 26, height: 22)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .help("Hide terminal")
             .padding(.trailing, 8)
         }
@@ -231,7 +231,7 @@ private struct TabChip: View {
                     .frame(width: 14, height: 14)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soulHover)
             .opacity(hovering || isActive ? 1 : 0)
         }
         .padding(.horizontal, 8)
