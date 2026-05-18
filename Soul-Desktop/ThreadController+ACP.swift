@@ -228,6 +228,46 @@ extension ThreadController {
         }
     }
 
+    /// Walk the tail of `items` looking for a recent toolCall whose
+    /// fingerprint matches the incoming one. Used as a fallback when the
+    /// provider re-emits the same logical call under a new toolCallId so
+    /// the toolId-keyed dedup misses. Returns the index in `items` if a
+    /// match is found within the window, nil otherwise.
+    private func findContentDuplicate(
+        kind: String,
+        title: String,
+        location: String?,
+        details: ToolCallDetails,
+        searchWindow: Int
+    ) -> Int? {
+        let lower = max(0, items.count - searchWindow)
+        let incomingFingerprint = detailsFingerprint(details)
+        for idx in stride(from: items.count - 1, through: lower, by: -1) {
+            guard case .toolCall(_, let k, let t, _, let loc, let d) = items[idx] else { continue }
+            if k != kind { continue }
+            if t != title { continue }
+            if (loc ?? "") != (location ?? "") { continue }
+            guard let existing = d else { continue }
+            if detailsFingerprint(existing) == incomingFingerprint {
+                return idx
+            }
+        }
+        return nil
+    }
+
+    private func detailsFingerprint(_ d: ToolCallDetails) -> String {
+        switch d.kind {
+        case .edit(let oldS, let newS):
+            return "edit|\(oldS.count)|\(newS.count)|\(oldS.hashValue)|\(newS.hashValue)"
+        case .write(let content):
+            return "write|\(content.count)|\(content.hashValue)"
+        case .output(let text):
+            return "output|\(text.count)|\(text.hashValue)"
+        case .subagent:
+            return "subagent"
+        }
+    }
+
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
         let toolId: String = {
             if let tid = payload["toolCallId"]?.stringValue { return tid }
@@ -471,6 +511,39 @@ extension ThreadController {
                 locationHint: location ?? oldLoc,
                 details: structuredDetails ?? oldDetails
             )
+            return
+        }
+
+        // SOUL-SOUL_DESKTOP-170: content-fingerprint fallback dedup. When a
+        // provider re-emits the same logical Edit/Write as a brand-new
+        // `tool_call` notification with a fresh `toolCallId` (Claude Code
+        // v2.1.132+ has been observed doing this on long streaming turns),
+        // the toolId-keyed map above misses and we'd append a duplicate row.
+        // Symptom: six identical "+214" edit rows under one file group.
+        //
+        // Scan the last 8 items for a toolCall whose (kind, title, location,
+        // details-fingerprint) matches the incoming one. If found, treat the
+        // incoming notification as an update against that existing row —
+        // refresh status, alias the seenToolCallIds entry so subsequent
+        // updates from either toolId land on the same row.
+        if let incomingDetails = structuredDetails,
+           let dupIdx = findContentDuplicate(
+               kind: kind,
+               title: title,
+               location: location,
+               details: incomingDetails,
+               searchWindow: 8
+           ),
+           case .toolCall(let id, let oldKind, let oldTitle, _, let oldLoc, _) = items[dupIdx] {
+            items[dupIdx] = .toolCall(
+                id: id,
+                kind: oldKind,
+                title: title.isEmpty ? oldTitle : title,
+                status: status,
+                locationHint: location ?? oldLoc,
+                details: incomingDetails
+            )
+            seenToolCallIds[toolId] = id
             return
         }
 
