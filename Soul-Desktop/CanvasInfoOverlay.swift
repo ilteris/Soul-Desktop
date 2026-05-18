@@ -28,17 +28,18 @@ struct CanvasInfoOverlay: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             // Invisible hover trigger, inset 16pt from the trailing edge so
-            // the macOS overlay scrollbar gutter is hit-testable. Without the
-            // inset this strip swallowed every click/drag in the scrollbar
-            // zone — even when invisible — because `.onHover` needs hit
-            // testing on, so we can't just blanket-disable it.
+            // the macOS overlay scrollbar gutter is hit-testable. Height is
+            // capped to the region where the project card actually appears —
+            // a full-height strip used to eat clicks on the composer's
+            // bottom-right buttons (Stop, Send) because `.allowsHitTesting`
+            // is true whenever the card isn't pinned open.
             Color.clear
-                .frame(width: 24)
-                .frame(maxHeight: .infinity)
+                .frame(width: 24, height: 420)
                 .contentShape(Rectangle())
                 .onHover { hoveringStrip = $0 }
                 .padding(.trailing, 16)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(!isVisible || !pinned)
 
             if isVisible {
