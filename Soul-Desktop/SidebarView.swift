@@ -480,11 +480,6 @@ struct SidebarView: View {
         .contextMenu {
             Button("Open chat") { onSelectSession(session) }
             Button("Replay…") { onReplaySession(session) }
-            Menu("Branch to") {
-                ForEach(Provider.allCases, id: \.self) { p in
-                    Button(p.label) { onBranch(session, p) }
-                }
-            }
             Divider()
             if archiveStore.isArchived(session.id, project: session.project) {
                 Button("Unarchive") {

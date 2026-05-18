@@ -82,6 +82,9 @@ struct ThreadView: View {
                                     updateAnchor()
                                 }
                         }
+                        if branchSeedLoading {
+                            BranchSeedIndicator()
+                        }
                         if controller.isWorking {
                             WorkingIndicator(controller: controller)
                         }

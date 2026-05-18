@@ -248,9 +248,7 @@ struct ComposerView: View {
                     }
                     ComposerTextField(
                         text: $prompt,
-                        placeholder: branchSeedLoading
-                            ? "Summarizing previous chat…"
-                            : (activeCommand?.inputHint ?? "Ask Soul anything. @ to use plugins or mention files"),
+                        placeholder: activeCommand?.inputHint ?? "Ask Soul anything. @ to use plugins or mention files",
                         onSubmit: submit,
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }

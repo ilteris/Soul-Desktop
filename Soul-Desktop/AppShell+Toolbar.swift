@@ -21,6 +21,11 @@ struct CanvasToolbar: View {
     var onPickHarness: (Provider) -> Void = { _ in }
     var onSmokeTest: () -> Void = {}
     var onNewChat: () -> Void = {}
+    /// Cross-provider branch. The toolbar lives on the active thread, so
+    /// "branch this chat" always means the currently-displayed thread —
+    /// no chance of accidentally branching a different row the way the
+    /// removed sidebar context menu could.
+    var onBranch: (Provider) -> Void = { _ in }
     var onToggleSidebar: () -> Void = {}
     var onToggleTerminal: () -> Void = {}
     var onToggleReview: () -> Void = {}
@@ -52,7 +57,7 @@ struct CanvasToolbar: View {
                 Divider()
                     .frame(height: 16)
                     .padding(.horizontal, 8)
-                ThreadTitleCluster(controller: thread, onSmokeTest: onSmokeTest)
+                ThreadTitleCluster(controller: thread, onSmokeTest: onSmokeTest, onBranch: onBranch)
             }
 
             Spacer()
@@ -116,6 +121,7 @@ struct CanvasToolbar: View {
 private struct ThreadTitleCluster: View {
     @Bindable var controller: ThreadController
     var onSmokeTest: () -> Void = {}
+    var onBranch: (Provider) -> Void = { _ in }
     @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
 
     var body: some View {
@@ -151,6 +157,17 @@ private struct ThreadTitleCluster: View {
                 Divider()
                 Button("Copy session ID") { controller.copySessionIdToPasteboard() }
                 Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
+                Divider()
+                // SOUL-SOUL_DESKTOP-163: Branch to <provider>. Operates on
+                // the currently-displayed chat (the controller bound to this
+                // cluster) so there's no chance of branching the wrong row.
+                // Hides the current provider from the list so the user can't
+                // pick a no-op.
+                Section("Branch to") {
+                    ForEach(Provider.allCases.filter { $0 != controller.provider }, id: \.self) { p in
+                        Button(p.label) { onBranch(p) }
+                    }
+                }
                 Divider()
                 Section("Debug") {
                     Toggle("Show smoke-test button", isOn: $showSmoke)

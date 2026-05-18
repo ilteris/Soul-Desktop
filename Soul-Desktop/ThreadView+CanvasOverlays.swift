@@ -115,6 +115,40 @@ struct PlanCard: View {
     }
 }
 
+/// Inline canvas indicator shown while the background `claude -p`
+/// subprocess is composing the seed prompt for a freshly-branched chat.
+/// Mirrors `WorkingIndicator`'s visual treatment so the transition into
+/// the agent's first reply feels continuous: spinner → user bubble →
+/// agent working.
+struct BranchSeedIndicator: View {
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .stroke(SoulColor.border.opacity(0.3), lineWidth: 2)
+                    .frame(width: 14, height: 14)
+                Circle()
+                    .trim(from: 0, to: 0.3)
+                    .stroke(SoulColor.accent, lineWidth: 2)
+                    .frame(width: 14, height: 14)
+                    .rotationEffect(.degrees(rotation))
+                    .onAppear {
+                        withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                            rotation = 360
+                        }
+                    }
+            }
+            Text("Summarizing previous chat…")
+                .font(SoulFont.ui(12, weight: .medium))
+                .foregroundStyle(SoulColor.fg)
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+}
+
 struct WorkingIndicator: View {
     @Bindable var controller: ThreadController
     @State private var rotation: Double = 0

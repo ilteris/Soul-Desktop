@@ -415,28 +415,67 @@ struct AppShell: View {
     private func branchFrom(_ source: ThreadController, to target: Provider) {
         let items = source.items
         let sourceProvider = source.provider
-        // Switch harness so the next-spawned agent uses the target provider,
-        // then mint a fresh draft. Same path as the regular "New chat"
-        // button — branch is conceptually a new chat with a head-start
-        // opener pre-filled into the composer.
+        // Mark the source's transcript + ledger so when the user returns to
+        // the parent later they can see they branched away from this point.
+        // The new child session has no sid yet (draft until first send) — we
+        // can't link to_session here. Future enhancement can backfill once
+        // ensureSession lands the new sid.
+        let atTurn = items.reduce(into: 0) { acc, item in
+            if case .userMessage = item { acc += 1 }
+        }
+        source.items.append(.status(
+            id: UUID(),
+            text: "↗ branched to \(target.label)"
+        ))
+        if let sourceSid = source.sessionId {
+            SoulRegistry.appendHook(
+                projectKey: source.project.id,
+                sessionId: sourceSid,
+                event: [
+                    "event": "BranchedTo",
+                    "from_provider": sourceProvider.rawValue,
+                    "to_provider": target.rawValue,
+                    "at_turn": atTurn,
+                ]
+            )
+        }
+        // Spawn a real ThreadController upfront (not a draftSession routed
+        // through HeroEmptyState). Branch should land the user in a
+        // proper ThreadView with empty transcript + pre-filled composer,
+        // not on the "What should we build in <project>?" welcome screen.
+        // The draft path is only appropriate for fresh "New chat" where
+        // the user might never send.
         harness = target
-        newChat(targetProjectID: source.project.id)
+        if selectedProject != source.project.id { selectedProject = source.project.id }
+        let project = source.project
+        let controller = ThreadController(provider: target, project: project)
+        controller.permissionMode = pendingPermissionMode
+        threads[controller.id] = controller
+        setActiveThread(controller.id)
+        draftSession = nil
+        newChatNonce &+= 1
         branchSeedLoading = true
-        prompt = ""
-        Task {
+        controller.composerDraft = ""
+        Task { @MainActor in
             let seed = await ComposeBranchSeed.run(
                 items: items,
                 sourceProvider: sourceProvider,
                 targetProvider: target
             )
-            await MainActor.run {
-                branchSeedLoading = false
-                guard !seed.isEmpty else { return }
-                // Only pre-fill if the user hasn't started typing in the
-                // gap between click and LLM-return. Don't stomp their
-                // partial input.
-                if prompt.isEmpty { prompt = seed }
-            }
+            branchSeedLoading = false
+            guard !seed.isEmpty else { return }
+            // Auto-dispatch the seed as the first turn instead of asking
+            // the user to edit + send. The new provider's first reply
+            // BECOMES the summary + next-step suggestion — exactly what
+            // the user would have asked for if they'd typed the seed
+            // themselves. Two-channel send: the user bubble shows the
+            // clean seed text; the agent payload appends an explicit
+            // "summarize where we are + propose next step" nudge so the
+            // first reply lands in the right shape.
+            let displayText = seed
+            let agentText = seed + "\n\n(Continuing from \(sourceProvider.label) — give me a quick summary of where we are and propose the immediate next step.)"
+            guard let pending = controller.acceptUserPrompt(display: displayText, agent: agentText) else { return }
+            await controller.dispatchPending(pending)
         }
     }
 
@@ -793,6 +832,9 @@ struct AppShell: View {
                 },
                 onSmokeTest: { showSmoke = true },
                 onNewChat: { newChat() },
+                onBranch: { provider in
+                    if let source = thread { branchFrom(source, to: provider) }
+                },
                 onToggleSidebar: toggleSidebar,
                 onToggleTerminal: toggleTerminal,
                 onToggleReview: toggleReview,
