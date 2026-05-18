@@ -584,6 +584,11 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// force an in-flight prompt continuation to unwind. The resulting
     /// childTerminated error is expected and should not render as a red row.
     var suppressNextInterruptedTurnError = false
+    /// Set by steerToNextQueued() so the next queued prompt that actually
+    /// dispatches in the send() while-loop posts the "steered" status row at
+    /// the moment the queue drains — not optimistically at cancel-send time,
+    /// which leaves the bubble still marked "queued" until the cancel acks.
+    var steerPending = false
 
     init(provider: Provider, project: SoulProject) {
         self.provider = provider

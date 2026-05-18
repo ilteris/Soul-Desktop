@@ -28,9 +28,23 @@ extension ThreadController {
     /// cancel) is the future home for a user setting; the queue side is the
     /// safe default.
     func send(display: String, agent: String) async {
+        guard let pending = acceptUserPrompt(display: display, agent: agent) else { return }
+        await dispatchPending(pending)
+    }
+
+    /// Synchronous half of `send`: paint the user bubble, log the prompt,
+    /// and either queue onto an in-flight turn or claim `isWorking`. Returns
+    /// the prompt the caller should dispatch, or nil if it was queued (the
+    /// in-flight turn's drain loop will pick it up).
+    ///
+    /// Splitting the sync prefix out lets ComposerView's submit() flow paint
+    /// the bubble on the same runloop tick as the Enter keystroke instead of
+    /// waiting for the `Task { await send(...) }` body to be scheduled —
+    /// previously perceptible as a brief freeze before the bubble appeared.
+    func acceptUserPrompt(display: String, agent: String) -> QueuedPrompt? {
         let trimmedDisplay = display.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedAgent.isEmpty else { return }
+        guard !trimmedAgent.isEmpty else { return nil }
 
         let messageId = UUID()
         items.append(.userMessage(id: messageId, text: trimmedDisplay, timestamp: Date()))
@@ -42,6 +56,8 @@ extension ThreadController {
         scrollAnchorAtBottom = true
         scrollAnchorItemId = nil
 
+        let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent)
+
         if isWorking {
             // Already running a turn; stash this for the dispatch loop to
             // pick up. UserPrompt is logged here so the hooks ledger
@@ -51,12 +67,21 @@ extension ThreadController {
                 "event": "UserPrompt",
                 "text": trimmedDisplay,
             ])
-            queuedPrompts.append(QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent))
-            return
+            queuedPrompts.append(prompt)
+            return nil
         }
 
         isWorking = true
         startStallWatchdog()
+        return prompt
+    }
+
+    /// Async half of `send`: ensure a live session, then dispatch the
+    /// accepted prompt (and drain any prompts queued while this turn runs).
+    /// Must be called on a prompt obtained from `acceptUserPrompt` — that
+    /// method owns the `isWorking` flip; this method owns the matching
+    /// teardown via defer.
+    func dispatchPending(_ initial: QueuedPrompt) async {
         defer {
             isWorking = false
             stopStallWatchdog()
@@ -75,7 +100,7 @@ extension ThreadController {
         // can take the queue-consumption path (relocate bubble, skip the
         // dispatch-time UserPrompt hook since it was already logged at
         // queue time at line ~471).
-        var current: QueuedPrompt? = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent)
+        var current: QueuedPrompt? = initial
         var isFirstTurn = true
         do {
             try await ensureSession()
@@ -131,6 +156,14 @@ extension ThreadController {
                     ])
                 } else {
                     relocateQueuedBubbleToEnd(turn)
+                    if steerPending {
+                        steerPending = false
+                        if let idx = items.firstIndex(where: { $0.id == turn.itemId }) {
+                            items.insert(.status(id: UUID(), text: "↪ steered to next prompt"), at: idx)
+                        } else {
+                            items.append(.status(id: UUID(), text: "↪ steered to next prompt"))
+                        }
+                    }
                 }
                 isFirstTurn = false
                 do {
@@ -318,9 +351,9 @@ extension ThreadController {
     func steerToNextQueued() async {
         guard isWorking, !queuedPrompts.isEmpty else { return }
         suppressNextInterruptedTurnError = true
+        steerPending = true
         await cancelActiveProviderTurn()
         markInFlightToolCallsStopped()
-        items.append(.status(id: UUID(), text: "↪ steered to next prompt"))
         SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
             "event": "TurnSteered",
             "provider": provider.rawValue,
@@ -332,6 +365,7 @@ extension ThreadController {
     /// surfaced via a clear-X on the queue chip in the composer.
     func clearQueue() {
         queuedPrompts.removeAll()
+        steerPending = false
     }
 
     func cancel() async {

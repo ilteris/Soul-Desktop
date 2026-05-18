@@ -199,7 +199,12 @@ struct ThreadView: View {
                     projectPath: controller.project.path,
                     commands: controller.availableCommands,
                     onSend: { display, agent in
-                        Task { await controller.send(display: display, agent: agent) }
+                        // Sync prefix: paint the user bubble on the same
+                        // runloop tick as the Enter keystroke. Async tail
+                        // (ensureSession + ACP prompt) runs in a Task so it
+                        // doesn't block the composer's keyDown handler.
+                        guard let pending = controller.acceptUserPrompt(display: display, agent: agent) else { return }
+                        Task { await controller.dispatchPending(pending) }
                     },
                     onCancel: onCancel,
                     isWorking: controller.isWorking,
