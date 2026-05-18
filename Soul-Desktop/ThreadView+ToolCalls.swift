@@ -736,50 +736,55 @@ private struct DiffView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// SOUL-SOUL_DESKTOP-169: unified inline diff layout. The old two-column
+    /// side-by-side split removed/added pairs across the row, which wasted
+    /// horizontal space and made cmd-F scanning awkward. New layout mirrors
+    /// `git diff --unified` / GitHub's inline view: two narrow gutters
+    /// (old | new line nums), then one full-width text body with a 2pt
+    /// colored left bar on changed rows.
     @ViewBuilder
     private func diffRowView(_ row: DiffRow, gutterWidth: CGFloat) -> some View {
         switch row {
         case .unchanged(let lNum, let rNum, let text):
-            HStack(alignment: .top, spacing: 1) {
-                cell(num: lNum, sign: " ", text: text, tint: nil, gutterWidth: gutterWidth)
-                cell(num: rNum, sign: " ", text: text, tint: nil, gutterWidth: gutterWidth)
-            }
+            inlineRow(oldNum: lNum, newNum: rNum, sign: " ", text: text, tint: nil, gutterWidth: gutterWidth)
         case .removed(let num, let text):
-            HStack(alignment: .top, spacing: 1) {
-                cell(num: num, sign: "-", text: text, tint: .red, gutterWidth: gutterWidth)
-                cell(num: nil, sign: " ", text: "", tint: nil, gutterWidth: gutterWidth)
-            }
+            inlineRow(oldNum: num, newNum: nil, sign: "-", text: text, tint: .red, gutterWidth: gutterWidth)
         case .added(let num, let text):
-            HStack(alignment: .top, spacing: 1) {
-                cell(num: nil, sign: " ", text: "", tint: nil, gutterWidth: gutterWidth)
-                cell(num: num, sign: "+", text: text, tint: .green, gutterWidth: gutterWidth)
-            }
+            inlineRow(oldNum: nil, newNum: num, sign: "+", text: text, tint: .green, gutterWidth: gutterWidth)
         }
     }
 
-    /// One column-cell. `tint == nil` means unchanged — no background, no
-    /// border, neutral sign. Tinted rows get a 2pt colored left border
-    /// instead of the old full-width background fill: same signal, ~70%
-    /// less visual weight on long diffs.
-    private func cell(num: Int?, sign: String, text: String, tint: Color?,
-                      gutterWidth: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(num.map(String.init) ?? "")
+    /// Inline row: `oldNum | newNum | ±  text`. `tint == nil` means unchanged
+    /// (no left bar, no background); tinted rows get a 2pt colored left bar
+    /// + a very faint background wash — enough signal at scroll-skim
+    /// distance, light enough that hundred-line diffs don't read as a stripe
+    /// pattern.
+    private func inlineRow(oldNum: Int?, newNum: Int?, sign: String, text: String,
+                           tint: Color?, gutterWidth: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(oldNum.map(String.init) ?? "")
                 .font(SoulFont.code(12))
-                .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
+                .foregroundStyle(SoulColor.fgSubtle.opacity(0.6))
                 .frame(width: gutterWidth, alignment: .trailing)
+                .padding(.trailing, 6)
+            Text(newNum.map(String.init) ?? "")
+                .font(SoulFont.code(12))
+                .foregroundStyle(SoulColor.fgSubtle.opacity(0.6))
+                .frame(width: gutterWidth, alignment: .trailing)
+                .padding(.trailing, 8)
             Text(sign)
                 .font(SoulFont.code(12, weight: .bold))
-                .foregroundStyle((tint ?? SoulColor.fgSubtle).opacity(0.7))
+                .foregroundStyle((tint ?? SoulColor.fgSubtle).opacity(0.85))
                 .frame(width: 10, alignment: .leading)
             Text(text.isEmpty ? " " : text)
                 .font(SoulFont.code(12))
                 .foregroundStyle(SoulColor.fg)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 1)
         .padding(.leading, 6)
         .padding(.trailing, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint?.opacity(0.06) ?? Color.clear)
         .overlay(alignment: .leading) {
             if let tint {
                 Rectangle()
