@@ -429,6 +429,18 @@ extension ThreadController {
             if let out = payload["output"]?.stringValue, !out.isEmpty {
                 return ToolCallDetails(kind: .output(text: out))
             }
+            // SOUL-SOUL_DESKTOP-152: surface tool-failure detail. When a tool
+            // fails (read, grep, write, etc.) the ACP server reports the
+            // reason in the content[] array — but the previous extractor
+            // only looked at `output` (which is empty for failed reads) and
+            // returned nil, leaving the row body-less with just "failed".
+            // Walk content[] for any text block (raw `text` or nested
+            // `{type:"content", content:{type:"text", text:...}}`) and join
+            // them. Same DiffView path renders the result so the user can
+            // expand the row and read the actual error.
+            if let extracted = extractContentText(from: payload), !extracted.isEmpty {
+                return ToolCallDetails(kind: .output(text: extracted))
+            }
             return nil
         }()
 
@@ -568,6 +580,30 @@ extension ThreadController {
         }
         openAgentMessageId = nil
         items.append(.plan(id: UUID(), entries: entries))
+    }
+
+    /// Walk a tool_call_update payload's `content` array for any text the
+    /// agent attached as an error / output description. Handles two shapes:
+    ///   1. Direct text:   `{ "type": "text", "text": "Error: ..." }`
+    ///   2. Wrapped:       `{ "type": "content", "content": { "type": "text", "text": "..." } }`
+    /// Joins multiple text blocks with newlines so multi-paragraph errors
+    /// (stack traces, multi-line stderr) survive intact.
+    /// SOUL-SOUL_DESKTOP-152.
+    private func extractContentText(from payload: JSONValue) -> String? {
+        guard case .array(let blocks)? = payload["content"] else { return nil }
+        var parts: [String] = []
+        for block in blocks {
+            if let direct = block["text"]?.stringValue, !direct.isEmpty {
+                parts.append(direct)
+                continue
+            }
+            if let nested = block["content"]?["text"]?.stringValue, !nested.isEmpty {
+                parts.append(nested)
+                continue
+            }
+        }
+        let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
     }
 
     /// Returns the absolute target path for a Write tool call. Tries the
