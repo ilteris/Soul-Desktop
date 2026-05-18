@@ -189,7 +189,7 @@ struct WorkingIndicator: View {
                                 .padding(.vertical, 2)
                                 .background(Color.orange.opacity(0.12), in: Capsule())
                             }
-                            .buttonStyle(.soulHover)
+                            .buttonStyle(.soulChip)
                             .help(controller.queuedPrompts.isEmpty
                                   ? "Cancel the stalled turn and unblock the thread"
                                   : "Cancel the stalled turn and dispatch the next queued message")

@@ -104,7 +104,7 @@ struct ReviewPanel: View {
                     .frame(width: 22, height: 22)
                     .background(RoundedRectangle(cornerRadius: 5).fill(SoulColor.accentMuted))
                     .contentShape(Rectangle())
-            }.buttonStyle(.soulHover)
+            }.buttonStyle(.soulChip)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

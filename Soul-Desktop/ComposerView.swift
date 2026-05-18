@@ -210,7 +210,7 @@ struct ComposerView: View {
                         .foregroundStyle(SoulColor.fg)
                         .background(SoulColor.fg.opacity(0.08), in: Capsule())
                     }
-                    .buttonStyle(.soulHover)
+                    .buttonStyle(.soulChip)
                     .help("Cancel the current turn and send the next queued prompt now")
                     Button(action: onClearQueue) {
                         Image(systemName: "xmark")

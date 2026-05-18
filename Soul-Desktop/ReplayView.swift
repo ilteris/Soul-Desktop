@@ -213,7 +213,7 @@ private struct ChapterHeader: View {
             .background(SoulColor.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
         .padding(.top, 6)
     }
 }

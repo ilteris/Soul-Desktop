@@ -81,8 +81,6 @@ struct CanvasToolbar: View {
                         Image(systemName: "ladybug")
                             .font(.system(size: 13, weight: .regular))
                             .foregroundStyle(SoulColor.fgMuted)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.soulHover)
                     .disabled(replayActive)
@@ -126,8 +124,6 @@ private struct ThreadTitleCluster: View {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
             }
             .buttonStyle(.soulHover)
             .help("Rename chat")
@@ -171,7 +167,7 @@ private struct ThreadTitleCluster: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
-                    .frame(width: 22, height: 18)
+                    .frame(minWidth: 24, minHeight: 24)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -233,14 +229,8 @@ private struct ToolbarIcon: View {
             Image(systemName: name)
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(isActive ? SoulColor.accent : SoulColor.fgMuted)
-                .frame(width: 22, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(isActive ? SoulColor.accentMuted : Color.clear)
-                )
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(SoulHoverButtonStyle(isActive: isActive))
     }
 }
 

@@ -105,7 +105,7 @@ struct SettingsView: View {
                         )
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.soulHover)
+                    .buttonStyle(.soulChip)
                 }
             }
             .padding(.top, 12)
@@ -793,7 +793,7 @@ private struct SegmentedRow: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.soulHover)
+                    .buttonStyle(.soulChip)
                 }
             }
             .padding(2)

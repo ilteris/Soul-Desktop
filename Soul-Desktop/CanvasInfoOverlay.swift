@@ -331,7 +331,7 @@ private struct ActionButton: View {
                     .strokeBorder(active ? SoulColor.accent.opacity(0.3) : SoulColor.border.opacity(0.3), lineWidth: 1)
             )
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
         .disabled(!active)
         .opacity(active ? 1.0 : 0.5)
         .onHover { hovering = $0 }
@@ -374,7 +374,7 @@ private struct ArtifactRow: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
         .help("Open \(rel) in preview panel")
         .onHover { inside in
             hovering = inside

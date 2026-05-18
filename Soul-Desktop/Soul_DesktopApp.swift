@@ -33,10 +33,14 @@ struct Soul_DesktopApp: App {
             AppShell()
                 .frame(minWidth: 1000, minHeight: 700)
                 // SOUL-SOUL_DESKTOP-156: every Button without an explicit
-                // .buttonStyle override picks up the global hover+active
-                // treatment. .plain callers are swept to .soulHover too
-                // so the look is consistent app-wide.
-                .buttonStyle(SoulHoverButtonStyle())
+                // .buttonStyle override picks up hit-area expansion + press
+                // feedback. The hover BG layer is OPT-IN — only icon-only
+                // buttons that want the gray hover/active bg use
+                // `.buttonStyle(.soulHover)` explicitly. Buttons with their
+                // own background (capsule chips, rounded-rect action
+                // buttons) inherit this default and stay paint-free, so a
+                // gray hover layer never leaks around a chip's own bg.
+                .buttonStyle(.soulChip)
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)

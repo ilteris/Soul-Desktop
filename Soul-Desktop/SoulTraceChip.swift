@@ -40,7 +40,7 @@ struct SoulTraceChip: View {
                 )
                 .contentShape(Capsule())
             }
-            .buttonStyle(.soulHover)
+            .buttonStyle(.soulChip)
             .help("Soul OS trajectory signal — kernel uses this to score predictive alignment")
 
             if expanded {

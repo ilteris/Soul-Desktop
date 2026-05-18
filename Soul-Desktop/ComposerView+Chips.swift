@@ -26,7 +26,11 @@ struct HoverableToolbarButton: View {
 
     var body: some View {
         Button(action: action) {
-            ToolbarChip(icon: icon, label: nil)
+            // Icon-only — drop ToolbarChip's own padding/bg and let
+            // SoulHoverButtonStyle (minSize 24 + padding 4) own the geometry
+            // so the + matches every other icon-only toolbar button.
+            // Tint accent when associated UI (file picker) is open.
+            SoulIcon(name: icon, color: isActive ? SoulColor.accent : SoulColor.fgMuted)
         }
         .buttonStyle(SoulHoverButtonStyle(isActive: isActive))
         .help(help)
@@ -240,7 +244,7 @@ struct RunLocalChip: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.soulHover)
+        .buttonStyle(.soulChip)
     }
 }
 
