@@ -12,18 +12,48 @@ import AppKit
 /// agent ergonomics: shrink ComposerView.swift below the threshold
 /// where a coding agent can hold it in context.
 
+/// Hoverable wrapper that pairs a ToolbarChip with hit-area expansion +
+/// accent-color hover treatment. Use anywhere we'd put a clickable icon
+/// chip in the composer toolbar so all of them respond to hover the
+/// same way.
+///
+/// Hit-area trick: layout box is sized via `.frame`, then
+/// `.contentShape(Rectangle())` overrides SwiftUI's icon-outline-based
+/// hit testing so the whole 30x30 region claims clicks.
+struct HoverableToolbarButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            ToolbarChip(icon: icon, label: nil, isHovering: hovering)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
 struct ToolbarChip: View {
     let icon: String
     let label: String?
     var trailingChevron: Bool = false
+    /// External hover binding — when this chip is wrapped in a Button, the
+    /// parent controls hover state. nil means standalone usage with no
+    /// hover treatment.
+    var isHovering: Bool = false
 
     var body: some View {
         HStack(spacing: 4) {
-            SoulIcon(name: icon, color: SoulColor.fgMuted)
+            SoulIcon(name: icon, color: isHovering ? SoulColor.accent : SoulColor.fgMuted)
             if let label {
                 Text(label)
                     .font(SoulFont.ui(12))
-                    .foregroundStyle(SoulColor.fgMuted)
+                    .foregroundStyle(isHovering ? SoulColor.accent : SoulColor.fgMuted)
             }
             if trailingChevron {
                 SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
@@ -31,7 +61,13 @@ struct ToolbarChip: View {
         }
         .padding(.horizontal, label == nil ? 4 : 8)
         .padding(.vertical, 4)
-        .background(label == nil ? Color.clear : SoulColor.surface.opacity(0.6), in: Capsule())
+        .background(
+            (label == nil
+                ? (isHovering ? AnyShapeStyle(SoulColor.accentMuted) : AnyShapeStyle(Color.clear))
+                : AnyShapeStyle(SoulColor.surface.opacity(0.6))),
+            in: Capsule()
+        )
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
     }
 }
 
