@@ -72,6 +72,7 @@ extension ThreadController {
         }
 
         isWorking = true
+        turnStartedAt = Date()
         startStallWatchdog()
         return prompt
     }
@@ -84,6 +85,7 @@ extension ThreadController {
     func dispatchPending(_ initial: QueuedPrompt) async {
         defer {
             isWorking = false
+            turnStartedAt = nil
             stopStallWatchdog()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
@@ -114,6 +116,7 @@ extension ThreadController {
                             "text": turn.display,
                         ])
                     } else {
+                        turnStartedAt = Date()
                         relocateQueuedBubbleToEnd(turn)
                     }
                     isFirstTurn = false
@@ -155,6 +158,7 @@ extension ThreadController {
                         "text": turn.display,
                     ])
                 } else {
+                    turnStartedAt = Date()
                     relocateQueuedBubbleToEnd(turn)
                     if steerPending {
                         steerPending = false

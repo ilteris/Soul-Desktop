@@ -589,6 +589,11 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// the moment the queue drains — not optimistically at cancel-send time,
     /// which leaves the bubble still marked "queued" until the cancel acks.
     var steerPending = false
+    /// Wall-clock start of the currently-dispatching turn. Set when `isWorking`
+    /// flips true (fresh send) and reset at the top of each while-loop
+    /// iteration in `dispatchPending` so queued-drain turns get their own
+    /// 0-anchor. WorkingIndicator renders elapsed time off this.
+    var turnStartedAt: Date?
 
     init(provider: Provider, project: SoulProject) {
         self.provider = provider

@@ -285,6 +285,16 @@ struct AppShell: View {
         if !session.loadable, session.replayable {
             if let hit = SessionLoadability.discover(sessionId: session.id) {
                 discoveredCwdOverride = hit.cwd
+            } else if session.promptCount > 0 {
+                // SOUL-SOUL_DESKTOP-161 follow-up: the agent-side transcript
+                // is missing (rotated, force-quit, trashed — or in the
+                // gemini-cli-bloat case, we just quarantined a 2 GB chat
+                // file out of `~/.gemini/tmp`), but the kernel ledger has
+                // real conversation content. Hydrate already renders from
+                // the ledger and surfaces a clear "first send starts a
+                // fresh provider session" status row — better UX than
+                // dead-ending the user into the recovery sheet when we
+                // have N prompts of authoritative history to show them.
             } else {
                 pendingActiveId = nil
                 externalLiveSession = session

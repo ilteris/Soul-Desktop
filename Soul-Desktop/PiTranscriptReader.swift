@@ -28,20 +28,20 @@ enum PiTranscriptReader {
 
     private static func _transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
         guard let path = locate(sessionId: sid, cwd: cwd) else { return nil }
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
 
         var items: [ThreadItem] = []
         var pendingAgentText: (id: UUID, text: String, ts: Date)? = nil
 
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
+        // SOUL-SOUL_DESKTOP-161: stream lines + per-line cap — see
+        // GeminiTranscriptReader for context.
+        enumerateJSONLines(atPath: path) { data in
+            guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
             guard (rec["type"] as? String) == "message",
                   let msg = rec["message"] as? [String: Any],
                   let role = msg["role"] as? String,
                   let blocks = msg["content"] as? [[String: Any]]
-            else { continue }
+            else { return }
 
             let ts = parseTimestamp(rec["timestamp"] as? String) ?? Date.distantPast
 

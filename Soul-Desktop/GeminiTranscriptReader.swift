@@ -31,18 +31,22 @@ enum GeminiTranscriptReader {
 
     private static func _transcript(forSession sid: String, projectKey: String) -> [ThreadItem]? {
         guard let url = locateTranscript(sessionId: sid, projectKey: projectKey) else { return nil }
-        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
 
         var items: [ThreadItem] = []
 
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
+        // SOUL-SOUL_DESKTOP-161: stream lines instead of slurping the whole
+        // file. Gemini-CLI's snapshot-per-mutation chat format duplicates
+        // cumulative tool-result content across every record; a single big
+        // tool result (e.g., 30 MB git diff) turns into multi-GB chat files
+        // over a long session. `String(contentsOf:)` on the 2.17 GB file
+        // observed in the wild aborted the app with malloc failure on click.
+        let stats = enumerateJSONLines(atPath: url.path) { data in
+            guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
 
             // Skip mutation records (`{"$set": {...}}`) and the first-line
             // metadata (which has no `type` field).
-            guard let type = rec["type"] as? String else { continue }
+            guard let type = rec["type"] as? String else { return }
             let ts = parseTimestamp(rec["timestamp"] as? String) ?? Date.distantPast
 
             switch type {
@@ -93,8 +97,29 @@ enum GeminiTranscriptReader {
                 }
 
             default:
-                continue
+                return
             }
+        }
+
+        // Bloat affordance: surface oversized-line counts at the top of the
+        // transcript so the user knows the chat file is duplicating tool
+        // results (root cause is upstream gemini-cli chatRecordingService;
+        // patched locally as of 2026-05-18, but pre-patch sessions show
+        // their accumulated history here).
+        if stats.warnedCount > 0 || stats.skippedCount > 0 {
+            let mb = Double(stats.largestLineBytes) / 1_048_576.0
+            let mbStr = String(format: "%.1f", mb)
+            let parts: [String] = [
+                stats.skippedCount > 0
+                    ? "\(stats.skippedCount) line\(stats.skippedCount == 1 ? "" : "s") skipped (too large to parse)"
+                    : nil,
+                stats.warnedCount > 0
+                    ? "\(stats.warnedCount) line\(stats.warnedCount == 1 ? "" : "s") over 5MB"
+                    : nil,
+                "largest \(mbStr) MB",
+            ].compactMap { $0 }
+            let text = "⚠ chat file bloat — " + parts.joined(separator: ", ")
+            items.insert(.status(id: UUID(), text: text), at: 0)
         }
 
         return items.isEmpty ? nil : items

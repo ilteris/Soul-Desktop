@@ -283,31 +283,43 @@ extension ThreadController {
                      note: "no live client, no native id — minting fresh session via client.newSession")
         try await spawnAndInitialize(skipNewSession: false)
         guard let client else { return }
-        let sid = try await client.newSession(cwd: project.path)
-        // Fresh session: kernel and native ids coincide. The explicit
-        // NativeSessionID hook below records the mapping so a later
-        // findNativeSessionID never has to fall back to the bare sid.
-        sessionId = sid
-        nativeSessionId = sid
+        let nid = try await client.newSession(cwd: project.path)
+        // SOUL-SOUL_DESKTOP-161 follow-up: preserve the kernel sessionId
+        // when this controller was rehydrated from a kernel ledger. The
+        // kernel sid is the durable identity; the native sid is a
+        // per-provider cache key. Without this guard, the orphan-
+        // transcript resume path (hydrate from hooks.jsonl + first send)
+        // would clobber the original kernel UUID with the fresh native
+        // UUID, splitting the ledger across two registry dirs and
+        // producing a duplicate sidebar row for what's logically one
+        // conversation. Matches the same pattern Codex already uses in
+        // `spawnAndInitializeCodex` (ThreadController+Codex.swift:58).
+        if sessionId == nil {
+            sessionId = nid  // Fresh chat: kernel and native ids coincide.
+        }
+        nativeSessionId = nid
         hasInitialized = true
+        guard let kernelSid = sessionId else { return }
 
-        // SOUL-FINALIZE-PARITY-001: write the freshly-minted sid to
+        // SOUL-FINALIZE-PARITY-001: write the kernel sid to
         // /tmp/soul_last_session_id so a `soul finalize` call from the spawned
         // agent (which didn't have SOUL_SESSION_ID at spawn time) hits the
         // kernel's existing fallback path (soul_finalize.sh line ~104) and
         // tags its JSON with the desktop's sid. Best-effort write — the
         // worst case is the script falls back to mint_session_uuid() and the
         // FinalizeCard fails to match, which is the pre-fix status quo.
-        try? sid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)
+        try? kernelSid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)
 
         // Persist the provider's native sessionId alongside the kernel ledger
-        // for this session. Identity-mapping for Soul-Desktop spawns (kernel
-        // dir == gemini's sessionId), but keeping the explicit record means
-        // findNativeSessionID always answers without falling back to `sid`.
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+        // for this session. For kernel-ledger-resumed sessions this mapping
+        // is load-bearing: without it `findNativeSessionID(kernelSid)` can't
+        // resolve back to the freshly-minted provider UUID, the transcript
+        // readers miss the new chat file, and the next reopen re-renders the
+        // pre-resume ledger as if nothing happened.
+        SoulRegistry.appendHook(projectKey: project.id, sessionId: kernelSid, event: [
             "event": "NativeSessionID",
             "provider": provider.rawValue,
-            "nativeId": sid,
+            "nativeId": nid,
             "cwd": project.path,
         ])
     }

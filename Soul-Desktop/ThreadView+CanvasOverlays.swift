@@ -119,6 +119,18 @@ struct WorkingIndicator: View {
     @Bindable var controller: ThreadController
     @State private var rotation: Double = 0
 
+    /// Compact elapsed format: "5s" under a minute, "1:23" under an hour,
+    /// "1:23:45" otherwise. Keeps the indicator narrow while a turn is short
+    /// and still readable on long-running agents.
+    static func formatElapsed(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
             let secondsSinceActivity = Int(ctx.date.timeIntervalSince(controller.lastActivityAt))
@@ -149,9 +161,18 @@ struct WorkingIndicator: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isStalled ? "Thinking…" : "Agent working…")
-                        .font(SoulFont.ui(12, weight: .medium))
-                        .foregroundStyle(isStalled ? Color.orange : SoulColor.fg)
+                    HStack(spacing: 6) {
+                        Text(isStalled ? "Thinking…" : "Agent working…")
+                            .font(SoulFont.ui(12, weight: .medium))
+                            .foregroundStyle(isStalled ? Color.orange : SoulColor.fg)
+                        if let started = controller.turnStartedAt {
+                            let elapsed = max(0, Int(ctx.date.timeIntervalSince(started)))
+                            Text(Self.formatElapsed(elapsed))
+                                .font(SoulFont.code(11))
+                                .foregroundStyle(SoulColor.fgSubtle)
+                                .monospacedDigit()
+                        }
+                    }
 
                     if isStalled {
                         HStack(spacing: 4) {

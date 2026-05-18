@@ -18,17 +18,18 @@ enum ClaudeTranscriptReader {
     private static func _transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
         let encoded = encodeCwd(cwd)
         let path = NSHomeDirectory() + "/.claude/projects/\(encoded)/\(sid).jsonl"
-        guard FileManager.default.fileExists(atPath: path),
-              let raw = try? String(contentsOfFile: path, encoding: .utf8)
-        else { return nil }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
 
         var items: [ThreadItem] = []
         var pendingAgentText: (id: UUID, text: String, ts: Date)? = nil
 
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
+        // SOUL-SOUL_DESKTOP-161: stream lines instead of slurping the whole
+        // transcript. A 33h Claude session is ~10-20 MB JSONL today; if a
+        // future tool result balloons a single line, the per-line cap in
+        // `enumerateJSONLines` skips it instead of OOM-ing the parser.
+        enumerateJSONLines(atPath: path) { data in
+            guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
 
             let type = rec["type"] as? String
             let ts = parseTimestamp(rec["timestamp"] as? String) ?? Date.distantPast
@@ -75,7 +76,7 @@ enum ClaudeTranscriptReader {
 
             case "assistant":
                 let msg = rec["message"] as? [String: Any]
-                guard let blocks = msg?["content"] as? [[String: Any]] else { continue }
+                guard let blocks = msg?["content"] as? [[String: Any]] else { return }
 
                 for blk in blocks {
                     let kind = blk["type"] as? String
@@ -124,7 +125,7 @@ enum ClaudeTranscriptReader {
                 }
 
             default:
-                continue
+                return
             }
         }
 

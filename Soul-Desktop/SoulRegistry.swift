@@ -579,6 +579,16 @@ enum SoulRegistry {
                   (obj["event"] as? String) == "NativeSessionID",
                   provider == nil || (obj["provider"] as? String) == provider
             else { continue }
+            // Accept both spellings: `nativeId` (camelCase, written by
+            // ThreadController+Lifecycle on fresh-session and by codex
+            // spawnAndInitializeCodex) and `native_session_id` (snake_case,
+            // written by kernel CLI hooks on the agent side). They've co-
+            // existed since the very first NativeSessionID hook and the
+            // mismatch silently broke the kernel-sid → native-id resume
+            // path: findNativeSessionID always returned nil for desktop-
+            // authored sessions, so ensureSession never took the resume
+            // branch even when a valid native UUID was on disk.
+            if let nid = obj["nativeId"] as? String { return nid }
             return obj["native_session_id"] as? String
         }
         return nil

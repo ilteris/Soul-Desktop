@@ -613,8 +613,14 @@ private func isTableSeparator(_ line: String) -> Bool {
     let cells = parseTableRow(line)
     guard !cells.isEmpty else { return false }
     return cells.allSatisfy { cell in
-        let s = cell.trimmingCharacters(in: .whitespaces)
-        return !s.isEmpty && s.allSatisfy { $0 == "-" || $0 == ":" }
+        // GFM table separators allow internal whitespace for column alignment
+        // (e.g., `| :---  | : --- |`). Gemini emits these regularly when it
+        // pads cells to align visually. Strip whitespace before checking the
+        // substantive characters, require at least one `-`.
+        let compact = cell.filter { !$0.isWhitespace }
+        return !compact.isEmpty
+            && compact.contains("-")
+            && compact.allSatisfy { $0 == "-" || $0 == ":" }
     }
 }
 

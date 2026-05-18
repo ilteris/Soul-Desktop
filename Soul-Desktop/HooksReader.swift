@@ -21,6 +21,94 @@ struct ReplayEvent: Identifiable {
 /// the harness's own transcript (user prompts + agent text) into a single
 /// timeline sorted by timestamp. This is the same shape soul_view replays
 /// against — see kernel/soul_view.py `_merge_with_prompts`.
+/// Hard per-line cap for the streaming transcript readers. Lines over this
+/// are dropped — no legitimate transcript line is this big, and parsing one
+/// would OOM the process (SOUL-SOUL_DESKTOP-161 incident: Gemini-CLI
+/// re-serialized a tool result into a single line, ballooned the chat file
+/// to 2.17 GB, and `String(contentsOf:)` aborted on click).
+let SoulTranscriptMaxLineBytes: Int = 32 * 1024 * 1024  // 32 MB
+
+/// Soft per-line cap. Lines over this are still parsed (we can handle the
+/// memory hit) but counted so the UI can surface a warning — a 5 MB line is
+/// almost certainly bloat (cumulative tool-result re-serialization), not
+/// real content.
+let SoulTranscriptWarnLineBytes: Int = 5 * 1024 * 1024  // 5 MB
+
+/// Stats returned by `enumerateJSONLines` so the caller can surface bloat
+/// to the UI without re-walking the file.
+struct JSONLineStats {
+    var warnedCount: Int = 0       // lines > 5 MB (still parsed)
+    var skippedCount: Int = 0      // lines > 32 MB (dropped, parser unsafe)
+    var largestLineBytes: Int = 0
+}
+
+/// Iterate JSONL lines from `path` without slurping the whole file. Yields
+/// each line as `Data` (caller decodes as needed). Lines over
+/// `SoulTranscriptMaxLineBytes` are skipped — protects the parser from
+/// pathological mega-lines that would OOM the process.
+///
+/// Reads in 1 MB chunks, accumulates a per-line buffer until a `\n`
+/// terminator lands, then yields the line and resets. Bounded memory:
+/// O(largest legitimate line) regardless of total file size.
+@discardableResult
+func enumerateJSONLines(atPath path: String, _ body: (Data) -> Void) -> JSONLineStats {
+    var stats = JSONLineStats()
+    guard let handle = FileHandle(forReadingAtPath: path) else { return stats }
+    defer { try? handle.close() }
+    let chunkSize = 1 << 20  // 1 MB
+    var buffer = Data()
+    buffer.reserveCapacity(chunkSize)
+    var skipUntilNewline = false  // set when current line exceeded the cap
+    while true {
+        let chunk: Data
+        do {
+            guard let next = try handle.read(upToCount: chunkSize), !next.isEmpty else { break }
+            chunk = next
+        } catch { break }
+        var start = chunk.startIndex
+        while let nl = chunk[start..<chunk.endIndex].firstIndex(of: 0x0A) {
+            if skipUntilNewline {
+                skipUntilNewline = false
+                buffer.removeAll(keepingCapacity: true)
+            } else {
+                buffer.append(chunk[start..<nl])
+                let lineBytes = buffer.count
+                stats.largestLineBytes = max(stats.largestLineBytes, lineBytes)
+                if lineBytes > SoulTranscriptWarnLineBytes {
+                    stats.warnedCount += 1
+                }
+                if !buffer.isEmpty { body(buffer) }
+                buffer.removeAll(keepingCapacity: true)
+            }
+            start = chunk.index(after: nl)
+        }
+        if start < chunk.endIndex {
+            if skipUntilNewline { continue }
+            let remaining = chunk[start..<chunk.endIndex]
+            if buffer.count + remaining.count > SoulTranscriptMaxLineBytes {
+                let oversize = buffer.count + remaining.count
+                stats.skippedCount += 1
+                stats.largestLineBytes = max(stats.largestLineBytes, oversize)
+                SoulSignposts.event("TranscriptReader.skipOversizeLine", "bytes=\(oversize)")
+                buffer.removeAll(keepingCapacity: true)
+                skipUntilNewline = true
+            } else {
+                buffer.append(remaining)
+            }
+        }
+    }
+    // Trailing line without newline
+    if !skipUntilNewline, !buffer.isEmpty, buffer.count <= SoulTranscriptMaxLineBytes {
+        let lineBytes = buffer.count
+        stats.largestLineBytes = max(stats.largestLineBytes, lineBytes)
+        if lineBytes > SoulTranscriptWarnLineBytes {
+            stats.warnedCount += 1
+        }
+        body(buffer)
+    }
+    return stats
+}
+
 enum HooksReader {
     static func events(forSession sid: String, project: SoulProject) -> [ReplayEvent] {
         return SoulSignposts.interval("HooksReader.events", id: sid) {
