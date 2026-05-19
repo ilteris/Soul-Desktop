@@ -517,7 +517,17 @@ extension SoulRegistry {
             let claudeId = nativeSessionIDs["claude"] ?? sid
             let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
             if fm.fileExists(atPath: claudePath) {
-                let n = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
+                // SOUL-222: Claude logs every tool roundtrip as
+                // {"type":"user", ...} with a "tool_use_id" pointing at
+                // the prior tool_use block. A raw "type":"user" count
+                // therefore inflates turn count by every tool the agent
+                // ran. Subtract tool_use_id occurrences as a fast
+                // heuristic — matches what ClaudeTranscriptReader
+                // produces post-click, so the sidebar count stays stable
+                // before and after the user opens the session.
+                let userRecords = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
+                let toolResults = countNeedle(Data("\"tool_use_id\"".utf8), inFileAt: claudePath)
+                let n = max(0, userRecords - toolResults)
                 if n > 0 { return n }
             }
 

@@ -161,11 +161,14 @@ if isActiveReplay {
             return "\(label) · \(ago)"
         }
         // Fallback: transcript-derived count from the provider's own file
-        // when the kernel ledger had no UserPrompt events. `~` prefix is
-        // the visual signal that this number isn't from the audit ledger.
+        // when the kernel ledger had no UserPrompt events. SOUL-221: drop
+        // the `~` prefix — the transcript scan is just as accurate as the
+        // audit ledger, and the tilde made users read the number as an
+        // estimate even though the count's been authoritative since first
+        // scan.
         let t = session.transcriptTurns
         if t > 0 {
-            let label = t == 1 ? "~1 turn" : "~\(t) turns"
+            let label = t == 1 ? "1 turn" : "\(t) turns"
             return "\(label) · \(ago)"
         }
         return ago
