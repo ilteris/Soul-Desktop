@@ -13,14 +13,45 @@ final class SoulAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate 
     private let sidebarItemID = NSToolbarItem.Identifier("soul.sidebar.toggle")
     private let reviewItemID = NSToolbarItem.Identifier("soul.review.toggle")
 
+    /// SOUL-208: identity of the toolbar instance WE installed. Compared
+    /// against KVO updates to detect SwiftUI swapping us out.
+    private var ourToolbarID: ObjectIdentifier?
+    /// True while installToolbar is running, so the swap KVO observer
+    /// doesn't react to OUR OWN nil→ours sequence and infinite-loop.
+    private var reinstallInFlight = false
+    private var toolbarObserver: NSKeyValueObservation?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in
             self?.installToolbar()
+            self?.startToolbarSwapWatcher()
+        }
+    }
+
+    private func startToolbarSwapWatcher() {
+        guard let window = NSApplication.shared.windows.first(where: { $0.contentView != nil }) else { return }
+        toolbarObserver = window.observe(\.toolbar, options: [.new]) { [weak self] _, change in
+            guard let self else { return }
+            // Guard against our own swap triggering this observer mid-reinstall.
+            if self.reinstallInFlight { return }
+            let newID = change.newValue.flatMap { $0 }.map(ObjectIdentifier.init)
+            if newID != self.ourToolbarID {
+                DispatchQueue.main.async { [weak self] in
+                    self?.installToolbar()
+                }
+            }
         }
     }
 
     private func installToolbar() {
         guard let window = NSApplication.shared.windows.first(where: { $0.contentView != nil }) else { return }
+        reinstallInFlight = true
+        defer {
+            // Release the guard on the next runloop tick so any KVO
+            // emissions queued by THIS swap don't trip the observer.
+            DispatchQueue.main.async { [weak self] in self?.reinstallInFlight = false }
+        }
+
         window.styleMask.insert(.fullSizeContentView)
 
         // SOUL-208: clean handoff — set window.toolbar = nil first so
@@ -39,6 +70,7 @@ final class SoulAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate 
         window.toolbarStyle = .unified
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        ourToolbarID = ObjectIdentifier(toolbar)
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {

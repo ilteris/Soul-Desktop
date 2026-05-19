@@ -49,7 +49,7 @@ struct AppShell: View {
     @AppStorage("soul.review.visible") private var showReview: Bool = false
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
     /// SOUL-208: NavigationSplitView visibility binding.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
@@ -754,8 +754,11 @@ struct AppShell: View {
     private func toggleSidebar() {
         // SOUL-208: drive NavigationSplitView's column directly; onChange
         // syncs the showSidebar AppStorage so other readers stay current.
+        // SOUL-208: NavigationSplitView's reopen path is `.doubleColumn`
+        // (not `.all`) on macOS — setting `.all` after `.detailOnly` is a
+        // documented no-op for two-column splits.
         withAnimation(sidePanelAnimation) {
-            columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
+            columnVisibility = (columnVisibility == .detailOnly) ? .doubleColumn : .detailOnly
         }
     }
 
@@ -1176,15 +1179,11 @@ struct AppShell: View {
             .background(SoulColor.bg.ignoresSafeArea())
         }
         .toolbar(removing: .title)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: toggleReview) {
-                    Image(systemName: "sidebar.right")
-                }
-                .help("Toggle right pane")
-                .disabled(replay != nil)
-            }
-        }
+        // SOUL-208: NSToolbar managed by SoulAppDelegate owns the items
+        // (sidebar + right-pane toggles). NO SwiftUI ToolbarItem block
+        // here — adding one creates a BarAppearanceBridge KVO observer
+        // that panics on toggle-driven relayout because its toolbar
+        // reference is stale after our window.toolbar swap.
         .onChange(of: columnVisibility) { _, newValue in
             showSidebar = (newValue != .detailOnly)
         }
