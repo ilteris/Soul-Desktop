@@ -311,7 +311,16 @@ extension ThreadController {
         // conversation. Matches the same pattern Codex already uses in
         // `spawnAndInitializeCodex` (ThreadController+Codex.swift:58).
         if sessionId == nil {
-            sessionId = nid  // Fresh chat: kernel and native ids coincide.
+            // Kernel sid MUST be a UUID — the rest of the app (hydrate
+            // guard at ThreadController+Hydrate.swift:28, loadSession
+            // guard at Lifecycle.swift:24, sidebar row routing) keys off
+            // that invariant. Claude/Gemini return UUIDs from
+            // session/new; pi-acp returns its own id format which fails
+            // the strict UUID check and produces "session id is not a
+            // UUID; cannot resume" on subsequent opens (SOUL-196).
+            // Mint a UUID kernel sid when the provider's id isn't one;
+            // pi-acp's value lives on as nativeSessionId.
+            sessionId = Self.looksLikeUUID(nid) ? nid : UUID().uuidString.lowercased()
         }
         nativeSessionId = nid
         hasInitialized = true

@@ -56,7 +56,10 @@ extension ThreadController {
         // appendHook would write to a new directory, orphaning the
         // ledger the user just opened.
         if sessionId == nil {
-            sessionId = threadId
+            // Same UUID-invariant as the ACP path — see SOUL-196 in
+            // ThreadController+Lifecycle.swift. Codex threadIds may not
+            // be strict UUIDs; mint our own kernel sid in that case.
+            sessionId = Self.looksLikeUUID(threadId) ? threadId : UUID().uuidString.lowercased()
         }
         nativeSessionId = threadId
         hasInitialized = true
