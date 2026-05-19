@@ -123,22 +123,49 @@ func enumerateJSONLines(atPath path: String, _ body: (Data) -> Void) -> JSONLine
 /// run — only adjacent dups collapse, which keeps a legitimate
 /// "Edit-then-Edit-again-later" pair separated by a model reply
 /// intact.
+/// Collapses repeated toolCall fingerprints within a sliding window.
+/// Live repro: a Gemini turn that retries the same Edit-A-then-Edit-B pair
+/// many times shows fingerprints like `write|71`, `write|67`, `write|71`,
+/// `write|67` … Adjacent-only dedup never matches because A and B keep
+/// alternating. A sliding window of 8 toolCalls covers the realistic
+/// retry-loop length without collapsing legitimately-distinct edits that
+/// happen to share a line count many turns apart.
+///
+/// Any non-toolCall (user/agent message, status row) clears the window —
+/// a turn boundary resets dedup so a separate later turn making the same
+/// edit isn't suppressed.
 func dedupAdjacentToolCalls(_ items: [ThreadItem]) -> [ThreadItem] {
     var out: [ThreadItem] = []
     out.reserveCapacity(items.count)
-    var lastFingerprint: String? = nil
+    // Sliding window of recently-emitted toolCall fingerprints. FIFO; size
+    // capped so the search stays O(1).
+    var recentFingerprints: [String] = []
+    let windowSize = 8
+    var collapsedCount = 0
     for item in items {
         guard case .toolCall(_, let kind, let title, _, let loc, let details) = item else {
+            // Don't reset the window on non-toolCall items. Transcript
+            // readers interleave tool_result user-records and agent text
+            // between consecutive Edits; resetting here meant the window
+            // was always empty when the next Edit arrived and dedup never
+            // matched (live repro: collapsed=0 on a transcript with 38
+            // identical-fingerprint edits). The windowSize cap is the
+            // natural decay; we don't need an explicit boundary signal.
             out.append(item)
-            lastFingerprint = nil
             continue
         }
         let fingerprint = toolCallFingerprint(kind: kind, title: title, loc: loc, details: details)
-        if fingerprint == lastFingerprint, fingerprint != nil {
-            continue   // duplicate of the immediately-preceding toolCall — drop
+        if let fp = fingerprint, recentFingerprints.contains(fp) {
+            collapsedCount += 1
+            continue
         }
         out.append(item)
-        lastFingerprint = fingerprint
+        if let fp = fingerprint {
+            recentFingerprints.append(fp)
+            if recentFingerprints.count > windowSize {
+                recentFingerprints.removeFirst()
+            }
+        }
     }
     return out
 }
