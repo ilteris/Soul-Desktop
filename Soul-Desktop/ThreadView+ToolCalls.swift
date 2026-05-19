@@ -190,9 +190,15 @@ struct ToolCallCarouselRow: View {
 
     private var aggregateStatus: String {
         let s = items.map { status(of: $0) }
-        if s.contains(where: { $0 == "failed" || $0 == "error" }) { return "failed" }
         if s.contains(where: { $0 == "pending" || $0 == "in_progress" }) { return "in_progress" }
         if s.contains("stopped") { return "stopped" }
+        // Only call the whole group "failed" when every child failed.
+        // Agents routinely run probe-style shell calls that return non-zero
+        // (grep with no match, `git diff --quiet`, optional cleanups) on the
+        // way to a successful outcome — flagging the group "failed (3)" when
+        // 2 of 3 succeeded misrepresents what happened. If at least one
+        // child completed, treat the group as completed.
+        if s.allSatisfy({ $0 == "failed" || $0 == "error" }) { return "failed" }
         return "completed"
     }
 

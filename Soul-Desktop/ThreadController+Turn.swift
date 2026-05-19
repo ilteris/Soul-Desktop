@@ -373,18 +373,24 @@ extension ThreadController {
     }
 
     func cancel() async {
-        // Drop any queued prompts — cancelling means "stop, don't keep going."
+        // Paint UI feedback FIRST — the async cancel below hops to the
+        // ACPClient actor, which while a turn is streaming is busy decoding
+        // session/update notifications. If we await it first, the Stop
+        // button feels unresponsive (no row, no pill flip) until that actor
+        // queue drains. Flip the visible state synchronously so the click
+        // registers immediately; the wire-level cancel + child teardown
+        // run after.
         queuedPrompts.removeAll()
-        await cancelActiveProviderTurn()
-        // Flip any still-running tool calls to a terminal "stopped" status so
-        // the row stops claiming work is happening. Without this the orange
-        // "in_progress" pill lingers indefinitely after the agent acks cancel.
         markInFlightToolCallsStopped()
-        // Guard against duplicate "cancel sent" rows when the user mashes the
-        // cancel button.
         appendCancelStatusIfNeeded()
-        await resetProviderProcessAfterInterruptedTurn()
         isWorking = false
+        stopStallWatchdog()
+        // Suppress the upcoming "prompt turn interrupted" error that the
+        // in-flight `client.prompt` will throw once the transport tears
+        // down — the user already saw "■ cancel sent".
+        suppressNextInterruptedTurnError = true
+        await cancelActiveProviderTurn()
+        await resetProviderProcessAfterInterruptedTurn()
     }
 
     /// Cancel the current stalled turn. If the queue has more prompts, dispatch
