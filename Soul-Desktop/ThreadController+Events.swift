@@ -121,6 +121,13 @@ extension ThreadController {
     }
 
     func handle(_ event: ACPClient.Event) {
+        // SOUL-210: while a Stop is mid-flight, drop session/update
+        // notifications so the agent can't stream more rows after the
+        // user clicked Stop. The .terminated event MUST still pass so
+        // the controller knows the child has actually exited.
+        if isCancelling {
+            if case .terminated = event { /* allow */ } else { return }
+        }
         // Don't bump activity during the agent's replay-transcript stream.
         // session/load streams every historical user/agent chunk back to us;
         // counting those as "activity" makes the sidebar row jump to the top

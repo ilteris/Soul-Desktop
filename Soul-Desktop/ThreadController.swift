@@ -590,6 +590,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// force an in-flight prompt continuation to unwind. The resulting
     /// childTerminated error is expected and should not render as a red row.
     var suppressNextInterruptedTurnError = false
+    /// SOUL-210: gates incoming session/update events between the moment
+    /// the user clicks Stop and the moment the child process is actually
+    /// dead. Without this, the agent streams more text + tool rows after
+    /// Stop because session/update notifications continue to arrive
+    /// (and apply) while we await session/cancel + process teardown.
+    /// That made Stop "feel" unresponsive — the UI flipped to !isWorking
+    /// but new content still appeared.
+    @ObservationIgnored var isCancelling = false
     /// Set by steerToNextQueued() so the next queued prompt that actually
     /// dispatches in the send() while-loop posts the "steered" status row at
     /// the moment the queue drains — not optimistically at cancel-send time,

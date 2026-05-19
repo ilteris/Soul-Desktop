@@ -391,6 +391,10 @@ extension ThreadController {
     }
 
     func cancel() async {
+        // SOUL-204: diagnostic so a user-reported "Stop is unresponsive" has
+        // an audit trail. If this line never appears in the agent log on a
+        // click, the button isn't even routing onCancel through.
+        logLifecycle("cancel.invoked", note: "queued=\(queuedPrompts.count) isWorking=\(isWorking) client=\(client != nil ? "live" : "nil")")
         // Paint UI feedback FIRST — the async cancel below hops to the
         // ACPClient actor, which while a turn is streaming is busy decoding
         // session/update notifications. If we await it first, the Stop
@@ -398,6 +402,10 @@ extension ThreadController {
         // queue drains. Flip the visible state synchronously so the click
         // registers immediately; the wire-level cancel + child teardown
         // run after.
+        // SOUL-210: gate event delivery FIRST — before any await — so
+        // session/update notifications already in-flight on the actor
+        // queue can't append more rows after the click.
+        isCancelling = true
         queuedPrompts.removeAll()
         markInFlightToolCallsStopped()
         appendCancelStatusIfNeeded()
@@ -408,7 +416,10 @@ extension ThreadController {
         // down — the user already saw "■ cancel sent".
         suppressNextInterruptedTurnError = true
         await cancelActiveProviderTurn()
+        logLifecycle("cancel.providerTurnCancelled", note: "moving to process teardown")
         await resetProviderProcessAfterInterruptedTurn()
+        isCancelling = false
+        logLifecycle("cancel.complete", note: "child terminated, isWorking=false")
     }
 
     /// Cancel the current stalled turn. If the queue has more prompts, dispatch

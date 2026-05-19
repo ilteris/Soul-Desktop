@@ -268,9 +268,25 @@ struct ComposerView: View {
                         CommandChip(command: cmd, onClear: clearCommand)
                             .padding(.top, 11)
                     }
+                    ZStack(alignment: .topLeading) {
+                        // SOUL-206: shimmer the placeholder. Hide AppKit's
+                        // own draw (empty string) and render our own
+                        // gradient-swept Text aligned to the same inset
+                        // when the prompt is empty.
+                        if prompt.isEmpty && activeCommand == nil {
+                            ShimmerText(
+                                text: "Ask Soul anything. @ to use plugins or mention files",
+                                font: SoulType.composer,
+                                base: SoulColor.fgSubtle.opacity(0.7),
+                                highlight: SoulColor.accent,
+                                period: 2.6
+                            )
+                            .padding(.top, 12)
+                            .allowsHitTesting(false)
+                        }
                     ComposerTextField(
                         text: $prompt,
-                        placeholder: activeCommand?.inputHint ?? "Ask Soul anything. @ to use plugins or mention files",
+                        placeholder: "",
                         onSubmit: submit,
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }
@@ -334,6 +350,7 @@ struct ComposerView: View {
                             onSelect: selectCommand
                         )
                     }
+                    } // end ZStack
                 }
                 .padding(.horizontal, 14)
 
@@ -347,22 +364,14 @@ struct ComposerView: View {
                     HarnessPicker(selection: provider, onSelect: onPickHarness)
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
-                    SoulIcon(name: "mic", color: SoulColor.fgMuted)
+                    SoulIcon(name: "mic", size: SoulMetric.iconLarge, color: SoulColor.fgMuted)
                     if isWorking {
                         // Both buttons visible while a turn is in flight:
                         // stop ends the current turn; send queues the next.
-                        Button(action: onCancel) {
-                            Image(systemName: "stop.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 22, height: 22)
-                                .background(SoulColor.accent, in: Circle())
-                        }
-                        .buttonStyle(.soulChip)
-                        .help("Stop the current turn")
+                        StopButton(onCancel: onCancel)
 
                         Button(action: submit) {
-                            SoulIcon(name: "arrow.up.to.line", size: 12, color: SoulColor.fg)
+                            SoulIcon(name: "arrow.up.to.line", size: SoulMetric.icon, color: SoulColor.fg)
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
@@ -371,7 +380,7 @@ struct ComposerView: View {
                         .help("Queue this message — will send when the current turn finishes")
                     } else {
                         Button(action: submit) {
-                            SoulIcon(name: "arrow.up", size: 12, color: SoulColor.fg)
+                            SoulIcon(name: "arrow.up", size: SoulMetric.icon, color: SoulColor.fg)
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
@@ -422,7 +431,7 @@ struct ComposerView: View {
                 Spacer(minLength: 0)
                 Button(action: onToggleTerminal) {
                     Image(systemName: "terminal")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(.system(size: SoulMetric.icon, weight: .regular))
                         .foregroundStyle(terminalActive ? SoulColor.accent : SoulColor.fgMuted)
                         .frame(width: 22, height: 22)
                 }
@@ -487,6 +496,48 @@ enum GitInfo {
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? "exit \(p.terminationStatus)"
         }.value
+    }
+}
+
+/// SOUL-211: dedicated Stop button with instant visual feedback. Flips to a
+/// darker shade on press AND latches to a "cancelling…" disabled state on
+/// release so the user gets unambiguous confirmation that the click registered
+/// even before the async teardown completes downstream. The latched state
+/// auto-clears after 1.5s in case isWorking doesn't flip (transport stuck).
+private struct StopButton: View {
+    let onCancel: () -> Void
+    @State private var clicked = false
+
+    var body: some View {
+        Image(systemName: clicked ? "hourglass" : "stop.fill")
+            .font(.system(size: SoulMetric.iconHint, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(clicked ? Color.red : SoulColor.accent))
+            .scaleEffect(clicked ? 0.85 : 1.0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: clicked)
+            // SOUL-211: contentShape pins the hit region to the visible
+            // circle; bare Image otherwise hit-tests against its bounding
+            // box which can be eaten by sibling layouts.
+            .contentShape(Circle())
+            .onTapGesture {
+                guard !clicked else { return }
+                clicked = true
+                let ts = ISO8601DateFormatter().string(from: Date())
+                let line = "\(ts) composer Stop tap fired\n"
+                let path = NSHomeDirectory() + "/Library/Logs/Soul-Desktop/cancel.log"
+                try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                if let data = line.data(using: .utf8) {
+                    if let h = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
+                        try? h.seekToEnd(); try? h.write(contentsOf: data); try? h.close()
+                    } else { try? data.write(to: URL(fileURLWithPath: path)) }
+                }
+                onCancel()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    clicked = false
+                }
+            }
+            .help(clicked ? "Cancelling…" : "Stop the current turn")
     }
 }
 
