@@ -8,18 +8,14 @@ struct AppShell: View {
     /// already do that via dynamic NSColor); the other two force a side.
     @AppStorage("soul.appearance") private var appearancePref: String = "system"
     /// Multiplex: every opened conversation gets its own ThreadController and
-    /// stays alive in `threads` until explicitly closed. Switching sessions
-    /// is a pointer swap (`activeThreadKey`), not a teardown — agent
-    /// processes keep streaming in the background, no re-spawn, no
-    /// re-hydration. Keyed by `ThreadController.id` because fresh new chats
-    /// don't have a sessionId until the first send resolves.
-    @State private var threads: [String: ThreadController] = [:]
-    @State private var activeThreadKey: String? = nil
-    @State private var replay: ReplayController? = nil
+    /// stays alive until explicitly closed. Switching sessions is a pointer
+    /// swap, not a teardown — agent processes keep streaming in the
+    /// background, no re-spawn, no re-hydration.
+    @State private var sessions = AppSessionCoordinator()
+    @State private var replay = AppReplayCoordinator()
     /// Optimistic selection: the live-row ID the user just tapped, used for
     /// sidebar highlight before the spawn completes and `thread.sessionId`
     /// is real. Cleared once the thread's own session ID catches up.
-    @State private var pendingActiveId: String? = nil
     /// SOUL-SOUL_DESKTOP-138: nonce bumped every time the user initiates a
     /// new chat (composer-send into empty hero or sidebar "+ New chat"
     /// button). SidebarView observes this and auto-expands the parent
@@ -47,13 +43,13 @@ struct AppShell: View {
     @StateObject private var terminalModel = TerminalPanelModel()
     @State private var showTerminal: Bool = false
     @AppStorage("soul.review.visible") private var showReview: Bool = false
+    @State private var rightPane = AppRightPaneCoordinator()
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
     /// SOUL-208: NavigationSplitView visibility binding.
     @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
-    @State private var sidebarWasOpenBeforeReplay: Bool = true
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
     @State private var pendingPermissionMode: PermissionMode = .fullAccess
@@ -61,14 +57,6 @@ struct AppShell: View {
     /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
     /// and surface a sheet offering the read-only Replay path instead.
     @State private var externalLiveSession: SoulSession? = nil
-    /// Phantom sidebar row for a fresh "New chat" composer before any send
-    /// has resolved a real session id. Dropped when startThread() actually
-    /// spawns a controller, or when the user navigates to another session.
-    @State private var draftSession: SoulSession? = nil
-    /// SOUL-SOUL_DESKTOP-041: path of the file currently open in the right-
-    /// side preview pane. Set by FileChipRow taps via the Environment
-    /// `openFilePreview` callback; cleared by the panel's X button.
-    @State private var filePreviewPath: String? = nil
     /// Remembers whether the sidebar was open before the preview pane took
     /// over the canvas width, so closing the preview restores prior layout.
     @State private var sidebarWasOpenBeforePreview: Bool = true
@@ -77,13 +65,8 @@ struct AppShell: View {
     /// 320pt sidebar column. SidebarView writes here via Binding.
     @State private var repairToast: String? = nil
 
-    private var replayFraction: Double {
-        guard let replay, replay.total > 0 else { return 0 }
-        return Double(replay.index) / Double(replay.total)
-    }
-
     private var contextUsage: ContextUsage? {
-        if let replay {
+        if let replay = replay.controller {
             // During replay, simulate the context window filling as events
             // reveal — sum text bytes from `visible` (the prefix of all
             // events played so far) rather than the static end-of-session
@@ -111,35 +94,15 @@ struct AppShell: View {
         .easeInOut(duration: 0.22)
     }
 
-    /// Single tabbed right pane. Both Review and the File Preview live in
-    /// one container with one width animation. Opening either, or both,
-    /// expands the same pane; only the active tab's content renders.
-    private enum RightTab: Hashable { case review, file }
-    @State private var activeRightTab: RightTab = .review
-
-    private var openRightTabs: [RightTab] {
-        var tabs: [RightTab] = []
-        if showReview { tabs.append(.review) }
-        if filePreviewPath != nil { tabs.append(.file) }
-        return tabs
-    }
-
-    private var rightPaneOpen: Bool { !openRightTabs.isEmpty }
-
-    private var rightPaneWidth: CGFloat {
-        rightPaneOpen ? 541 : 0
-    }
-
     private func currentProject() -> SoulProject? {
         guard let key = selectedProject else { return nil }
         return SoulRegistry.projects().first { $0.id == key }
     }
 
-    /// The thread the canvas is currently showing. Computed from the active
-    /// key — multiple threads coexist in `threads`; only one paints at a time.
+    /// The thread the canvas is currently showing. Multiple controllers
+    /// coexist in the session coordinator; only one paints at a time.
     private var thread: ThreadController? {
-        guard let key = activeThreadKey else { return nil }
-        return threads[key]
+        sessions.activeThread
     }
 
     /// Binding for the active controller's `pendingRecovery`. Extracted out
@@ -152,72 +115,26 @@ struct AppShell: View {
         )
     }
 
-    /// Per-thread composer-draft binding. Routes the @Bindable controller's
-    /// own `composerDraft` so keystrokes invalidate only ThreadView — not
-    /// AppShell.body and everything downstream. Returns a no-op binding if
-    /// the controller has gone missing (shouldn't happen in practice).
-    private func bindingForDraft(_ id: String) -> Binding<String> {
-        Binding(
-            get: { threads[id]?.composerDraft ?? "" },
-            set: { threads[id]?.composerDraft = $0 }
-        )
-    }
-
-    private func setActiveThread(_ key: String?) {
-        activeThreadKey = key
-        if let key { bumpThreadRecency(key) }
-        evictOverflowThreads()
-    }
-
-    /// SOUL-220: LRU cap on mounted ThreadControllers. Without this, every
-    /// session click adds another controller to `threads[]` that never tears
-    /// down (per the "mount once, toggle visibility" directive). After ~6-10
-    /// sessions clicked in a row, SwiftUI body re-renders scale linearly with
-    /// the mounted count and the app gets visibly choppy.
-    private static let maxMountedThreads = 3
-    @State private var threadRecency: [String] = []
-
-    private func bumpThreadRecency(_ key: String) {
-        threadRecency.removeAll(where: { $0 == key })
-        threadRecency.insert(key, at: 0)
-    }
-
-    private func evictOverflowThreads() {
-        guard threadRecency.count > Self.maxMountedThreads else { return }
-        let overflow = Array(threadRecency.suffix(threadRecency.count - Self.maxMountedThreads))
-        for key in overflow {
-            // Never evict the currently active thread.
-            if key == activeThreadKey { continue }
-            if let controller = threads[key] {
-                Task { await controller.teardown() }
-            }
-            threads.removeValue(forKey: key)
-        }
-        threadRecency.removeAll(where: { !threads.keys.contains($0) })
-    }
-
     private func startThread(display: String, agent: String) {
         guard let project = currentProject() else { return }
-        draftSession = nil
+        sessions.draftSession = nil
         let controller = ThreadController(provider: harness, project: project)
         controller.permissionMode = pendingPermissionMode
-        threads[controller.id] = controller
-        setActiveThread(controller.id)
+        sessions.mount(controller)
         newChatNonce &+= 1
         Task { await controller.send(display: display, agent: agent) }
     }
 
     private func loadSession(_ session: SoulSession) {
-        if let draft = draftSession, draft.id == session.id {
+        if let draft = sessions.draftSession, draft.id == session.id {
             // Tapping the draft row keeps the hero composer up — no agent
             // spawn until the user actually sends.
-            replay?.stop()
-            replay = nil
-            activeThreadKey = nil
-            pendingActiveId = draft.id
+            replay.stop()
+            sessions.activeThreadKey = nil
+            sessions.pendingActiveId = draft.id
             return
         }
-        draftSession = nil
+        sessions.draftSession = nil
         // SOUL-SOUL_DESKTOP-043: route by the session's own project, NOT the
         // sidebar's currently-selected project. Clicking a chat row in
         // SidebarView doesn't first re-select the parent project, so
@@ -268,23 +185,23 @@ struct AppShell: View {
             return harness
         }()
         // Guard against rapid double-clicks: if a controller for this session
-        // is already in `threads` (matched by sessionId once hydrate sets it,
-        // OR by a pending pendingActiveId == session.id when sessionId hasn't
-        // been resolved yet), surface it instead of spawning a duplicate.
+        // is already mounted (matched by sessionId once hydrate sets it, OR by
+        // a pending active ID when sessionId hasn't resolved yet), surface it
+        // instead of spawning a duplicate.
         // Without this, two clicks in <1s create two ThreadControllers, each
         // calling hydrateFromDisk, and the dedup in the sidebar only masks
         // one of them.
-        if pendingActiveId == session.id, activeThreadKey != nil {
+        if sessions.pendingActiveId == session.id, sessions.activeThreadKey != nil {
             return
         }
-        pendingActiveId = session.id
+        sessions.pendingActiveId = session.id
 
         // If this session is already open in a live ThreadController, just
         // surface it. No teardown, no re-load, no agent re-spawn. This is the
         // entire point of the multiplexer.
-        if let existing = threads.values.first(where: { $0.sessionId == session.id }) {
+        if let existing = sessions.existingThread(sessionId: session.id) {
             harness = existing.provider
-            setActiveThread(existing.id)
+            sessions.setActiveThread(existing.id)
             return
         }
         // SOUL-SOUL_DESKTOP-214: branched sessions don't have a real
@@ -295,11 +212,10 @@ struct AppShell: View {
         // which rejects it ("not a UUID and does not match any session
         // title").
         if session.id.hasPrefix("thread-") {
-            let raw = String(session.id.dropFirst("thread-".count))
-            if let existing = threads.values.first(where: { $0.id.lowercased() == raw.lowercased() }) {
+            if let existing = sessions.existingThread(syntheticSessionId: session.id) {
                 harness = existing.provider
-                setActiveThread(existing.id)
-                pendingActiveId = nil
+                sessions.setActiveThread(existing.id)
+                sessions.pendingActiveId = nil
                 return
             }
         }
@@ -316,7 +232,7 @@ struct AppShell: View {
         //   - externally-authored live, idle ≥1h: safe (writer likely gone)
         //   - externally-authored live, recently active: unsafe → Replay
         if !session.canSafelyResume {
-            pendingActiveId = nil
+            sessions.pendingActiveId = nil
             externalLiveSession = session
             return
         }
@@ -348,7 +264,7 @@ struct AppShell: View {
                 // dead-ending the user into the recovery sheet when we
                 // have N prompts of authoritative history to show them.
             } else {
-                pendingActiveId = nil
+                sessions.pendingActiveId = nil
                 externalLiveSession = session
                 return
             }
@@ -406,8 +322,7 @@ struct AppShell: View {
         // alongside the finalized one until the async first-line of
         // hydrateFromDisk lands on the MainActor.
         controller.assignSessionId(session.id)
-        threads[controller.id] = controller
-        setActiveThread(controller.id)
+        sessions.mount(controller)
         // SOUL-SOUL_DESKTOP-043: Claude / Gemini-CLI sessions render from the
         // on-disk transcript without spawning the agent. The agent process is
         // started lazily on the user's first send via ensureSession(). The
@@ -437,7 +352,7 @@ struct AppShell: View {
     /// would need a kernel-ledger hydrate first, which we defer to a
     /// follow-up. Provides quiet no-op when target == source's provider.
     private func handleBranch(session: SoulSession, target: Provider) {
-        guard let source = threads.values.first(where: { $0.sessionId == session.id }) else {
+        guard let source = sessions.existingThread(sessionId: session.id) else {
             // Source isn't open. Open it first; user re-clicks to branch.
             // Surfacing a sheet here would over-engineer v0.1 — the user
             // typically branches a session they're already chatting in.
@@ -497,9 +412,8 @@ struct AppShell: View {
         let project = source.project
         let controller = ThreadController(provider: target, project: project)
         controller.permissionMode = pendingPermissionMode
-        threads[controller.id] = controller
-        setActiveThread(controller.id)
-        draftSession = nil
+        sessions.mount(controller)
+        sessions.draftSession = nil
         newChatNonce &+= 1
         branchSeedLoading = true
         controller.composerDraft = ""
@@ -533,8 +447,8 @@ struct AppShell: View {
     /// agent process disappeared mid-load), there was no UI affordance to
     /// re-try short of restarting the app. Now: ⋯ menu → Reload session.
     private func reloadActiveSession() {
-        guard let key = activeThreadKey,
-              let controller = threads[key],
+        guard let key = sessions.activeThreadKey,
+              let controller = sessions.threads[key],
               let sid = controller.sessionId
         else { return }
         let projectKey = controller.project.id
@@ -543,17 +457,15 @@ struct AppShell: View {
         guard let session = SoulRegistry.cachedSessions(forProject: projectKey)?
                 .first(where: { $0.id == sid })
         else { return }
-        threads.removeValue(forKey: key)
-        if activeThreadKey == key { activeThreadKey = nil }
+        _ = sessions.removeThread(key)
         Task { await controller.teardown() }
         // Re-enter the normal click path. fresh controller → fresh hydrate.
         loadSession(session)
     }
 
     private func newChat(targetProjectID: String? = nil) {
-        replay?.stop()
-        replay = nil
-        activeThreadKey = nil
+        replay.stop()
+        sessions.activeThreadKey = nil
         prompt = ""
         // Resolve the target up front. Callers (per-project "+" button) pass
         // an explicit id so we don't race the @Binding write-back via
@@ -579,24 +491,22 @@ struct AppShell: View {
                 isLive: true,
                 writer: .soulDesktop
             )
-            draftSession = draft
-            pendingActiveId = draft.id
+            sessions.draftSession = draft
+            sessions.pendingActiveId = draft.id
             newChatNonce &+= 1
         } else {
-            draftSession = nil
-            pendingActiveId = nil
+            sessions.draftSession = nil
+            sessions.pendingActiveId = nil
         }
     }
 
     /// Explicit close — only path that actually tears an agent down. Wired
     /// into a close affordance on threads (sidebar row context menu, future
-    /// tab close). Without an explicit close, threads live for the app's
-    /// lifetime.
+    /// tab close). Without an explicit close, threads live until the
+    /// coordinator evicts them.
     private func closeThread(_ key: String) {
-        guard let controller = threads[key] else { return }
-        threads.removeValue(forKey: key)
-        if activeThreadKey == key { activeThreadKey = nil; prompt = "" }
-        Task { await controller.teardown() }
+        sessions.closeThread(key)
+        if sessions.activeThreadKey == nil { prompt = "" }
     }
 
     @ViewBuilder
@@ -705,7 +615,7 @@ struct AppShell: View {
                     _ = ctx
                     let projectId = thread?.project.id
                     thread?.pendingRecovery = nil
-                    if let key = activeThreadKey {
+                    if let key = sessions.activeThreadKey {
                         closeThread(key)
                     }
                     newChat(targetProjectID: projectId)
@@ -735,33 +645,16 @@ struct AppShell: View {
 
     private func startReplay(_ session: SoulSession) {
         guard let project = currentProject() else { return }
-        sidebarWasOpenBeforeReplay = showSidebar
-        if showSidebar {
-            setSidebarVisible(false)
-        }
-        // Replay is a separate view — it doesn't replace the active thread.
-        // The thread keeps running; switching back via exitReplay reveals it.
-        replay?.stop()
-        replay = ReplayController(sessionId: session.id, project: project)
+        replay.start(
+            session: session,
+            project: project,
+            sidebarVisible: showSidebar,
+            setSidebarVisible: setSidebarVisible
+        )
     }
 
     private func exitReplay() {
-        // Cancel playback synchronously so no driver Task touches the
-        // controller while it's being torn down.
-        replay?.stop()
-        // Move the deallocation off the main thread. For a 33h Claude
-        // session `allEvents`/`visible` hold hundreds of ThreadItems with
-        // megabyte text payloads; releasing those refs on main beach-balls
-        // the click. Detached task drops the last strong ref off-main.
-        if let outgoing = replay {
-            replay = nil
-            Task.detached(priority: .utility) {
-                _ = outgoing  // hold then drop off-main
-            }
-        }
-        if sidebarWasOpenBeforeReplay && !showSidebar {
-            setSidebarVisible(true)
-        }
+        replay.exit(sidebarVisible: showSidebar, setSidebarVisible: setSidebarVisible)
     }
 
     private func cancelTurn() {
@@ -813,15 +706,14 @@ struct AppShell: View {
 
     private func toggleReview() {
         withAnimation(sidePanelAnimation) {
-            showReview.toggle()
-            if showReview { activeRightTab = .review }
+            rightPane.toggleReview()
+            showReview = rightPane.reviewVisible
         }
     }
 
     private func setFilePreviewPath(_ path: String?) {
         withAnimation(sidePanelAnimation) {
-            filePreviewPath = path
-            if path != nil { activeRightTab = .file }
+            rightPane.setFilePreviewPath(path)
         }
     }
 
@@ -886,7 +778,7 @@ struct AppShell: View {
         .help("Toggle sidebar (⌘\\)")
         .padding(.leading, 32)
         .padding(.top, 10)
-        .opacity(replay != nil ? 0.35 : 1)
+        .opacity(replay.isActive ? 0.35 : 1)
     }
 
     /// Closure handed to every composer surface (ThreadView, HeroEmptyState)
@@ -917,17 +809,17 @@ struct AppShell: View {
                 onToggleSidebar: toggleSidebar,
                 onToggleTerminal: toggleTerminal,
                 onToggleReview: toggleReview,
-                threadActive: thread != nil || replay != nil,
+                threadActive: thread != nil || replay.isActive,
                 sidebarActive: showSidebar,
                 terminalActive: showTerminal,
-                reviewActive: showReview,
-                replayActive: replay != nil,
+                reviewActive: rightPane.reviewVisible,
+                replayActive: replay.isActive,
                 contextUsage: contextUsage,
                 thread: thread
             )
             ZStack {
                 SoulColor.bg.ignoresSafeArea()
-                if let replay {
+                if let replay = replay.controller {
                     ReplayView(controller: replay, onExit: exitReplay)
                 } else {
                     // Mount every open thread regardless of which one (if any)
@@ -938,11 +830,11 @@ struct AppShell: View {
                     // composer renders on top so the new-chat composer is
                     // available without tearing down the background threads.
                     ZStack {
-                        ForEach(Array(threads.values), id: \.id) { ctrl in
-                            let isActive = activeThreadKey == ctrl.id
+                        ForEach(sessions.mountedThreads, id: \.id) { ctrl in
+                            let isActive = sessions.activeThreadKey == ctrl.id
                             ThreadView(
                                 controller: ctrl,
-                                prompt: bindingForDraft(ctrl.id),
+                                prompt: sessions.bindingForDraft(ctrl.id),
                                 onCancel: { if isActive { cancelTurn() } },
                                 onPickHarness: onPickHarness,
                                 branchSeedLoading: isActive && branchSeedLoading,
@@ -954,7 +846,7 @@ struct AppShell: View {
                             .accessibilityHidden(!isActive)
                             .zIndex(isActive ? 1 : 0)
                         }
-                        if activeThreadKey == nil {
+                        if sessions.activeThreadKey == nil {
                             HeroEmptyState(
                                 projectName: currentProject()?.name ?? "your project",
                                 projectPath: currentProject()?.path,
@@ -989,7 +881,7 @@ struct AppShell: View {
             //    the right edge), or
             //  - the canvas is in Replay mode (the overlay's git/branch
             //    actions don't apply to a read-only chapter view)
-            if !rightPaneOpen, replay == nil {
+            if !rightPane.isOpen, !replay.isActive {
                 CanvasInfoOverlay(
                     projectPath: thread?.project.path ?? currentProject()?.path,
                     projectName: thread?.project.name ?? currentProject()?.name,
@@ -1005,7 +897,7 @@ struct AppShell: View {
     @ViewBuilder
     private var rightSidePanels: some View {
         ZStack(alignment: .leading) {
-            if rightPaneOpen {
+            if rightPane.isOpen {
                 HStack(spacing: 0) {
                     Rectangle()
                         .fill(SoulColor.border.opacity(0.5))
@@ -1015,7 +907,7 @@ struct AppShell: View {
                 }
             }
         }
-        .frame(width: rightPaneWidth, alignment: .leading)
+        .frame(width: rightPane.width, alignment: .leading)
         .frame(maxHeight: .infinity)
         .background(SoulColor.bg)
         .clipped()
@@ -1029,13 +921,13 @@ struct AppShell: View {
             // content unmounted (computationally cheap to remount, and
             // ReviewPanel has its own load lifecycle).
             ZStack {
-                if effectiveActiveRightTab == .review, showReview {
+                if rightPane.effectiveActiveTab == .review, rightPane.reviewVisible {
                     ReviewPanel(
                         projectPath: currentProject()?.path,
                         onClose: { closeRightTab(.review) },
                         embedded: true
                     )
-                } else if effectiveActiveRightTab == .file, let preview = filePreviewPath {
+                } else if rightPane.effectiveActiveTab == .file, let preview = rightPane.filePreviewPath {
                     FilePreviewPanel(
                         path: preview,
                         onClose: { closeRightTab(.file) },
@@ -1047,17 +939,9 @@ struct AppShell: View {
         }
     }
 
-    /// Falls back to the first available tab if the user's last selection
-    /// is no longer open (e.g. they closed the file tab while it was active).
-    private var effectiveActiveRightTab: RightTab {
-        let tabs = openRightTabs
-        if tabs.contains(activeRightTab) { return activeRightTab }
-        return tabs.first ?? .review
-    }
-
     private var rightPaneTabStrip: some View {
         HStack(spacing: 4) {
-            ForEach(openRightTabs, id: \.self) { tab in
+            ForEach(rightPane.openTabs, id: \.self) { tab in
                 rightPaneTabButton(tab)
             }
             Spacer()
@@ -1078,14 +962,14 @@ struct AppShell: View {
 
     private func closeRightPane() {
         withAnimation(sidePanelAnimation) {
-            showReview = false
-            filePreviewPath = nil
+            rightPane.closePane()
+            showReview = rightPane.reviewVisible
         }
     }
 
     @ViewBuilder
-    private func rightPaneTabButton(_ tab: RightTab) -> some View {
-        let isActive = effectiveActiveRightTab == tab
+    private func rightPaneTabButton(_ tab: AppRightPaneTab) -> some View {
+        let isActive = rightPane.effectiveActiveTab == tab
         HStack(spacing: 6) {
             Button(action: {
                 // First click on an inactive tab activates it; clicking the
@@ -1093,16 +977,16 @@ struct AppShell: View {
                 // the Finder convention where re-selecting a selected item
                 // opens / reveals it. Right-click also exposes the action via
                 // contextMenu below for discoverability.
-                if isActive, tab == .file, let path = filePreviewPath {
+                if isActive, tab == .file, let path = rightPane.filePreviewPath {
                     revealInFinder(path)
                 } else {
-                    activeRightTab = tab
+                    rightPane.activeTab = tab
                 }
             }) {
                 HStack(spacing: 5) {
                     Image(systemName: tab == .review ? "checklist" : "doc.text")
                         .font(.system(size: 10))
-                    Text(rightPaneTabLabel(tab))
+                    Text(rightPane.label(for: tab))
                         .font(SoulFont.ui(11, weight: isActive ? .semibold : .regular))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1112,7 +996,7 @@ struct AppShell: View {
             .buttonStyle(.soulHover)
             .help(isActive && tab == .file ? "Click again to reveal in Finder" : "")
             .contextMenu {
-                if tab == .file, let path = filePreviewPath {
+                if tab == .file, let path = rightPane.filePreviewPath {
                     Button("Reveal in Finder") { revealInFinder(path) }
                     Button("Open with Default App") {
                         NSWorkspace.shared.open(URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
@@ -1158,21 +1042,10 @@ struct AppShell: View {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
     }
 
-    private func rightPaneTabLabel(_ tab: RightTab) -> String {
-        switch tab {
-        case .review: return "Review"
-        case .file:
-            guard let p = filePreviewPath else { return "File" }
-            return (p as NSString).lastPathComponent
-        }
-    }
-
-    private func closeRightTab(_ tab: RightTab) {
+    private func closeRightTab(_ tab: AppRightPaneTab) {
         withAnimation(sidePanelAnimation) {
-            switch tab {
-            case .review: showReview = false
-            case .file:   filePreviewPath = nil
-            }
+            rightPane.closeTab(tab)
+            showReview = rightPane.reviewVisible
         }
     }
 
@@ -1186,17 +1059,17 @@ struct AppShell: View {
                 onBranch: { session, target in handleBranch(session: session, target: target) },
                 onOpenSettings: { showSettings = true },
                 onToggleSidebar: toggleSidebar,
-                activeReplaySessionId: replay?.sessionId,
-                replayProgress: replayFraction,
-                replayIndex: replay?.index ?? 0,
-                replayTotal: replay?.total ?? 0,
-                replayPrompts: replay?.promptCount ?? 0,
-                replayReplies: replay?.replyCount ?? 0,
-                activeSessionId: thread?.sessionId ?? pendingActiveId,
-                activeProjectId: thread?.project.id ?? replay?.project.id ?? draftSession?.project,
+                activeReplaySessionId: replay.controller?.sessionId,
+                replayProgress: replay.fraction,
+                replayIndex: replay.controller?.index ?? 0,
+                replayTotal: replay.controller?.total ?? 0,
+                replayPrompts: replay.controller?.promptCount ?? 0,
+                replayReplies: replay.controller?.replyCount ?? 0,
+                activeSessionId: thread?.sessionId ?? sessions.pendingActiveId,
+                activeProjectId: thread?.project.id ?? replay.controller?.project.id ?? sessions.draftSession?.project,
                 currentProvider: harness,
-                draftSession: draftSession,
-                activeThreads: Array(threads.values),
+                draftSession: sessions.draftSession,
+                activeThreads: sessions.mountedThreads,
                 newChatNonce: newChatNonce,
                 repairToast: $repairToast
             )
@@ -1250,6 +1123,9 @@ struct AppShell: View {
         .onReceive(NotificationCenter.default.publisher(for: SoulAppDelegate.toggleReviewNotification)) { _ in
             toggleReview()
         }
+        .onAppear {
+            rightPane.reviewVisible = showReview
+        }
         // Top-center toast banner (lifted from SidebarView). Renders here
         // so it spans the whole window — visible regardless of which pane
         // the action was triggered from.
@@ -1269,8 +1145,8 @@ struct AppShell: View {
         }
         .animation(.easeInOut(duration: 0.18), value: repairToast)
         .animation(sidePanelAnimation, value: showSidebar)
-        .animation(sidePanelAnimation, value: showReview)
-        .animation(sidePanelAnimation, value: filePreviewPath)
+        .animation(sidePanelAnimation, value: rightPane.reviewVisible)
+        .animation(sidePanelAnimation, value: rightPane.filePreviewPath)
         .environment(\.openFilePreview) { raw in
             // Strip `:LINE` or `:LINE:COL` suffixes that the linkifier
             // produces for tool-call rows like `ThreadController.swift:1470`.
@@ -1284,7 +1160,7 @@ struct AppShell: View {
                 if stripped.hasPrefix("/") { return stripped }
                 if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
                 let base = thread?.project.path
-                    ?? replay?.project.path
+                    ?? replay.controller?.project.path
                     ?? currentProject()?.path
                 guard let base else { return stripped }
                 return (base as NSString).appendingPathComponent(stripped)
@@ -1300,7 +1176,7 @@ struct AppShell: View {
             // retry by dropping that segment.
             if !FileManager.default.fileExists(atPath: final),
                !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
-               let base = thread?.project.path ?? replay?.project.path ?? currentProject()?.path {
+               let base = thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path {
                 let baseName = (base as NSString).lastPathComponent
                 let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
                 if parts.count == 2, parts[0] == Substring(baseName) {
@@ -1321,7 +1197,7 @@ struct AppShell: View {
                     final = match
                 }
             }
-            if filePreviewPath == nil {
+            if rightPane.filePreviewPath == nil {
                 sidebarWasOpenBeforePreview = showSidebar
                 if showSidebar {
                     setSidebarVisible(false)
@@ -1329,7 +1205,7 @@ struct AppShell: View {
             }
             setFilePreviewPath(final)
         }
-        .onChange(of: filePreviewPath) { _, new in
+        .onChange(of: rightPane.filePreviewPath) { _, new in
             if new == nil, sidebarWasOpenBeforePreview, !showSidebar {
                 setSidebarVisible(true)
             }
@@ -1384,14 +1260,10 @@ struct AppShell: View {
             // belong to their own project (carried on the ThreadController),
             // so clicking around in the sidebar doesn't tear them down.
             devServerRunning = false
-            if let draft = draftSession, draft.project != newKey {
-                draftSession = nil
-                if pendingActiveId == draft.id { pendingActiveId = nil }
-            }
+            sessions.clearDraftIfProjectChanged(to: newKey)
         }
         .onChange(of: showTerminal) { _, isOpen in
             if !isOpen { devServerRunning = false }
         }
     }
 }
-
