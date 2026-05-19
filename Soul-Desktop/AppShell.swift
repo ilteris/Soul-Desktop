@@ -165,6 +165,35 @@ struct AppShell: View {
 
     private func setActiveThread(_ key: String?) {
         activeThreadKey = key
+        if let key { bumpThreadRecency(key) }
+        evictOverflowThreads()
+    }
+
+    /// SOUL-220: LRU cap on mounted ThreadControllers. Without this, every
+    /// session click adds another controller to `threads[]` that never tears
+    /// down (per the "mount once, toggle visibility" directive). After ~6-10
+    /// sessions clicked in a row, SwiftUI body re-renders scale linearly with
+    /// the mounted count and the app gets visibly choppy.
+    private static let maxMountedThreads = 3
+    @State private var threadRecency: [String] = []
+
+    private func bumpThreadRecency(_ key: String) {
+        threadRecency.removeAll(where: { $0 == key })
+        threadRecency.insert(key, at: 0)
+    }
+
+    private func evictOverflowThreads() {
+        guard threadRecency.count > Self.maxMountedThreads else { return }
+        let overflow = Array(threadRecency.suffix(threadRecency.count - Self.maxMountedThreads))
+        for key in overflow {
+            // Never evict the currently active thread.
+            if key == activeThreadKey { continue }
+            if let controller = threads[key] {
+                Task { await controller.teardown() }
+            }
+            threads.removeValue(forKey: key)
+        }
+        threadRecency.removeAll(where: { !threads.keys.contains($0) })
     }
 
     private func startThread(display: String, agent: String) {
@@ -1193,19 +1222,15 @@ struct AppShell: View {
             // the sidebar column's .sidebar vibrancy stays continuous
             // up under the traffic lights.
             .background(SoulColor.bg.ignoresSafeArea())
-            // SOUL-215: NavigationSplitView's NSSplitView draws a harsh
-            // gradient drop-shadow ~16pt into the detail pane along the
-            // divider. SwiftUI exposes no way to disable it; paint a
-            // matching-color fade on the leading edge to wash it out.
-            .overlay(alignment: .leading) {
-                LinearGradient(
-                    colors: [SoulColor.bg.opacity(0.9), SoulColor.bg.opacity(0)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 18)
-                .allowsHitTesting(false)
-            }
+            // SOUL-215 (reverted): the leading-edge gradient overlay
+            // (LinearGradient + .frame(width: 18) inside .overlay)
+            // pushed SwiftUI's layout negotiation into a non-converging
+            // recursion (StackLayout ↔ _FlexFrameLayout) under
+            // NavigationSplitView, causing the Release build to spin
+            // at 100% CPU on layout passes. Sample showed thousands of
+            // frames deep in sizeThatFits with no Soul-Desktop frames.
+            // Keeping the neutral-gray palette change which is enough
+            // on its own to soften the divider shadow.
         }
         .toolbar(removing: .title)
         // SOUL-208: NSToolbar managed by SoulAppDelegate owns the items

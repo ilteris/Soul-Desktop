@@ -663,7 +663,16 @@ struct SidebarView: View {
                 // Gemini sessions (kernel only records UserPrompt when
                 // Soul-Desktop is the writer); ctrl.items reflects the
                 // full transcript.
-                merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
+                //
+                // SOUL-219: hold the disk count while hydrate is streaming
+                // items in. Without this, the row's turn-count text
+                // climbs 0 → N visibly during the click-to-open animation,
+                // producing a flicker the user can spot. Once
+                // isReplayingLoad flips false, switch to the live ctrl
+                // count (which is now stable for the rest of the session).
+                if !ctrl.isReplayingLoad {
+                    merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
+                }
                 byId[sid] = merged
             } else {
                 byId[sid] = synthetic
