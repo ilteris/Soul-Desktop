@@ -76,11 +76,11 @@ struct ThreadView: View {
                                 .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
                                 .onAppear {
                                     anchor.visibleIds.insert(item.id)
-                                    updateAnchor()
+                                    updateAnchor(in: mainItems)
                                 }
                                 .onDisappear {
                                     anchor.visibleIds.remove(item.id)
-                                    updateAnchor()
+                                    updateAnchor(in: mainItems)
                                 }
                         }
                         if branchSeedLoading {
@@ -148,7 +148,8 @@ struct ThreadView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                             suppressAnchorWrites = false
                             // Sync the anchor once the dust has settled on the restore.
-                            updateAnchor()
+                            let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                            updateAnchor(in: splitNow.main)
                         }
                     }
                 }
@@ -185,19 +186,20 @@ struct ThreadView: View {
                     }
                 )
                 .onChange(of: canvasWidth) { _, _ in
-                    // SOUL-SOUL_DESKTOP-184: width-change re-pin used to
-                    // scrollTo(anchor.itemId, anchor: .top) when not at
-                    // bottom. That tracks "topmost visible item," so when
-                    // a user reading near the bottom clicked a file link
-                    // (opens the preview panel → width changes), the
-                    // restore snapped that topmost item to the viewport
-                    // top and the user jumped backward into the middle of
-                    // the page. Only re-pin when at bottom (the "follow
-                    // streaming output" case); otherwise let SwiftUI's
-                    // natural reflow keep the position roughly stable.
+                    // SOUL-SOUL_DESKTOP-188: with the anchor source-of-truth
+                    // fixed (updateAnchor now searches the rendered list,
+                    // not controller.items), re-pinning on width change
+                    // correctly keeps the topmost-visible item at the
+                    // viewport top — preserving the user's reading
+                    // position when the file preview panel opens or
+                    // closes. The -184 "skip re-pin unless at bottom"
+                    // workaround was a band-aid for the stale-anchor bug
+                    // and is no longer needed.
                     guard !suppressAnchorWrites else { return }
                     if anchor.atBottom {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
+                    } else if let id = anchor.itemId {
+                        proxy.scrollTo(id, anchor: .top)
                     }
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
@@ -290,17 +292,19 @@ struct ThreadView: View {
         }
     }
 
-    private func updateAnchor() {
+    /// SOUL-SOUL_DESKTOP-188: search the same list the LazyVStack renders.
+    /// Previously this searched `controller.items` (the ungrouped list),
+    /// but `anchor.visibleIds` is populated from `mainItems` (the grouped
+    /// list — groups have their own synthetic IDs that don't appear in
+    /// `controller.items`). When a region of consecutive tool calls was
+    /// on screen, `first(where:)` found nothing and `anchor.itemId`
+    /// stayed stale, often pointing at an item far up the page. The
+    /// width-change re-pin then jumped scroll back to that stale anchor,
+    /// looking like a "jump to middle" on link click / panel toggle.
+    private func updateAnchor(in renderedItems: [ThreadItem]) {
         guard !suppressAnchorWrites else { return }
-        // Find the visible item with the minimum index in the items array.
-        // This is our top-most visible item.
-        if let firstVisible = controller.items.first(where: { anchor.visibleIds.contains($0.id) }) {
-            // SOUL-SOUL_DESKTOP-094 + -096: write to the reference-type
-            // holder, not controller and not @State — neither path
-            // invalidates the view. See the `anchor` declaration comment.
+        if let firstVisible = renderedItems.first(where: { anchor.visibleIds.contains($0.id) }) {
             anchor.itemId = firstVisible.id
-            // If the bottom sentinel isn't visible (handled by its own logic),
-            // ensure atBottom is false.
         }
     }
 
