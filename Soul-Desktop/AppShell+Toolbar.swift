@@ -453,12 +453,22 @@ func stripLineSuffix(_ path: String) -> String {
 /// without an explicit project context. Same bounded BFS + skip-dirs as the
 /// project search so a deep dependency tree can't make link clicks hitch.
 func findFileInKnownProjects(filename: String) -> String? {
-    var roots: [String] = SoulRegistry.activeProjects()
+    // SOUL-SOUL_DESKTOP-185: widened from activeProjects() to all projects
+    // and added ~/Code, ~/dotfiles roots. Agents frequently reference
+    // files in archived projects (the search before missed those) or in
+    // the dotfiles tree outside `~/dotfiles/soul/` (where UPSTREAM_PRS.md,
+    // README.md etc. live). The path resolver used to dead-end into
+    // "couldn't read file" for any of those cases.
+    var roots: [String] = SoulRegistry.projects()
         .map(\.path)
         .filter { !$0.isEmpty }
     let home = NSHomeDirectory()
-    let kernelRoots = ["\(home)/dotfiles/soul"]
-    roots.append(contentsOf: kernelRoots.filter {
+    let extraRoots = [
+        "\(home)/dotfiles/soul",
+        "\(home)/dotfiles",
+        "\(home)/Code",
+    ]
+    roots.append(contentsOf: extraRoots.filter {
         FileManager.default.fileExists(atPath: $0) && !roots.contains($0)
     })
     // First-match wins. Project roots come before kernel roots, so when an

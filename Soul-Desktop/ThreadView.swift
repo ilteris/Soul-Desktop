@@ -185,11 +185,19 @@ struct ThreadView: View {
                     }
                 )
                 .onChange(of: canvasWidth) { _, _ in
+                    // SOUL-SOUL_DESKTOP-184: width-change re-pin used to
+                    // scrollTo(anchor.itemId, anchor: .top) when not at
+                    // bottom. That tracks "topmost visible item," so when
+                    // a user reading near the bottom clicked a file link
+                    // (opens the preview panel → width changes), the
+                    // restore snapped that topmost item to the viewport
+                    // top and the user jumped backward into the middle of
+                    // the page. Only re-pin when at bottom (the "follow
+                    // streaming output" case); otherwise let SwiftUI's
+                    // natural reflow keep the position roughly stable.
                     guard !suppressAnchorWrites else { return }
                     if anchor.atBottom {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
-                    } else if let id = anchor.itemId {
-                        proxy.scrollTo(id, anchor: .top)
                     }
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
