@@ -66,7 +66,7 @@ struct ToolCallRow: View {
             HStack(spacing: 6) {
                 diffStats(for: details)
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { diffExpanded.toggle() }
+                    withAnimation(.easeOut(duration: 0.08)) { diffExpanded.toggle() }
                 } label: {
                     Image(systemName: diffExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10))
@@ -235,7 +235,7 @@ struct ToolCallCarouselRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    withAnimation(.easeOut(duration: 0.08)) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
                         if !icon.isEmpty { Text(icon) }
@@ -407,7 +407,7 @@ struct ToolCallGroupRow: View {
             .help("Copy combined diff")
 
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                withAnimation(.easeOut(duration: 0.08)) { expanded.toggle() }
             } label: {
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
                     .font(.system(size: 10))

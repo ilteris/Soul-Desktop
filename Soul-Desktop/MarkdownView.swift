@@ -607,7 +607,7 @@ private struct CodeBlockView: View {
 
             if lineCount > Self.collapseThreshold {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    withAnimation(.easeOut(duration: 0.08)) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
