@@ -102,7 +102,16 @@ struct ToolCallRow: View {
     private func countLines(_ details: ToolCallDetails) -> (added: Int, removed: Int) {
         switch details.kind {
         case .edit(let oldString, let newString):
-            return (lineCount(newString), lineCount(oldString))
+            // SOUL-SOUL_DESKTOP-181: compute actual diff stats instead of
+            // raw old/new string lengths. The old behavior reported a 1-line
+            // insertion inside a 6-line context block as "+7 -6" because
+            // both strings carried the surrounding context. CollectionDifference
+            // counts only the inserted/removed lines that actually changed,
+            // matching the inline diff view's own row classifier.
+            let oldLines = oldString.isEmpty ? [] : oldString.components(separatedBy: "\n")
+            let newLines = newString.isEmpty ? [] : newString.components(separatedBy: "\n")
+            let diff = newLines.difference(from: oldLines)
+            return (diff.insertions.count, diff.removals.count)
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
         case .output, .subagent:
@@ -436,7 +445,16 @@ struct ToolCallGroupRow: View {
     private func countLines(_ details: ToolCallDetails) -> (added: Int, removed: Int) {
         switch details.kind {
         case .edit(let oldString, let newString):
-            return (lineCount(newString), lineCount(oldString))
+            // SOUL-SOUL_DESKTOP-181: compute actual diff stats instead of
+            // raw old/new string lengths. The old behavior reported a 1-line
+            // insertion inside a 6-line context block as "+7 -6" because
+            // both strings carried the surrounding context. CollectionDifference
+            // counts only the inserted/removed lines that actually changed,
+            // matching the inline diff view's own row classifier.
+            let oldLines = oldString.isEmpty ? [] : oldString.components(separatedBy: "\n")
+            let newLines = newString.isEmpty ? [] : newString.components(separatedBy: "\n")
+            let diff = newLines.difference(from: oldLines)
+            return (diff.insertions.count, diff.removals.count)
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
         case .output, .subagent:
