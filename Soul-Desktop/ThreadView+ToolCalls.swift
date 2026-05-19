@@ -582,6 +582,15 @@ private struct FileChipRow<Trailing: View>: View {
                 )
             }
             .buttonStyle(.soulChip)
+            // SOUL-SOUL_DESKTOP-182: pointing-hand cursor on the clickable
+            // file chip. Without this the chip reads as a styled label and
+            // users miss that it opens the preview pane.
+            .onContinuousHover { phase in
+                switch phase {
+                case .active: NSCursor.pointingHand.set()
+                case .ended:  NSCursor.arrow.set()
+                }
+            }
 
             Circle()
                 .fill(statusColor)

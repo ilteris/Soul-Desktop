@@ -161,6 +161,13 @@ private struct AttachmentChip: View {
             Capsule().strokeBorder(SoulColor.accent.opacity(0.3), lineWidth: 0.5)
         )
         .onHover { hovering = $0 }
+        // SOUL-SOUL_DESKTOP-182: pointing-hand cursor on attachment chip.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: NSCursor.pointingHand.set()
+            case .ended:  NSCursor.arrow.set()
+            }
+        }
         .help(path)
     }
 }
