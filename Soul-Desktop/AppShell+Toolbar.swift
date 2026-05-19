@@ -89,29 +89,25 @@ struct CanvasToolbar: View {
                 if showSmoke {
                     Button(action: onSmokeTest) {
                         Image(systemName: "ladybug")
-                            .font(.system(size: 13, weight: .regular))
+                            .font(.system(size: SoulMetric.icon, weight: .regular))
                             .foregroundStyle(SoulColor.fgMuted)
                     }
                     .buttonStyle(.soulHover)
                     .disabled(replayActive)
                     .help("Smoke-test the active provider (Debug)")
                 }
-                // SOUL-200: terminal toggle moved to the composer footer
-                // next to the project/branch chips so it sits closer to
-                // the actual canvas context, freeing top-toolbar real
-                // estate. See ComposerView footer HStack.
-                ToolbarIcon(name: "sidebar.right", isActive: reviewActive, action: onToggleReview)
-                    .disabled(replayActive)
+                // SOUL-200: terminal toggle moved to the composer footer.
+                // SOUL-208: sidebar.right moved to the native unified
+                // titlebar (.toolbar on AppShell). Nothing else lives on
+                // this row right now.
+                EmptyView()
             }
             .opacity(replayActive ? 0.35 : 1)
         }
-        // Reserve leading space for the AppShell-level overlay (just the
-        // sidebar toggle button now that the harness picker moved to the
-        // composer). 60pt covers the 32pt leading padding + the toggle's
-        // ~28pt clickable square. With the sidebar open the canvas starts
-        // at the sidebar's trailing edge, so the overlay sits over the
-        // sidebar pane and doesn't collide with toolbar content.
-        .padding(.leading, sidebarActive ? 14 : 60)
+        // SOUL-208: sidebar toggle moved to the native titlebar (.toolbar
+        // on AppShell), so the 60pt overlay-reservation gap is gone.
+        // Symmetric padding looks right under the unified titlebar.
+        .padding(.leading, 14)
         .padding(.trailing, 14)
         .padding(.top, 10)
         .padding(.bottom, 6)
@@ -136,7 +132,7 @@ private struct ThreadTitleCluster: View {
         HStack(spacing: 6) {
             Button(action: { controller.requestRename() }) {
                 Image(systemName: "square.and.pencil")
-                    .font(.system(size: 11, weight: .regular))
+                    .font(.system(size: SoulMetric.icon, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
             }
             .buttonStyle(.soulHover)
@@ -191,7 +187,7 @@ private struct ThreadTitleCluster: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .regular))
+                    .font(.system(size: SoulMetric.icon, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
                     .frame(minWidth: 24, minHeight: 24)
                     .contentShape(Rectangle())
@@ -226,14 +222,14 @@ struct HarnessPicker: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: selection.icon)
-                    .font(.system(size: 11))
+                    .font(.system(size: SoulMetric.icon))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
-                    .font(SoulFont.ui(12))
+                    .font(SoulFont.ui(13))
                     .foregroundStyle(SoulColor.fgMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
             }
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -253,7 +249,7 @@ private struct ToolbarIcon: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: name)
-                .font(.system(size: 13, weight: .regular))
+                .font(.system(size: SoulMetric.icon, weight: .regular))
                 .foregroundStyle(isActive ? SoulColor.accent : SoulColor.fgMuted)
         }
         .buttonStyle(SoulHoverButtonStyle(isActive: isActive))
@@ -274,7 +270,7 @@ private struct AgentLogChip: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "scroll")
-                    .font(.system(size: 10))
+                    .font(.system(size: SoulMetric.iconHint))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text("\(controller.agentLogCount)")
                     .font(SoulFont.code(11))
@@ -309,7 +305,7 @@ private struct ContextUsageChip: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "circle.bottomhalf.filled")
-                .font(.system(size: 10))
+                .font(.system(size: SoulMetric.iconHint))
                 .foregroundStyle(tone)
             Text("\(usage.shortLabel)")
                 .font(SoulFont.code(11, weight: .regular))
@@ -380,7 +376,7 @@ private struct SessionStatsChip: View {
         TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
             HStack(spacing: 6) {
                 Image(systemName: "wrench.adjustable")
-                    .font(.system(size: 10))
+                    .font(.system(size: SoulMetric.iconHint))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text("\(toolCount)")
                     .font(SoulFont.code(11))
@@ -396,7 +392,7 @@ private struct SessionStatsChip: View {
                     .lineLimit(1).fixedSize()
 
                 Image(systemName: "text.bubble")
-                    .font(.system(size: 10))
+                    .font(.system(size: SoulMetric.iconHint))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text("\(chapterCount)")
                     .font(SoulFont.code(11))
@@ -409,7 +405,7 @@ private struct SessionStatsChip: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                     .lineLimit(1).fixedSize()
                 Image(systemName: "clock")
-                    .font(.system(size: 10))
+                    .font(.system(size: SoulMetric.iconHint))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(elapsedLabel(now: ctx.date))
                     .font(SoulFont.code(11))

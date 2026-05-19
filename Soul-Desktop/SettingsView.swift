@@ -89,7 +89,7 @@ struct SettingsView: View {
                 ForEach(SettingsPane.allCases) { pane in
                     Button { selected = pane } label: {
                         HStack(spacing: 8) {
-                            SoulIcon(name: pane.icon, size: 12, color: SoulColor.fgMuted)
+                            SoulIcon(name: pane.icon, size: SoulMetric.icon, color: SoulColor.fgMuted)
                             Text(pane.label)
                                 .font(SoulFont.ui(13))
                                 .foregroundStyle(SoulColor.fg)
@@ -486,7 +486,7 @@ private struct MCPServersPane: View {
                     ForEach(Array(servers.enumerated()), id: \.element) { idx, s in
                         if idx > 0 { Divider().padding(.leading, 14) }
                         HStack(spacing: 10) {
-                            SoulIcon(name: "shippingbox", size: 12)
+                            SoulIcon(name: "shippingbox", size: SoulMetric.icon)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(s.name)
                                     .font(SoulFont.ui(13, weight: .regular))
@@ -561,7 +561,7 @@ private struct HooksPane: View {
                 ForEach(Array(kinds.enumerated()), id: \.element) { idx, k in
                     if idx > 0 { Divider().padding(.leading, 14) }
                     HStack(spacing: 10) {
-                        SoulIcon(name: "link", size: 12)
+                        SoulIcon(name: "link", size: SoulMetric.icon)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(k.name).font(SoulFont.ui(13, weight: .regular)).foregroundStyle(SoulColor.fg)
                             Text(k.detail).font(SoulFont.ui(11)).foregroundStyle(SoulColor.fgSubtle)
@@ -611,7 +611,7 @@ private struct ComingSoonPane: View {
         VStack(alignment: .leading, spacing: 16) {
             PaneHeader(title: title)
             HStack(spacing: 10) {
-                SoulIcon(name: "hourglass", size: 14)
+                SoulIcon(name: "hourglass", size: SoulMetric.iconLarge)
                 Text(note)
                     .font(SoulFont.ui(12))
                     .foregroundStyle(SoulColor.fgMuted)
@@ -678,7 +678,7 @@ private struct WorkModeCard: View {
     var body: some View {
         Button(action: onTap) {
             HStack(alignment: .top, spacing: 10) {
-                SoulIcon(name: icon, size: 14)
+                SoulIcon(name: icon, size: SoulMetric.iconLarge)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(SoulFont.ui(13, weight: .regular))
@@ -855,7 +855,7 @@ private struct EmptyHint: View {
     let text: String
     var body: some View {
         HStack(spacing: 8) {
-            SoulIcon(name: "tray", size: 13)
+            SoulIcon(name: "tray", size: SoulMetric.icon)
             Text(text)
                 .font(SoulFont.ui(12))
                 .foregroundStyle(SoulColor.fgMuted)

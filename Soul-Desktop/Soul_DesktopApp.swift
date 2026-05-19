@@ -4,6 +4,8 @@ import Darwin
 
 @main
 struct Soul_DesktopApp: App {
+    @NSApplicationDelegateAdaptor(SoulAppDelegate.self) private var appDelegate
+
     init() {
         // SOUL-SOUL_DESKTOP-114: refuse to launch a second instance of the same
         // bundle. Two Soul-Desktops spawn two gemini-cli child pools that race on
@@ -42,8 +44,13 @@ struct Soul_DesktopApp: App {
                 // gray hover layer never leaks around a chip's own bg.
                 .buttonStyle(.soulChip)
         }
+        // SOUL-208: hiddenTitleBar = Mail/Notes mode. The titlebar
+        // chrome stays transparent so the NavigationSplitView sidebar's
+        // .sidebar vibrancy material paints continuously up under the
+        // traffic lights. .unified toolbar style still gives us a place
+        // to hang toolbar items.
         .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unifiedCompact)
+        .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(after: .windowArrangement) {
                 TypographyLabMenuItem()

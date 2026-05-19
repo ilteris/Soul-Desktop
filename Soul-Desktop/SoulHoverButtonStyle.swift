@@ -35,16 +35,28 @@ struct SoulHoverButtonStyle: ButtonStyle {
     /// @State; ButtonStyle's own isPressed only fires while the mouse is
     /// held down, which doesn't cover external-modal-open scenarios.
     var isActive: Bool = false
+    /// SOUL-212: chip buttons paint their own bg and shouldn't have a
+    /// rounded-rect contentShape stamped over their visible shape (the
+    /// resulting hit region drifts off the painted circle/capsule and
+    /// silently eats clicks — that was the unresponsive-Stop root cause).
+    /// When true, makeBody returns the label as-is so each call site's
+    /// own .background(Shape) defines the hit region.
+    var chipMode: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
-        SoulHoverButtonContent(
+        if chipMode {
+            // Pure chrome-suppression. No contentShape, no scaleEffect, no
+            // onHover. The call-site's own background shape IS the hit region.
+            return AnyView(configuration.label)
+        }
+        return AnyView(SoulHoverButtonContent(
             configuration: configuration,
             cornerRadius: cornerRadius,
             minSize: minSize,
             padding: padding,
             paintHoverBackground: paintHoverBackground,
             isActive: isActive
-        )
+        ))
     }
 }
 
@@ -59,7 +71,7 @@ extension ButtonStyle where Self == SoulHoverButtonStyle {
     /// suppresses the hover bg layer so the label's own bg is the only
     /// thing rendered.
     static var soulChip: SoulHoverButtonStyle {
-        SoulHoverButtonStyle(minSize: 0, padding: 0, paintHoverBackground: false)
+        SoulHoverButtonStyle(minSize: 0, padding: 0, paintHoverBackground: false, chipMode: true)
     }
 }
 

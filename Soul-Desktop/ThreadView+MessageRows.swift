@@ -134,6 +134,7 @@ struct AgentMessageRow: View, Equatable {
 
             if let trace = split.trace {
                 SoulTraceChip(trace: trace)
+                    .padding(.top, 4)
             }
 
             // Footer renders for live AND historical messages. Earlier

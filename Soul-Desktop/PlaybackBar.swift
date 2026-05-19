@@ -42,7 +42,7 @@ struct PlaybackBar: View {
             // entire transcript at once. Useful when you only care about the
             // final state and don't want to wait through the scrub.
             Button(action: { controller.seek(to: controller.total) }) {
-                SoulIcon(name: "forward.end.fill", size: 10, color: SoulColor.fgMuted)
+                SoulIcon(name: "forward.end.fill", size: SoulMetric.iconHint, color: SoulColor.fgMuted)
                     .frame(width: 22, height: 22)
                     .background(SoulColor.surface, in: Circle())
             }

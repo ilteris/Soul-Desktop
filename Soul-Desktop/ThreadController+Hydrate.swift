@@ -25,8 +25,13 @@ extension ThreadController {
             await loadSession(id: sid)
             return
         }
-        guard Self.looksLikeUUID(sid) else {
-            items.append(.error(id: UUID(), text: "session id is not a UUID; cannot resume"))
+        // SOUL-205: don't reject non-UUID sids. Pi-acp historically returned
+        // its own id format before SOUL-196 minted a UUID kernel sid; those
+        // legacy registry directories are still on disk and the user can't
+        // reach them otherwise. The kernel ledger is happy with any non-empty
+        // filesystem-safe string. Only bail on empty.
+        guard !sid.isEmpty else {
+            items.append(.error(id: UUID(), text: "missing session id"))
             return
         }
         // Establish kernel identity immediately so subsequent appendHooks

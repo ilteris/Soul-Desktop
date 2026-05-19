@@ -178,27 +178,41 @@ struct WorkingIndicator: View {
             let secondsUntilAutoCancel = max(0, ceiling - secondsSinceActivity)
 
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(SoulColor.border.opacity(0.3), lineWidth: 2)
-                        .frame(width: 14, height: 14)
-                    Circle()
-                        .trim(from: 0, to: 0.3)
-                        .stroke(isStalled ? Color.orange : SoulColor.accent, lineWidth: 2)
-                        .frame(width: 14, height: 14)
-                        .rotationEffect(.degrees(rotation))
-                        .onAppear {
-                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                rotation = 360
+                // SOUL-203 revision: drop the sparkle glyph — the shimmer
+                // alone reads as motion. Stalled state keeps the small
+                // orange ring spinner so the warning has a static anchor.
+                if isStalled {
+                    ZStack {
+                        Circle()
+                            .stroke(SoulColor.border.opacity(0.3), lineWidth: 2)
+                            .frame(width: 12, height: 12)
+                        Circle()
+                            .trim(from: 0, to: 0.3)
+                            .stroke(Color.orange, lineWidth: 2)
+                            .frame(width: 12, height: 12)
+                            .rotationEffect(.degrees(rotation))
+                            .onAppear {
+                                withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                                    rotation = 360
+                                }
                             }
-                        }
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(isStalled ? "Thinking…" : "Agent working…")
-                            .font(SoulFont.ui(12, weight: .medium))
-                            .foregroundStyle(isStalled ? Color.orange : SoulColor.fg)
+                        if isStalled {
+                            Text("Thinking…")
+                                .font(SoulFont.ui(13, weight: .medium))
+                                .foregroundStyle(Color.orange)
+                        } else {
+                            ShimmerText(
+                                text: "Agent working…",
+                                font: SoulFont.ui(13, weight: .medium),
+                                base: SoulColor.accent.opacity(0.60),
+                                highlight: SoulColor.accent
+                            )
+                        }
                         if let started = controller.turnStartedAt {
                             let elapsed = max(0, Int(ctx.date.timeIntervalSince(started)))
                             Text(Self.formatElapsed(elapsed))
@@ -324,5 +338,71 @@ struct AgentLogPanel: View {
             out[attrRange].font = SoulFont.code(11, weight: .bold)
         }
         return out
+    }
+}
+
+/// SOUL-203: Claude Code-style cycling-sparkle spinner. Walks through a
+/// short list of star glyphs at ~8 Hz so the eye sees a single morphing
+/// shape instead of N rotations. Coupled with `ShimmerText` for the
+/// status copy, this is what the user sees while the agent is working.
+struct SparkleSpinner: View {
+    var tint: Color = .accentColor
+    var size: CGFloat = 13
+
+    // Frame order chosen to look like one shape rotating + pulsing.
+    // Mix of point-counts smooths the cadence; period of 8 keeps it short.
+    private static let frames: [String] = ["·", "✢", "✳", "✶", "✷", "✸", "✺", "✻"]
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.12)) { ctx in
+            let idx = Int(ctx.date.timeIntervalSince1970 / 0.12) % Self.frames.count
+            Text(Self.frames[idx])
+                .font(.system(size: size, weight: .regular))
+                .foregroundStyle(tint)
+                .frame(width: 14, height: 14, alignment: .center)
+                .contentTransition(.opacity)
+        }
+    }
+}
+
+/// Animated color sweep across a text run, matching the Claude Code CLI
+/// "Thundering…" indicator. A bright `highlight` band slides L→R over a
+/// `base` color and loops. Kept generic so the loading/queue chips can
+/// reuse it.
+struct ShimmerText: View {
+    let text: String
+    var font: Font = .system(size: 12, weight: .medium)
+    var base: Color
+    var highlight: Color
+    /// Seconds for the highlight to cross the run. Slower feels calmer.
+    var period: Double = 1.6
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60)) { ctx in
+            let t = ctx.date.timeIntervalSince1970.truncatingRemainder(dividingBy: period) / period
+            // phase sweeps the highlight from off-left to off-right.
+            // Half-width of the highlight band: 0.25 of run width.
+            let half = 0.25
+            let center = t * (1.0 + 2 * half) - half
+            // Clamp + force monotonicity so SwiftUI's "stops must be
+            // ordered" assertion never fires when the band is partially
+            // off-canvas. Equal stops collapse to a solid color — fine.
+            let a = max(0, min(1, center - half))
+            let b = max(a, min(1, center))
+            let c = max(b, min(1, center + half))
+            Text(text)
+                .font(font)
+                .foregroundStyle(
+                    LinearGradient(
+                        stops: [
+                            .init(color: base, location: a),
+                            .init(color: highlight, location: b),
+                            .init(color: base, location: c)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+        }
     }
 }

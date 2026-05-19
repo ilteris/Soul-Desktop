@@ -21,8 +21,10 @@ extension ThreadController {
             isWorking = false
             SoulSignposts.endInterval("ThreadController.loadSession", state: loadSessionInterval)
         }
-        guard Self.looksLikeUUID(sid) else {
-            items.append(.error(id: UUID(), text: "session id is not a UUID; cannot resume"))
+        // SOUL-205: see ThreadController+Hydrate.swift — relax UUID gate so
+        // legacy Pi sessions (saved before the UUID-mint fix) can still open.
+        guard !sid.isEmpty else {
+            items.append(.error(id: UUID(), text: "missing session id"))
             return
         }
         // Establish kernel identity before any ACP work. Every appendHook

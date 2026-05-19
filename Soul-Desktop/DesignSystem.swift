@@ -85,6 +85,15 @@ enum SoulMetric {
     static let radiusL: CGFloat = 14
     static let pad: CGFloat = 12
     static let padTight: CGFloat = 8
+
+    // SOUL-207: single source of truth for icon sizing. Tune here, not
+    // at call sites. Three tiers — `iconHint` for decorative micro-glyphs
+    // (chevron-down on menus, status dots), `icon` for standard inline
+    // affordances (toolbar buttons, chip leading glyphs), `iconLarge`
+    // for emphasis (send/stop circles, working indicator).
+    static let iconHint: CGFloat = 10
+    static let icon: CGFloat = 13
+    static let iconLarge: CGFloat = 15
 }
 
 /// Named typography roles. Tune sizes here, not in views. New code should
@@ -189,7 +198,7 @@ struct VisualEffectBlur: NSViewRepresentable {
 
 struct SoulIcon: View {
     let name: String
-    var size: CGFloat = 13
+    var size: CGFloat = SoulMetric.icon
     var color: Color = SoulColor.fgMuted
     var body: some View {
         Image(systemName: name)

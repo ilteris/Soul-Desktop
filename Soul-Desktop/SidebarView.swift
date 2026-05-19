@@ -212,17 +212,10 @@ struct SidebarView: View {
             .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(SoulColor.bgElevated)
-        // Clip BEFORE shadow so the rounded mask cuts every child view
-        // (scroll content, rows, hover backgrounds) — otherwise children
-        // paint into the corner area beyond the rounded background shape
-        // and leak as "corner artifacts." Shadow sits outside the clip so
-        // the lift still reads as soft beyond the rounded edge.
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(SoulColor.border, lineWidth: 0.5)
-        )
+        // SOUL-208: NavigationSplitView's sidebar column already paints
+        // the system `.sidebar` vibrancy material. Drop our custom cream
+        // bg + rounded inset so the content reads directly on the system
+        // surface (Mail/Notes style). No clip, no inner stroke.
         // Repair toast was previously overlaid here; lifted to AppShell so
         // the banner sits at the top-center of the whole window rather than
         // being clipped inside the sidebar's narrow column.

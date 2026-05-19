@@ -5,7 +5,7 @@ import SwiftUI
 
 struct SoulTraceChip: View {
     let trace: SoulTrace
-    @State private var expanded = false
+    @State private var expanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

@@ -51,7 +51,7 @@ struct ToolbarChip: View {
                     .foregroundStyle(SoulColor.fgMuted)
             }
             if trailingChevron {
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
             }
         }
         .padding(.horizontal, label == nil ? 4 : 8)
@@ -86,12 +86,12 @@ private struct ProviderPicker: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: selection.icon)
-                    .font(.system(size: 11))
+                    .font(.system(size: SoulMetric.icon))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
                     .font(SoulFont.ui(12))
                     .foregroundStyle(SoulColor.fg)
-                SoulIcon(name: "chevron.down", size: 10, color: SoulColor.fgMuted)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgMuted)
             }
         }
         .menuStyle(.borderlessButton)
@@ -136,7 +136,7 @@ private struct AttachmentChip: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 10))
+                .font(.system(size: SoulMetric.iconHint))
                 .foregroundStyle(SoulColor.accent)
             Button(action: onOpen) {
                 Text(name)
@@ -285,9 +285,9 @@ struct BranchChip: View {
             }
         } label: {
             HStack(spacing: 4) {
-                SoulIcon(name: "arrow.triangle.branch", size: 11, color: SoulColor.fgMuted)
-                Text(currentBranch).font(SoulFont.ui(12)).foregroundStyle(SoulColor.fgMuted)
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+                SoulIcon(name: "arrow.triangle.branch", size: SoulMetric.icon, color: SoulColor.fgMuted)
+                Text(currentBranch).font(SoulFont.ui(13)).foregroundStyle(SoulColor.fgMuted)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
             }
             .contentShape(Rectangle())
         }
@@ -318,9 +318,9 @@ private struct ContextChip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            SoulIcon(name: icon, size: 11, color: SoulColor.fgMuted)
+            SoulIcon(name: icon, size: SoulMetric.icon, color: SoulColor.fgMuted)
             Text(label).font(SoulFont.ui(12)).foregroundStyle(SoulColor.fgMuted)
-            SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+            SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
         }
     }
 }
@@ -348,9 +348,9 @@ struct ProjectChip: View {
             Button("New project…", action: onCreate)
         } label: {
             HStack(spacing: 4) {
-                SoulIcon(name: "folder", size: 11, color: SoulColor.fgMuted)
-                Text(currentName).font(SoulFont.ui(12)).foregroundStyle(SoulColor.fgMuted)
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+                SoulIcon(name: "folder", size: SoulMetric.icon, color: SoulColor.fgMuted)
+                Text(currentName).font(SoulFont.ui(13)).foregroundStyle(SoulColor.fgMuted)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
             }
             .contentShape(Rectangle())
         }
@@ -386,14 +386,14 @@ struct PermissionModePicker: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: mode.sfSymbol)
-                    .font(.system(size: 11))
+                    .font(.system(size: SoulMetric.icon))
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(mode.label)
-                    .font(SoulFont.ui(12))
+                    .font(SoulFont.ui(13))
                     .foregroundStyle(SoulColor.fgMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                SoulIcon(name: "chevron.down", size: 9, color: SoulColor.fgSubtle)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
             }
             .padding(.horizontal, 7)
             .padding(.vertical, 3)

@@ -48,6 +48,8 @@ struct AppShell: View {
     @State private var showTerminal: Bool = false
     @AppStorage("soul.review.visible") private var showReview: Bool = false
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
+    /// SOUL-208: NavigationSplitView visibility binding.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
     @State private var dragStartHeight: Double? = nil
@@ -750,7 +752,11 @@ struct AppShell: View {
     }
 
     private func toggleSidebar() {
-        setSidebarVisible(!showSidebar)
+        // SOUL-208: drive NavigationSplitView's column directly; onChange
+        // syncs the showSidebar AppStorage so other readers stay current.
+        withAnimation(sidePanelAnimation) {
+            columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
+        }
     }
 
     private func setSidebarVisible(_ visible: Bool) {
@@ -1146,34 +1152,50 @@ struct AppShell: View {
                 newChatNonce: newChatNonce,
                 repairToast: $repairToast
             )
-            .frame(width: SoulMetric.sidebarWidth)
-            .frame(maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        // Top + bottom insets stay constant so the sidebar's height doesn't
-        // bob during the open/close animation — only the WIDTH and the
-        // LEADING margin animate so the canvas can reclaim the full window
-        // width when closed.
-        .frame(width: showSidebar ? SoulMetric.sidebarWidth : 0, alignment: .leading)
-        .frame(maxHeight: .infinity)
-        .clipped()
-        .padding(.leading, showSidebar ? 24 : 0)
-        .padding(.top, 0)
-        .padding(.bottom, 40)
+        // SOUL-208: NavigationSplitView owns the column width and
+        // visibility; old fixed-width + zero-on-hide clipping retired.
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        // SOUL-208: NavigationSplitView for native macOS chrome; AppKit
+        // toolbar items are installed by SoulAppDelegate and routed back
+        // here via NotificationCenter.
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarPane
-            mainCanvas
-            rightSidePanels
+                .navigationSplitViewColumnWidth(min: 280, ideal: SoulMetric.sidebarWidth, max: 480)
+        } detail: {
+            HStack(spacing: 0) {
+                mainCanvas
+                rightSidePanels
+            }
+            // SOUL-208: paint the canvas bg on the detail pane ONLY so
+            // the sidebar column's .sidebar vibrancy stays continuous
+            // up under the traffic lights.
+            .background(SoulColor.bg.ignoresSafeArea())
         }
-        // Sidebar toggle floats at the window-level top-leading slot above
-        // the sidebar pane. Living here (rather than inside the sidebar's
-        // rounded card or inside the canvas toolbar) means it stays at the
-        // exact x/y regardless of whether the sidebar is open, and it's
-        // horizontally aligned with the right-side toolbar icons.
-        .overlay(alignment: .topLeading) {
-            sidebarToggleOverlay
+        .toolbar(removing: .title)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: toggleReview) {
+                    Image(systemName: "sidebar.right")
+                }
+                .help("Toggle right pane")
+                .disabled(replay != nil)
+            }
+        }
+        .onChange(of: columnVisibility) { _, newValue in
+            showSidebar = (newValue != .detailOnly)
+        }
+        // SOUL-208: NSToolbar items in the unified titlebar post these
+        // notifications; route them to the same toggle handlers that
+        // would fire from a SwiftUI button click.
+        .onReceive(NotificationCenter.default.publisher(for: SoulAppDelegate.toggleSidebarNotification)) { _ in
+            toggleSidebar()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: SoulAppDelegate.toggleReviewNotification)) { _ in
+            toggleReview()
         }
         // Top-center toast banner (lifted from SidebarView). Renders here
         // so it spans the whole window — visible regardless of which pane
@@ -1193,11 +1215,6 @@ struct AppShell: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: repairToast)
-        // Paint the window background in the canvas color so where the
-        // sidebar's rounded trailing corner curves away, the cut-out shows
-        // the same surface as the canvas instead of the system window
-        // background bleeding through.
-        .background(SoulColor.bg.ignoresSafeArea())
         .animation(sidePanelAnimation, value: showSidebar)
         .animation(sidePanelAnimation, value: showReview)
         .animation(sidePanelAnimation, value: filePreviewPath)
