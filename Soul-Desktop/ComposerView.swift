@@ -133,7 +133,10 @@ struct ComposerView: View {
         lastSent = finalDisplay
         prompt = ""
         droppedAttachments = []
-        activeCommand = nil
+        // SOUL-217: don't clear the chip on send — keep it visible while
+        // the agent is processing so the user retains the "/pulse"
+        // context. Cleared automatically when isWorking flips false
+        // (see .onChange below).
         showingCommandPalette = false
     }
 
@@ -440,6 +443,12 @@ struct ComposerView: View {
             }
             .padding(.horizontal, 4)
             .task(id: projectPath ?? "") { branchName = await GitInfo.currentBranch(at: projectPath) }
+        }
+        // SOUL-217: clear the active command chip once the agent's turn
+        // completes, not at send time. Keeps the "/pulse" context
+        // visible to the user during processing.
+        .onChange(of: isWorking) { _, nowWorking in
+            if !nowWorking { activeCommand = nil }
         }
     }
 }
