@@ -323,12 +323,26 @@ struct MarkdownView: View {
         try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9._/~-])((?:~/|/)?[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)+)"#)
     }()
 
-    /// True if a paragraph contains either an Apple-autolinked markdown link
-    /// (`[label](url)`) or one of our path/filename tokens. Used to decide
-    /// whether to swap the hover cursor to pointing-hand. Cheap by design:
-    /// runs on every paragraph render, gated by a contains-check first.
+    /// True if a paragraph contains either a markdown link
+    /// (`[label](url)`), an auto-detected bare URL (http/https/mailto/file
+    /// scheme that Apple's markdown parser auto-links), or one of our
+    /// path/filename tokens. Used to decide whether to swap the hover
+    /// cursor to pointing-hand. Cheap by design: runs on every paragraph
+    /// render, gated by contains-checks first.
     static func hasAnyLink(_ s: String) -> Bool {
         if s.contains("](") && s.contains("[") { return true }
+        // SOUL-SOUL_DESKTOP-183: catch bare URLs that the markdown parser
+        // auto-links without bracket syntax (the `https://github.com/...`
+        // shape in agent replies). Without this, the cursor stays as an
+        // I-beam even though the URL is clickable.
+        if s.contains("://") {
+            let lower = s.lowercased()
+            if lower.contains("http://") || lower.contains("https://")
+                || lower.contains("file://") || lower.contains("ftp://")
+                || lower.contains("ssh://") {
+                return true
+            }
+        }
         return hasLinkifiablePath(s)
     }
 
