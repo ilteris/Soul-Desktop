@@ -140,4 +140,4 @@ Every recognized `session/update` lands in the in-memory agent log as `[acp ←]
 
 ## License
 
-No license file. This isn't a packaged product.
+MIT — see [LICENSE](LICENSE).
