@@ -808,9 +808,28 @@ struct SidebarView: View {
             // wipe `sessionsByProject[key]` and cause every row to vanish
             // for ~10s until the next refresh. Only overwrite when the
             // fresh scan actually produced rows.
-            if !rows.isEmpty {
-                self.sessionsByProject[key] = rows
+            guard !rows.isEmpty else { return }
+            // SOUL-SOUL_DESKTOP-193: non-regressing merge for turn counts.
+            // Opening a session triggers a NativeSessionID hook write,
+            // which fires RegistryWatcher → reloadSessions. The fresh scan
+            // can race the partial write and return promptCount=0 for that
+            // row, blanking "96 turns · 19m ago" to just "19m ago" until
+            // the next scan. Carry forward the prior row's counts when
+            // the fresh scan regressed them to zero.
+            let prior = self.sessionsByProject[key] ?? []
+            let priorById = Dictionary(uniqueKeysWithValues: prior.map { ($0.id, $0) })
+            let merged: [SoulSession] = rows.map { fresh in
+                guard let old = priorById[fresh.id] else { return fresh }
+                var out = fresh
+                if fresh.promptCount == 0 && old.promptCount > 0 {
+                    out.promptCount = old.promptCount
+                }
+                if fresh.transcriptTurns == 0 && old.transcriptTurns > 0 {
+                    out.transcriptTurns = old.transcriptTurns
+                }
+                return out
             }
+            self.sessionsByProject[key] = merged
         }
     }
 

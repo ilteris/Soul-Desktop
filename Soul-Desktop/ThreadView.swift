@@ -57,14 +57,7 @@ struct ThreadView: View {
                     // continuous thought instead of three islands. Mixed
                     // boundaries (user→agent, tool→agent, etc.) keep the
                     // full 18pt for visual breathing room.
-                    // SOUL-SOUL_DESKTOP-191: VStack, not LazyVStack. Lazy
-                    // realization made the scrollbar thumb represent only
-                    // realized contentSize — dragging fast left a blank
-                    // band at the bottom while off-screen rows realized
-                    // under the cursor. Chat transcripts are bounded
-                    // (hundreds of rows, not thousands), so eager
-                    // realization is the right trade.
-                    VStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         Color.clear.frame(height: 8)
                         let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
                         let mainItems = split.main
@@ -81,6 +74,12 @@ struct ThreadView: View {
                                 .padding(.top, leadingGap(at: i, items: mainItems))
                                 .id(item.id)
                                 .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
+                                // SOUL-SOUL_DESKTOP-192: floor every row at the
+                                // status-row height. Gives LazyVStack a non-zero
+                                // baseline so the scrollbar thumb tracks closer
+                                // to true contentSize, mitigating the fast-drag
+                                // blank-band without eagerly rendering bubbles.
+                                .frame(minHeight: 24, alignment: .topLeading)
                                 .onAppear {
                                     anchor.visibleIds.insert(item.id)
                                     updateAnchor(in: mainItems)
