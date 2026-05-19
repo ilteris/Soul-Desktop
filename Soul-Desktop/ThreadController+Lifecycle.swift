@@ -237,16 +237,27 @@ extension ThreadController {
             try await spawnAndInitialize(skipNewSession: true)
             guard let client else { return }
             let resumeId = nativeSessionId ?? sid
-            suppressLoadReplay = true
-            isReplayingLoad = true
-            defer {
+            do {
+                suppressLoadReplay = true
+                isReplayingLoad = true
+                try await client.loadSession(sessionId: resumeId, cwd: project.path)
                 suppressLoadReplay = false
                 isReplayingLoad = false
+                nativeSessionId = resumeId
+                hasInitialized = true
+                return
+            } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
+                // SOUL-SOUL_DESKTOP-176: native UUID is stale (agent doesn't
+                // know this session, e.g. provider rotated transcripts /
+                // user trashed it). Fall through to a fresh session/new so
+                // the next prompt actually lands instead of erroring out.
+                // Kernel sid is preserved — same conversation row in the
+                // sidebar continues writing to its own ledger.
+                suppressLoadReplay = false
+                isReplayingLoad = false
+                try await mintFreshNativeSession(client: client, kernelSid: sid, reason: "stale native id")
+                return
             }
-            try await client.loadSession(sessionId: resumeId, cwd: project.path)
-            nativeSessionId = resumeId
-            hasInitialized = true
-            return
         }
 
         // SOUL-SOUL_DESKTOP-043: hydrated from disk, no agent yet. Spawn now,
@@ -267,16 +278,21 @@ extension ThreadController {
                 sessionId: resumeId,
                 cwd: project.path
             )
-            suppressLoadReplay = true
-            isReplayingLoad = true
-            defer {
+            do {
+                suppressLoadReplay = true
+                isReplayingLoad = true
+                try await client.loadSession(sessionId: resumeId, cwd: project.path)
                 suppressLoadReplay = false
                 isReplayingLoad = false
+                nativeSessionId = resumeId
+                hasInitialized = true
+                return
+            } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
+                suppressLoadReplay = false
+                isReplayingLoad = false
+                try await mintFreshNativeSession(client: client, kernelSid: sid, reason: "stale native id on first send")
+                return
             }
-            try await client.loadSession(sessionId: resumeId, cwd: project.path)
-            nativeSessionId = resumeId
-            hasInitialized = true
-            return
         }
 
         logLifecycle("ensureSession.newSession",
@@ -321,6 +337,34 @@ extension ThreadController {
             "provider": provider.rawValue,
             "nativeId": nid,
             "cwd": project.path,
+        ])
+    }
+
+    /// Recovery helper: the saved native UUID was rejected by the agent
+    /// (transcript rotated, user trashed it, agent process forgot it).
+    /// Mint a fresh session/new under the existing kernel sid and persist
+    /// the mapping so future resumes hit the new UUID. Adds an inline
+    /// status row so the user knows the resume failed silently and new
+    /// turns will be in a fresh agent session.
+    private func mintFreshNativeSession(
+        client: ACPClient,
+        kernelSid: String,
+        reason: String
+    ) async throws {
+        logLifecycle("ensureSession.mintFreshNativeSession", note: reason)
+        items.append(.status(
+            id: UUID(),
+            text: "ℹ resume failed (\(reason)) — starting a fresh \(provider.rawValue) session for new turns"
+        ))
+        let nid = try await client.newSession(cwd: project.path)
+        nativeSessionId = nid
+        hasInitialized = true
+        try? kernelSid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)
+        SoulRegistry.appendHook(projectKey: project.id, sessionId: kernelSid, event: [
+            "event": "NativeSessionID",
+            "native_session_id": nid,
+            "provider": provider.rawValue,
+            "timestamp": ISO8601DateFormatter().string(from: Date())
         ])
     }
 
