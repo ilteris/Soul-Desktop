@@ -891,7 +891,9 @@ struct AppShell: View {
                                 prompt: bindingForDraft(ctrl.id),
                                 onCancel: { if isActive { cancelTurn() } },
                                 onPickHarness: onPickHarness,
-                                branchSeedLoading: isActive && branchSeedLoading
+                                branchSeedLoading: isActive && branchSeedLoading,
+                                terminalActive: showTerminal,
+                                onToggleTerminal: toggleTerminal
                             )
                             .opacity(isActive ? 1 : 0)
                             .allowsHitTesting(isActive)

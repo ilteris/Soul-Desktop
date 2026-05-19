@@ -17,6 +17,7 @@ import AppKit
 struct ChatRow: View {
     let session: SoulSession
     var isSelected: Bool = false
+    var isStarred: Bool = false
     var onReplay: (() -> Void)? = nil
     var isActiveReplay: Bool = false
     var replayProgress: Double = 0
@@ -62,6 +63,11 @@ struct ChatRow: View {
                 HStack(spacing: 4) {
                     if session.isWorking {
                         WorkingDot()
+                    }
+                    if isStarred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.yellow)
                     }
                     Text(isDraft ? "New chat" : cleanTitle(session.intent ?? session.summary))
                         .font(SoulFont.ui(14, weight: isSelected ? .medium : .regular))

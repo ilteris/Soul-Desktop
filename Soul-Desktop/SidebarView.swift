@@ -63,6 +63,7 @@ struct SidebarView: View {
     /// orphan rows for archaeological purposes.
     @AppStorage("soul.sidebar.showUnreadable") private var showUnreadable: Bool = false
     @State private var archiveStore = ArchiveStore.shared
+    @State private var starStore = StarStore.shared
     @State private var archivedExpanded: [String: Bool] = [:]
     /// Per-project "show all sessions" toggle. Default-collapsed: only the
     /// most-recent `sessionPageSize` chats render until the user clicks
@@ -456,6 +457,7 @@ struct SidebarView: View {
         ChatRow(
             session: session,
             isSelected: session.id == activeSessionId,
+            isStarred: starStore.isStarred(session.id, project: session.project),
             onReplay: { onReplaySession(session) },
             isActiveReplay: session.id == activeReplaySessionId,
             replayProgress: replayProgress,
@@ -480,6 +482,16 @@ struct SidebarView: View {
         .contextMenu {
             Button("Open chat") { onSelectSession(session) }
             Button("Replay…") { onReplaySession(session) }
+            Divider()
+            if starStore.isStarred(session.id, project: session.project) {
+                Button("Unstar") {
+                    starStore.unstar(session.id, project: session.project)
+                }
+            } else {
+                Button("Star (pin to top)") {
+                    starStore.star(session.id, project: session.project)
+                }
+            }
             Divider()
             if archiveStore.isArchived(session.id, project: session.project) {
                 Button("Unarchive") {
@@ -660,7 +672,16 @@ struct SidebarView: View {
         if let draft = draftSession, draft.project == project.id {
             byId[draft.id] = draft
         }
-        return byId.values.sorted { $0.timestamp > $1.timestamp }
+        // SOUL-SOUL_DESKTOP-198: starred sessions float to the top within
+        // their project group; ties (both starred or both unstarred) keep
+        // the existing recency sort.
+        let starred = starStore.starredIDs(forProject: project.id)
+        return byId.values.sorted { a, b in
+            let aStar = starred.contains(a.id)
+            let bStar = starred.contains(b.id)
+            if aStar != bStar { return aStar }
+            return a.timestamp > b.timestamp
+        }
     }
 
     fileprivate func worktreeGroups(for lives: [SoulSession]) -> [(label: String, sessions: [SoulSession])] {

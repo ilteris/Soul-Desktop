@@ -249,7 +249,12 @@ struct MarkdownView: View {
                     out.append(attributedInline(item))
                 }
             case .blank:
-                appendBreak()
+                // SOUL-SOUL_DESKTOP-197: skip — appendBreak() between
+                // adjacent prose blocks already yields the paragraph
+                // gap. Emitting "\n\n" for the blank too produced a
+                // double-gap (4 newlines visible) between paragraphs
+                // separated by a markdown blank line.
+                continue
             case .heading, .codeBlock, .table:
                 continue // grouping invariant — never present in a prose group
             }

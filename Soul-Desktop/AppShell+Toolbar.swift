@@ -96,8 +96,10 @@ struct CanvasToolbar: View {
                     .disabled(replayActive)
                     .help("Smoke-test the active provider (Debug)")
                 }
-                ToolbarIcon(name: "terminal", isActive: terminalActive, action: onToggleTerminal)
-                    .disabled(replayActive)
+                // SOUL-200: terminal toggle moved to the composer footer
+                // next to the project/branch chips so it sits closer to
+                // the actual canvas context, freeing top-toolbar real
+                // estate. See ComposerView footer HStack.
                 ToolbarIcon(name: "sidebar.right", isActive: reviewActive, action: onToggleReview)
                     .disabled(replayActive)
             }

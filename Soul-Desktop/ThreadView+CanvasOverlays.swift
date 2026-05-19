@@ -26,10 +26,10 @@ struct FinalizeCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 13))
+                    .font(.system(size: 15))
                     .foregroundStyle(SoulColor.accent)
                 Text("Finalize")
-                    .font(SoulFont.ui(13, weight: .semibold))
+                    .font(SoulFont.ui(15, weight: .semibold))
                     .foregroundStyle(SoulColor.fg)
             }
             if let intent, !intent.isEmpty {
@@ -64,11 +64,11 @@ struct FinalizeCard: View {
     private func field(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label.uppercased())
-                .font(SoulFont.ui(10, weight: .medium))
+                .font(SoulFont.ui(11, weight: .medium))
                 .foregroundStyle(SoulColor.fgSubtle)
                 .tracking(0.5)
             Text(value)
-                .font(SoulFont.ui(13))
+                .font(SoulFont.ui(15))
                 .foregroundStyle(SoulColor.fg)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -292,10 +292,11 @@ struct AgentLogPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
+                        Text(Self.attributed(line))
                             .font(SoulFont.code(11))
                             .foregroundStyle(SoulColor.fgMuted)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
                     }
                 }
                 .padding(12)
@@ -303,5 +304,25 @@ struct AgentLogPanel: View {
         }
         .frame(width: 500, height: 300)
         .background(SoulColor.bg)
+    }
+
+    /// SOUL-201: bold the `key` portion of every `key=value` token in a log
+    /// line so structured payloads (`event=lifecycle provider=claude note=…`)
+    /// are scannable at a glance without forcing the whole line into bold.
+    /// Anything that isn't a `key=value` token stays in regular weight.
+    private static func attributed(_ line: String) -> AttributedString {
+        var out = AttributedString(line)
+        let pattern = #"\b([A-Za-z_][A-Za-z0-9_.\-]*)(?==)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return out }
+        let ns = line as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let matches = regex.matches(in: line, range: range)
+        for m in matches.reversed() {
+            guard m.numberOfRanges >= 1,
+                  let r = Range(m.range, in: line),
+                  let attrRange = Range(r, in: out) else { continue }
+            out[attrRange].font = SoulFont.code(11, weight: .bold)
+        }
+        return out
     }
 }

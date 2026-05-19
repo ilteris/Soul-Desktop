@@ -17,6 +17,12 @@ struct ComposerView: View {
     /// above the composer so the user can see what'll fire next and clear it
     /// if they change their mind.
     var queuedCount: Int = 0
+    /// Most-recently-queued prompt for ↑-recall editing. ComposerView lets
+    /// the user press ↑ (when the field is empty) to load this text back
+    /// into the field and edit it; ⏎ then replaces the queued entry via
+    /// `onEditQueued` instead of appending a new one. SOUL-199.
+    var queuedTail: (id: UUID, text: String)? = nil
+    var onEditQueued: (UUID, String) -> Void = { _, _ in }
     var onClearQueue: () -> Void = {}
     /// Cancel the in-flight ACP turn and dispatch the next queued prompt as
     /// a fresh turn. Surfaced as a "Steer" button on the queue chip alongside
@@ -31,6 +37,10 @@ struct ComposerView: View {
     var devURL: String? = nil
     var devRunning: Bool = false
     var onRunLocal: (String, String?) -> Void = { _, _ in }
+    /// Terminal toggle, surfaced in the composer footer alongside the
+    /// project/branch chips. SOUL-200.
+    var terminalActive: Bool = false
+    var onToggleTerminal: () -> Void = {}
     @Binding var permissionMode: PermissionMode
     /// Provider this composer feeds. Claude reads `~/.claude/skills/<name>/SKILL.md`
     /// natively when it sees `/cmd`, so we skip client-side expansion for
@@ -44,6 +54,10 @@ struct ComposerView: View {
     @State private var showingCommandPalette = false
     @State private var activeCommand: SlashCommand? = nil
     @State private var branchName: String? = nil
+    /// Set when the user pressed ↑ to recall a queued prompt. While non-nil,
+    /// the next submit replaces that QueuedPrompt in the controller instead
+    /// of appending a new entry.
+    @State private var editingQueuedItemId: UUID? = nil
     /// True while the NSOpenPanel triggered by + is on-screen. Drives the
     /// button's active-state tint so the affordance reads as engaged
     /// while the modal is up.
@@ -107,7 +121,15 @@ struct ComposerView: View {
         let finalDisplay = display + attachmentSuffix
         let finalAgent = agent + attachmentSuffix
         guard !finalDisplay.isEmpty else { return }
-        onSend(finalDisplay, finalAgent)
+        // SOUL-199: in edit-queued mode, replace the queued entry in place
+        // instead of appending a new prompt. The agent sees the new text
+        // when the queue drains; the visible bubble redraws too.
+        if let editingId = editingQueuedItemId {
+            onEditQueued(editingId, finalDisplay)
+            editingQueuedItemId = nil
+        } else {
+            onSend(finalDisplay, finalAgent)
+        }
         lastSent = finalDisplay
         prompt = ""
         droppedAttachments = []
@@ -265,10 +287,17 @@ struct ComposerView: View {
                             return true
                         },
                         onUpArrowWhenEmpty: {
-                            // Shell-style: recall the last submitted prompt
-                            // when the field is empty. No-op if there's no
-                            // history yet. Caret will land at end via
-                            // text-change reflow.
+                            // SOUL-199: if a prompt is currently queued
+                            // (turn in flight), ↑ pulls the queued text
+                            // back into the field for editing. Submitting
+                            // then replaces that queued entry in place
+                            // rather than appending a new one. Falls back
+                            // to shell-style lastSent recall otherwise.
+                            if let tail = queuedTail {
+                                prompt = tail.text
+                                editingQueuedItemId = tail.id
+                                return true
+                            }
                             guard !lastSent.isEmpty else { return false }
                             prompt = lastSent
                             return true
@@ -390,6 +419,15 @@ struct ComposerView: View {
                         onRunLocal(cmd, devURL)
                     }
                 }
+                Spacer(minLength: 0)
+                Button(action: onToggleTerminal) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(terminalActive ? SoulColor.accent : SoulColor.fgMuted)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.soulHover)
+                .help(terminalActive ? "Hide terminal" : "Show terminal")
             }
             .padding(.horizontal, 4)
             .task(id: projectPath ?? "") { branchName = await GitInfo.currentBranch(at: projectPath) }

@@ -9,6 +9,8 @@ struct ThreadView: View {
     var onPickHarness: (Provider) -> Void = { _ in }
     var onNewChat: () -> Void = {}
     var branchSeedLoading: Bool = false
+    var terminalActive: Bool = false
+    var onToggleTerminal: () -> Void = {}
 
     @State private var renaming = false
     @State private var renameDraft = ""
@@ -234,8 +236,14 @@ struct ThreadView: View {
                     onCancel: onCancel,
                     isWorking: controller.isWorking,
                     queuedCount: controller.queuedPrompts.count,
+                    queuedTail: controller.queuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
+                    onEditQueued: { id, newText in
+                        controller.editQueuedPrompt(itemId: id, newText: newText)
+                    },
                     onClearQueue: { controller.clearQueue() },
                     onSteer: { Task { await controller.steerToNextQueued() } },
+                    terminalActive: terminalActive,
+                    onToggleTerminal: onToggleTerminal,
                     permissionMode: Binding(
                         get: { controller.permissionMode },
                         set: { controller.permissionMode = $0 }

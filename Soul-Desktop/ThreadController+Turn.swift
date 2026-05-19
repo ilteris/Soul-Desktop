@@ -372,6 +372,24 @@ extension ThreadController {
         steerPending = false
     }
 
+    /// SOUL-SOUL_DESKTOP-199: edit a queued (not-yet-dispatched) user prompt
+    /// in place. Updates both the QueuedPrompt entry (so the agent sees the
+    /// new text when the queue drains) and the visible userMessage bubble
+    /// in `items[]` (so the UI redraws). No-op if the prompt has already
+    /// shipped — by the time the row leaves the queued state the agent's
+    /// turn is in flight.
+    func editQueuedPrompt(itemId: UUID, newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let qIdx = queuedPrompts.firstIndex(where: { $0.itemId == itemId }) else { return }
+        let original = queuedPrompts[qIdx]
+        queuedPrompts[qIdx] = QueuedPrompt(itemId: original.itemId, display: trimmed, agent: trimmed)
+        if let iIdx = items.firstIndex(where: { $0.id == itemId }),
+           case .userMessage(let id, _, let ts) = items[iIdx] {
+            items[iIdx] = .userMessage(id: id, text: trimmed, timestamp: ts)
+        }
+    }
+
     func cancel() async {
         // Paint UI feedback FIRST — the async cancel below hops to the
         // ACPClient actor, which while a turn is streaming is busy decoding
