@@ -258,6 +258,22 @@ struct AppShell: View {
             setActiveThread(existing.id)
             return
         }
+        // SOUL-SOUL_DESKTOP-214: branched sessions don't have a real
+        // sessionId yet (the agent assigns one on first send), so the
+        // sidebar synthesizes a row with id "thread-<ctrl.id>". Match
+        // those by parsing the synthetic prefix — without this we fall
+        // through to session/load and ship the synthetic id to Claude,
+        // which rejects it ("not a UUID and does not match any session
+        // title").
+        if session.id.hasPrefix("thread-") {
+            let raw = String(session.id.dropFirst("thread-".count))
+            if let existing = threads.values.first(where: { $0.id.lowercased() == raw.lowercased() }) {
+                harness = existing.provider
+                setActiveThread(existing.id)
+                pendingActiveId = nil
+                return
+            }
+        }
 
         // Refuse to ACP-load a session whose hooks.jsonl is being actively
         // appended by an external writer (terminal Claude/Gemini/Pi/Codex).
@@ -1177,6 +1193,19 @@ struct AppShell: View {
             // the sidebar column's .sidebar vibrancy stays continuous
             // up under the traffic lights.
             .background(SoulColor.bg.ignoresSafeArea())
+            // SOUL-215: NavigationSplitView's NSSplitView draws a harsh
+            // gradient drop-shadow ~16pt into the detail pane along the
+            // divider. SwiftUI exposes no way to disable it; paint a
+            // matching-color fade on the leading edge to wash it out.
+            .overlay(alignment: .leading) {
+                LinearGradient(
+                    colors: [SoulColor.bg.opacity(0.9), SoulColor.bg.opacity(0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 18)
+                .allowsHitTesting(false)
+            }
         }
         .toolbar(removing: .title)
         // SOUL-208: NSToolbar managed by SoulAppDelegate owns the items

@@ -42,11 +42,14 @@ enum SoulFont {
 }
 
 enum SoulColor {
-    static let bg            = dynamic(light: 0xF1EEE7, dark: 0x181818)
-    static let bgElevated    = dynamic(light: 0xFBF9F5, dark: 0x222222)
-    static let sidebar       = dynamic(light: 0xE8E4DB, dark: 0x1F1F1F, alpha: 0.6)
-    static let surface       = dynamic(light: 0xE8E4DB, dark: 0x2A2A2A)
-    static let border        = dynamic(light: 0xD5CFC3, dark: 0x333333)
+    // SOUL-215: cream → neutral gray off-white. Same luminance, much
+    // less yellow saturation — the NavigationSplitView divider shadow
+    // reads as a soft tonal step instead of a warm/dark gradient bleed.
+    static let bg            = dynamic(light: 0xEFEEEC, dark: 0x181818)
+    static let bgElevated    = dynamic(light: 0xF8F8F6, dark: 0x222222)
+    static let sidebar       = dynamic(light: 0xE6E5E2, dark: 0x1F1F1F, alpha: 0.6)
+    static let surface       = dynamic(light: 0xE6E5E2, dark: 0x2A2A2A)
+    static let border        = dynamic(light: 0xD2D1CD, dark: 0x333333)
     static let fg            = dynamic(light: 0x1E1E2E, dark: 0xE6E6E6)
     static let fgMuted       = dynamic(light: 0x5C5F77, dark: 0xA6A6A6)
     static let fgSubtle      = dynamic(light: 0x8C8FA1, dark: 0x6E6E6E)

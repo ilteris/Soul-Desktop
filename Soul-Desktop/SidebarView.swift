@@ -656,6 +656,13 @@ struct SidebarView: View {
                 // from "is a controller pointed at this row."
                 merged.liveProvider = ctrl.provider.rawValue
                 merged.isWorking = ctrl.isWorking
+                // SOUL-216 (revised): live ctrl.items userMessage count is
+                // the canonical source — it matches the ThreadView toolbar
+                // chip's chapterCount, so sidebar and toolbar can never
+                // disagree. Disk's promptCount under-counts external
+                // Gemini sessions (kernel only records UserPrompt when
+                // Soul-Desktop is the writer); ctrl.items reflects the
+                // full transcript.
                 merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
                 byId[sid] = merged
             } else {
