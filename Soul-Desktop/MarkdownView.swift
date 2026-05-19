@@ -212,14 +212,19 @@ struct MarkdownView: View {
     /// paragraph links keep working.
     @ViewBuilder
     private func mergedProse(_ blocks: [Block]) -> some View {
+        // SOUL-SOUL_DESKTOP-186: skip LinkHoverCursor on merged prose
+        // groups. The cursor modifier applies at the view level — for a
+        // merged group of N paragraphs, even one link anywhere in the
+        // group forced the entire stretch to show a pointing-hand cursor,
+        // which read as wrong on the plain-prose paragraphs. Single
+        // paragraphs and bullets still get the modifier (one paragraph =
+        // tight enough granularity for the affordance to make sense).
         let attr = MarkdownView.mergedAttributed(for: blocks)
-        let hasLink = attr.runs.contains { $0.link != nil }
         Text(attr)
             .font(bodyFont)
             .foregroundStyle(bodyColor)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
-            .modifier(LinkHoverCursor(active: hasLink))
     }
 
     fileprivate static func mergedAttributed(for blocks: [Block]) -> AttributedString {
