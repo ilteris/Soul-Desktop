@@ -441,19 +441,28 @@ struct MarkdownView: View {
     }
 }
 
-/// Pushes `NSCursor.pointingHand` while hovering a paragraph/bullet that
-/// contains a link, pops on exit. SwiftUI Text doesn't expose per-substring
-/// hover, so this applies to the whole paragraph — but only when at least
-/// one link is present, so plain prose keeps the I-beam selection cursor.
+/// Forces the pointing-hand cursor over a paragraph/bullet that contains a
+/// link. SOUL-SOUL_DESKTOP-178: previously used `NSCursor.push()` on hover
+/// enter and `.pop()` on exit, but with `.textSelection(.enabled)` on the
+/// parent bubble SwiftUI re-asserts the I-beam cursor on every mouse-move
+/// event, so the one-shot push gets overridden almost immediately and the
+/// user sees a text cursor even on linkified rows. `.onContinuousHover`
+/// fires per movement, and `NSCursor.pointingHand.set()` (which replaces
+/// the active cursor, no stack semantics) wins the race.
+///
+/// On exit we restore the I-beam explicitly — the parent's selection
+/// cursor would otherwise stay as pointing-hand until SwiftUI's next
+/// natural reset.
 private struct LinkHoverCursor: ViewModifier {
     let active: Bool
     func body(content: Content) -> some View {
-        content.onHover { hovering in
+        content.onContinuousHover { phase in
             guard active else { return }
-            if hovering {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
+            switch phase {
+            case .active:
+                NSCursor.pointingHand.set()
+            case .ended:
+                NSCursor.iBeam.set()
             }
         }
     }
