@@ -40,16 +40,16 @@ struct AppShell: View {
 
     @AppStorage(SoulColor.accentStorageKey) private var accentHex: Int = Int(SoulColor.defaultAccentHex)
 
-    @StateObject private var terminalModel = TerminalPanelModel()
-    @State private var showTerminal: Bool = false
+    @StateObject var terminalModel = TerminalPanelModel()
+    @State var showTerminal: Bool = false
     @AppStorage("soul.review.visible") var showReview: Bool = false
     @State var rightPane = AppRightPaneCoordinator()
     @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
     /// SOUL-208: NavigationSplitView visibility binding.
     @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
-    @State private var devServerRunning: Bool = false
-    @AppStorage("soul.terminal.height") private var terminalHeight: Double = 260
-    @State private var dragStartHeight: Double? = nil
+    @State var devServerRunning: Bool = false
+    @AppStorage("soul.terminal.height") var terminalHeight: Double = 260
+    @State var dragStartHeight: Double? = nil
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
     @State private var pendingPermissionMode: PermissionMode = .fullAccess
@@ -665,30 +665,6 @@ struct AppShell: View {
         showNewProject = true
     }
 
-    private func runLocal(_ command: String, _ url: String?) {
-        if devServerRunning {
-            // Ctrl-C interrupts the foreground process in the panel's shell.
-            terminalModel.requestSend("\u{03}")
-            devServerRunning = false
-            return
-        }
-        let cwd = currentProject()?.path ?? FileManager.default.homeDirectoryForCurrentUser.path
-        terminalModel.ensureSeeded(with: cwd)
-        if !showTerminal {
-            withAnimation(.easeOut(duration: 0.26)) { showTerminal = true }
-        }
-        // Give the freshly-seeded shell a beat to be ready for input before piping the command.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            terminalModel.requestSend(command + "\n")
-        }
-        if let url, let nsURL = URL(string: url) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                NSWorkspace.shared.open(nsURL)
-            }
-        }
-        devServerRunning = true
-    }
-
     private func toggleSidebar() {
         // SOUL-208: drive NavigationSplitView's column directly; onChange
         // syncs the showSidebar AppStorage so other readers stay current.
@@ -714,47 +690,6 @@ struct AppShell: View {
     private func setFilePreviewPath(_ path: String?) {
         withAnimation(sidePanelAnimation) {
             rightPane.setFilePreviewPath(path)
-        }
-    }
-
-    private func toggleTerminal() {
-        if showTerminal {
-            withAnimation(.easeInOut(duration: 0.22)) { withAnimation(.easeInOut(duration: 0.22)) { showTerminal = false } }
-            return
-        }
-        let cwd = currentProject()?.path ?? FileManager.default.homeDirectoryForCurrentUser.path
-        terminalModel.ensureSeeded(with: cwd)
-        withAnimation(.easeOut(duration: 0.26)) { showTerminal = true }
-    }
-
-    private var terminalSection: some View {
-        VStack(spacing: 0) {
-            Rectangle()
-                .fill(SoulColor.border.opacity(0.4))
-                .frame(height: 1)
-                .overlay(
-                    Rectangle()
-                        .fill(Color.white.opacity(0.001))
-                        .frame(height: 6)
-                )
-                .onHover { inside in
-                    if inside {
-                        NSCursor.resizeUpDown.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            if dragStartHeight == nil { dragStartHeight = terminalHeight }
-                            let proposed = (dragStartHeight ?? terminalHeight) - Double(value.translation.height)
-                            terminalHeight = min(max(proposed, 120), 800)
-                        }
-                        .onEnded { _ in dragStartHeight = nil }
-                )
-            TerminalPanel(model: terminalModel) { withAnimation(.easeInOut(duration: 0.22)) { showTerminal = false } }
-                .frame(height: CGFloat(terminalHeight))
         }
     }
 
