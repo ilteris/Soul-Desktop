@@ -51,3 +51,9 @@ fastlane/test_output
 # Composer drag-drop staging — images copied here when the user
 # drag-drops or +-attaches into a chat. Per-project ephemera, not source.
 .soul/attachments/
+
+# Local kernel hydration output — soul_hydrate.py rewrites CLAUDE.md
+# each session-start with identity / USER / belief_map blocks that are
+# personal to the operator. Public README.md is the published surface;
+# CLAUDE.md stays on disk for local agents to read but is not tracked.
+CLAUDE.md
