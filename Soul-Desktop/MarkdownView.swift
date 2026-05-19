@@ -513,6 +513,32 @@ private struct CodeBlockView: View {
     let fg: Color
     let bg: Color
     @State private var copied = false
+    /// SOUL-SOUL_DESKTOP-177: collapse-by-default for large blocks. Renders
+    /// the first `collapsedHeadLines` then a "Show all N lines" button.
+    /// A long code dump inside a single `Text` is the dominant scroll-perf
+    /// cost in transcripts that contain file content — collapsing past the
+    /// threshold turns a multi-MB selectable Text into a small fixed
+    /// preview until the user opts in.
+    @State private var expanded = false
+    private static let collapseThreshold = 40
+    private static let collapsedHeadLines = 20
+
+    private var lineCount: Int {
+        if code.isEmpty { return 0 }
+        var n = code.components(separatedBy: "\n").count
+        if code.hasSuffix("\n") { n -= 1 }
+        return max(n, 1)
+    }
+
+    private var preview: String {
+        let lines = code.components(separatedBy: "\n")
+        let head = lines.prefix(Self.collapsedHeadLines)
+        return head.joined(separator: "\n")
+    }
+
+    private var shouldCollapse: Bool {
+        lineCount > Self.collapseThreshold && !expanded
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -520,6 +546,11 @@ private struct CodeBlockView: View {
                 Text(lang ?? "text")
                     .font(SoulFont.code(10, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
+                if lineCount > 0 {
+                    Text("· \(lineCount) lines")
+                        .font(SoulFont.code(10, weight: .regular))
+                        .foregroundStyle(SoulColor.fgSubtle)
+                }
                 Spacer()
                 Button(action: copy) {
                     HStack(spacing: 4) {
@@ -539,12 +570,36 @@ private struct CodeBlockView: View {
                 Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
             }
 
-            Text(code)
+            Text(shouldCollapse ? preview : code)
                 .font(font)
                 .foregroundStyle(fg)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
+
+            if lineCount > Self.collapseThreshold {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .regular))
+                        Text(expanded
+                             ? "Collapse"
+                             : "Show all \(lineCount) lines")
+                            .font(SoulFont.code(11, weight: .regular))
+                    }
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(SoulColor.surface.opacity(0.4))
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(SoulColor.border.opacity(0.4)).frame(height: 0.5)
+                    }
+                }
+                .buttonStyle(.soulHover)
+            }
         }
         .background(bg, in: RoundedRectangle(cornerRadius: 8))
         .overlay(
