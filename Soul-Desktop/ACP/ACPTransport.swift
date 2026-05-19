@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 private let _wireTimeFormatter: DateFormatter = {
     let f = DateFormatter()
@@ -134,6 +135,22 @@ actor ACPTransport {
 
     func start() throws {
         try process.run()
+        // SOUL-SOUL_DESKTOP-194: put the child in its own process group so
+        // a later `terminate()` can SIGKILL the whole tree. Providers
+        // launch via `npx`, which forks a `node` child that does the real
+        // work. SIGTERM to npx does NOT propagate to its node child, so
+        // the agent kept running after Stop. With pid as its own pgid we
+        // can `killpg(pid, SIGKILL)` and take down npx + node + helpers
+        // atomically.
+        //
+        // Best-effort: there's an inherent race where the child may have
+        // already called setpgid itself, in which case our call returns
+        // EPERM and we fall back to plain `process.terminate()`. For node
+        // children this is fine — node doesn't change pgid.
+        let pid = process.processIdentifier
+        if pid > 0 {
+            _ = Darwin.setpgid(pid, pid)
+        }
     }
 
     /// Throws on broken pipe (child exited mid-write). Callers should treat
@@ -146,7 +163,20 @@ actor ACPTransport {
     }
 
     func terminate() {
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            let pid = process.processIdentifier
+            if pid > 0 {
+                // SIGTERM the whole process group first so npx + node + any
+                // helpers all get a chance to flush. Escalate to SIGKILL
+                // after 400ms if anything is still alive.
+                _ = Darwin.killpg(pid, SIGTERM)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+                    _ = Darwin.killpg(pid, SIGKILL)
+                }
+            } else {
+                process.terminate()
+            }
+        }
         handleTermination(.explicit)
     }
 }

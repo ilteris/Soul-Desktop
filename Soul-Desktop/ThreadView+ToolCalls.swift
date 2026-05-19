@@ -171,7 +171,6 @@ struct ToolCallCarouselRow: View {
     let projectPath: String?
 
     @State private var index: Int = 0
-    @State private var fullyToured: Bool = false
     @State private var paused: Bool = false
     @State private var expanded: Bool = false
 
@@ -229,7 +228,11 @@ struct ToolCallCarouselRow: View {
     }
 
     private var shouldAdvance: Bool {
-        items.count > 1 && !paused && !expanded && (!allComplete || !fullyToured)
+        // Advance forward through items as they appear; stop at the last
+        // one. When new items append (more tool calls arrive in the same
+        // run), `index < items.count - 1` becomes true again and we
+        // resume advancing toward the new tail. Never wrap.
+        items.count > 1 && !paused && !expanded && index < items.count - 1
     }
 
     private var currentTitle: String {
@@ -304,19 +307,10 @@ struct ToolCallCarouselRow: View {
             }
         }
         .onReceive(timer) { _ in
-            guard items.count > 1 else { return }
-            if !shouldAdvance {
-                // Once complete and toured, settle on the last item.
-                if allComplete && fullyToured && index != items.count - 1 {
-                    withAnimation(.easeInOut(duration: crossfadeSeconds)) {
-                        index = items.count - 1
-                    }
-                }
-                return
+            guard shouldAdvance else { return }
+            withAnimation(.easeInOut(duration: crossfadeSeconds)) {
+                index = min(index + 1, items.count - 1)
             }
-            let next = (index + 1) % items.count
-            index = next
-            if next == items.count - 1 { fullyToured = true }
         }
     }
 
