@@ -479,6 +479,30 @@ struct AppShell: View {
         }
     }
 
+    /// SOUL-SOUL_DESKTOP-179: drop the active controller and re-click its
+    /// session, forcing a fresh `hydrateFromDisk` pass. Recovery for the
+    /// empty-canvas-after-reload case — when a prior hydrate completed but
+    /// populated no content rows (race, silent transcript read failure,
+    /// agent process disappeared mid-load), there was no UI affordance to
+    /// re-try short of restarting the app. Now: ⋯ menu → Reload session.
+    private func reloadActiveSession() {
+        guard let key = activeThreadKey,
+              let controller = threads[key],
+              let sid = controller.sessionId
+        else { return }
+        let projectKey = controller.project.id
+        // Lazy session lookup — we need the canonical SoulSession for
+        // loadSession's loadability / canSafelyResume gating.
+        guard let session = SoulRegistry.cachedSessions(forProject: projectKey)?
+                .first(where: { $0.id == sid })
+        else { return }
+        threads.removeValue(forKey: key)
+        if activeThreadKey == key { activeThreadKey = nil }
+        Task { await controller.teardown() }
+        // Re-enter the normal click path. fresh controller → fresh hydrate.
+        loadSession(session)
+    }
+
     private func newChat(targetProjectID: String? = nil) {
         replay?.stop()
         replay = nil
@@ -835,6 +859,7 @@ struct AppShell: View {
                 onBranch: { provider in
                     if let source = thread { branchFrom(source, to: provider) }
                 },
+                onReload: { reloadActiveSession() },
                 onToggleSidebar: toggleSidebar,
                 onToggleTerminal: toggleTerminal,
                 onToggleReview: toggleReview,

@@ -51,14 +51,14 @@ struct ThreadView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    // SOUL-SOUL_DESKTOP-180: per-row spacing instead of a
+                    // flat 18pt gap. Consecutive agent messages now sit
+                    // tight (4pt) so a multi-paragraph reply reads as one
+                    // continuous thought instead of three islands. Mixed
+                    // boundaries (user→agent, tool→agent, etc.) keep the
+                    // full 18pt for visual breathing room.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         Color.clear.frame(height: 8)
-                        // Queued user bubbles render at the *bottom* of the
-                        // canvas (just above the working indicator) regardless
-                        // of insertion order — they're "next up to send," not
-                        // part of the agent's actual transcript yet. Filter
-                        // them out of the main timeline; they're re-added
-                        // below.
                         let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
                         let mainItems = split.main
                         let queuedItems = split.queued
@@ -71,6 +71,7 @@ struct ThreadView: View {
                                 isQueued: false,
                                 showAgentFooter: isLastInAgentRun(at: i, items: mainItems)
                             )
+                                .padding(.top, leadingGap(at: i, items: mainItems))
                                 .id(item.id)
                                 .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
                                 .onAppear {
@@ -84,9 +85,11 @@ struct ThreadView: View {
                         }
                         if branchSeedLoading {
                             BranchSeedIndicator()
+                                .padding(.top, 18)
                         }
                         if controller.isWorking {
                             WorkingIndicator(controller: controller)
+                                .padding(.top, 18)
                         }
                         ForEach(queuedItems, id: \.id) { item in
                             ThreadItemRow(
@@ -96,6 +99,7 @@ struct ThreadView: View {
                                 isHistorical: false,
                                 isQueued: true
                             )
+                                .padding(.top, 18)
                                 .id(item.id)
                         }
                         Color.clear
@@ -299,6 +303,23 @@ struct ThreadView: View {
         guard case .userMessage = item else { return false }
         if case .userMessage = items[index - 1] { return false }
         return true
+    }
+
+    /// SOUL-SOUL_DESKTOP-180: per-row leading gap. Lets consecutive agent
+    /// messages sit close together (so a multi-paragraph reply reads as
+    /// one continuous thought) while preserving the full 18pt gap at
+    /// turn boundaries and around tool calls.
+    ///
+    /// Rules:
+    ///   * first row: 0 (the wrapper VStack handles top padding)
+    ///   * agentMessage following an agentMessage: 4pt (tight)
+    ///   * everything else: 18pt
+    private func leadingGap(at i: Int, items: [ThreadItem]) -> CGFloat {
+        guard i > 0 else { return 0 }
+        if case .agentMessage = items[i], case .agentMessage = items[i - 1] {
+            return 4
+        }
+        return 18
     }
 
     /// True only when `items[i]` is an agentMessage AND the next item (if any)

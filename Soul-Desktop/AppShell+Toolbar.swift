@@ -26,6 +26,11 @@ struct CanvasToolbar: View {
     /// no chance of accidentally branching a different row the way the
     /// removed sidebar context menu could.
     var onBranch: (Provider) -> Void = { _ in }
+    /// SOUL-SOUL_DESKTOP-179: hard reload of the active session. Drops the
+    /// controller from `threads` and re-clicks the session row so hydrate
+    /// runs again from scratch. Recovery for the empty-canvas case where
+    /// the previous hydrate completed but populated no content rows.
+    var onReload: () -> Void = {}
     var onToggleSidebar: () -> Void = {}
     var onToggleTerminal: () -> Void = {}
     var onToggleReview: () -> Void = {}
@@ -57,7 +62,7 @@ struct CanvasToolbar: View {
                 Divider()
                     .frame(height: 16)
                     .padding(.horizontal, 8)
-                ThreadTitleCluster(controller: thread, onSmokeTest: onSmokeTest, onBranch: onBranch)
+                ThreadTitleCluster(controller: thread, onSmokeTest: onSmokeTest, onBranch: onBranch, onReload: onReload)
             }
 
             Spacer()
@@ -122,6 +127,7 @@ private struct ThreadTitleCluster: View {
     @Bindable var controller: ThreadController
     var onSmokeTest: () -> Void = {}
     var onBranch: (Provider) -> Void = { _ in }
+    var onReload: () -> Void = {}
     @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
 
     var body: some View {
@@ -154,6 +160,7 @@ private struct ThreadTitleCluster: View {
 
             Menu {
                 Button("Rename chat") { controller.requestRename() }
+                Button("Reload session") { onReload() }
                 Divider()
                 Button("Copy session ID") { controller.copySessionIdToPasteboard() }
                 Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
