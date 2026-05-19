@@ -57,7 +57,14 @@ struct ThreadView: View {
                     // continuous thought instead of three islands. Mixed
                     // boundaries (user→agent, tool→agent, etc.) keep the
                     // full 18pt for visual breathing room.
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    // SOUL-SOUL_DESKTOP-191: VStack, not LazyVStack. Lazy
+                    // realization made the scrollbar thumb represent only
+                    // realized contentSize — dragging fast left a blank
+                    // band at the bottom while off-screen rows realized
+                    // under the cursor. Chat transcripts are bounded
+                    // (hundreds of rows, not thousands), so eager
+                    // realization is the right trade.
+                    VStack(alignment: .leading, spacing: 0) {
                         Color.clear.frame(height: 8)
                         let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
                         let mainItems = split.main
