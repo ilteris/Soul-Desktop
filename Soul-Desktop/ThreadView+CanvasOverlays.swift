@@ -416,3 +416,64 @@ struct ShimmerText: View {
         }
     }
 }
+
+/// SOUL-SOUL_DESKTOP-231: skeleton placeholder for ThreadView while
+/// `controller.isReplayingLoad == true`. A handful of message-row-shaped
+/// cards (avatar + title + body + short footer). Kept static because the
+/// earlier 60 FPS shimmer forced the whole hosting view back through layout
+/// during large session hydrates. Geometry is deliberately rigid (every dimension
+/// explicit, no `.firstTextBaseline`, no nested FlexFrame modifiers) so
+/// this cannot land in the alignment-recursion paths that have bitten
+/// the real message-row tree.
+struct ThreadSkeletonView: View {
+    var rowCount: Int = 5
+    var body: some View {
+        VStack(spacing: 14) {
+            Color.clear.frame(height: 8)
+            ForEach(0..<rowCount, id: \.self) { _ in
+                skeletonCard(fill: blockBase)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 24)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func skeletonCard(fill: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Avatar + title row.
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(fill)
+                    .frame(width: 20, height: 20)
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(fill)
+                    .frame(width: 140, height: 10)
+            }
+            // Two body lines.
+            RoundedRectangle(cornerRadius: 3)
+                .fill(fill)
+                .frame(height: 10)
+                .padding(.top, 4)
+            RoundedRectangle(cornerRadius: 3)
+                .fill(fill)
+                .frame(width: 540, height: 10)
+            // Short footer line, offset down a hair.
+            RoundedRectangle(cornerRadius: 3)
+                .fill(fill)
+                .frame(width: 220, height: 10)
+                .padding(.top, 6)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(SoulColor.border.opacity(0.35), lineWidth: 0.5)
+        )
+    }
+
+    private var blockBase: Color { SoulColor.fgMuted.opacity(0.12) }
+}

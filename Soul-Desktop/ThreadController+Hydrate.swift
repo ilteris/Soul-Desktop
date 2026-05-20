@@ -15,7 +15,16 @@ extension ThreadController {
     func hydrateFromDisk(id sid: String) async {
         guard !hasInitialized else { return }
         let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
-        defer { SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval) }
+        // SOUL-SOUL_DESKTOP-231: gate the ThreadView skeleton overlay. Set
+        // true on entry, flipped false in `defer` so EVERY return path
+        // (success, empty-history, error, codex short-circuit, all of them)
+        // clears it. The skeleton flashes off the moment hydrate is done
+        // and the LazyVStack takes over with fully-populated items.
+        isHydrating = true
+        defer {
+            isHydrating = false
+            SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval)
+        }
         // Hydrate handles all four providers. Claude / Gemini-CLI try their
         // dedicated transcript readers first and fall back to the kernel
         // hooks ledger when those return nil. Codex / Pi go straight to the
@@ -367,10 +376,18 @@ extension ThreadController {
         SoulSignposts.event("injectFinalizeSummaryIfFresh.appended", "\(provLabel)")
     }
 
-    /// Append a `.finalize` card to the canvas if a finalize JSON exists for
-    /// `sid` in this project's registry. No-op when no finalize has been
-    /// recorded. Marked historical so it gets the muted/read-only styling
-    /// alongside the rest of the loaded transcript.
+    /// Insert a `.finalize` card into the canvas at its chronological
+    /// position based on the recorded finalize timestamp. No-op when no
+    /// finalize has been recorded. Marked historical so it gets the
+    /// muted/read-only styling alongside the rest of the loaded transcript.
+    ///
+    /// SOUL-SOUL_DESKTOP-235: previously appended unconditionally at the
+    /// end of `items`, which was wrong when `/finalize` was invoked
+    /// mid-session and the conversation continued afterward. On reload the
+    /// transcript loaded in chronological order then the finalize card got
+    /// pinned to the bottom, placing it after later turns. Now we find the
+    /// first item whose timestamp is strictly after the finalize record
+    /// and insert before it.
     func injectFinalizeSummary(sessionId sid: String) {
         // SOUL-SOUL_DESKTOP-100: trace each branch.
         let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
@@ -388,20 +405,46 @@ extension ThreadController {
             return
         }
         let id = UUID()
-        historicalIDs.insert(id)
-        items.append(.finalize(
+        let finalizeTs = rec.timestamp ?? Date()
+        let card = ThreadItem.finalize(
             id: id,
             intent: rec.intent,
             summary: rec.summary,
             rationale: rec.rationale,
             fixed: rec.fixed,
             nextStep: rec.nextStep,
-            timestamp: rec.timestamp ?? Date()
-        ))
+            timestamp: finalizeTs
+        )
+        // Find the first item whose recorded timestamp is strictly after
+        // the finalize. Items without timestamps (toolCall, plan, status)
+        // don't anchor placement; we let them flow with the adjacent
+        // timestamped item. If no item is later than finalize, append.
+        let insertAt = items.firstIndex(where: { item in
+            guard let ts = ThreadController.itemTimestamp(item) else { return false }
+            return ts > finalizeTs
+        }) ?? items.endIndex
+        historicalIDs.insert(id)
+        items.insert(card, at: insertAt)
         // Remember this finalize so the post-turn live-injection helper
         // doesn't push a duplicate card after the next turn completes.
-        lastFinalizeInjectedAt = rec.timestamp ?? Date()
+        lastFinalizeInjectedAt = finalizeTs
         SoulSignposts.event("injectFinalizeSummary.appended", "\(provLabel)")
+    }
+
+    /// SOUL-SOUL_DESKTOP-235: extract a comparable timestamp from any
+    /// ThreadItem variant that carries one. Returns nil for variants that
+    /// don't (toolCall, plan, status, toolCallGroup, error) — callers
+    /// treat those as position-anchored to neighbors, not as ordering
+    /// keys in their own right.
+    static func itemTimestamp(_ item: ThreadItem) -> Date? {
+        switch item {
+        case .userMessage(_, _, let ts): return ts
+        case .agentMessage(_, _, _, let ts): return ts
+        case .agentThought(_, _, _, let ts): return ts
+        case .branchSummary(_, _, _, _, let ts): return ts
+        case .finalize(_, _, _, _, _, _, let ts): return ts
+        case .toolCall, .plan, .status, .error, .toolCallGroup: return nil
+        }
     }
 
     /// SOUL-SOUL_DESKTOP-038: merge slash-command UserPrompt hooks back into
