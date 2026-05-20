@@ -174,7 +174,8 @@ extension ThreadController {
     func stagePreambleForResume(sid: String, rendered: [ThreadItem]) async {
         do {
             let payload = try await SoulCLI.runJSON(
-                ["preamble", "--session", sid, "--project", project.id, "--format", "json"],
+                ["preamble", "--session", sid, "--project", project.id,
+                 "--format", "json", "--summarize"],
                 as: PreamblePayload.self
             )
             guard !payload.preamble.isEmpty else { return }
