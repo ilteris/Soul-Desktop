@@ -148,32 +148,22 @@ struct MarkdownView: View, Equatable {
                     .modifier(LinkHoverCursor(active: MarkdownView.hasAnyLink(line)))
             }
         case .bullet(let lines):
+            // SOUL-SOUL_DESKTOP-167: drop the leading `•  ` glyph. The
+            // VStack's tight 4pt spacing already visually distinguishes
+            // bullet items from surrounding paragraphs (which get
+            // `\n\n`), and the glyph wasn't carrying meaning beyond
+            // "this is a list" — which the layout itself communicates.
+            // Side benefit: copy now yields the item text verbatim,
+            // without the `•  ` prefix that earlier paste flows had to
+            // strip.
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, item in
-                    // SOUL-SOUL_DESKTOP-224: inline the bullet glyph into the
-                    // prose Text rather than putting it in a sibling HStack
-                    // child. A single Text run has no inter-child baseline
-                    // negotiation, so SwiftUI never reaches into
-                    // FallbackAlignmentProvider → SelectionOverlay.updateNSView
-                    // → NSCell.setFont — which was the font-invalidation
-                    // feedback loop pegging the main thread at 100% CPU on
-                    // certain bullet content. Copying a bullet line yields
-                    // "•  the text" which strips cleanly.
-                    //
-                    // Bare inline-code items keep an HStack-with-glyph
-                    // layout (no prose Text to prepend to). `.top` alignment
-                    // avoids the same loop without bridging via NSView.
                     if let code = MarkdownView.bareInlineCode(item) {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("•")
-                                .font(bodyFont)
-                                .foregroundStyle(SoulColor.fgSubtle)
-                            CopyableInlineCodeRow(code: code, font: codeFont)
-                        }
+                        CopyableInlineCodeRow(code: code, font: codeFont)
                     } else {
-                        (Text("•  ").foregroundColor(SoulColor.fgSubtle)
-                            + inline(item).foregroundColor(bodyColor))
+                        inline(item)
                             .font(bodyFont)
+                            .foregroundStyle(bodyColor)
                             .lineSpacing(2)
                             .fixedSize(horizontal: false, vertical: true)
                             .modifier(LinkHoverCursor(active: MarkdownView.hasAnyLink(item)))
@@ -283,12 +273,14 @@ struct MarkdownView: View, Equatable {
                 appendBreak()
                 out.append(attributedInline(line))
             case .bullet(let items):
+                // SOUL-SOUL_DESKTOP-167: drop the leading `•  ` glyph
+                // from the merged prose stream. Items still separate by
+                // single `\n` (vs paragraphs' `\n\n`), so the list
+                // grouping reads visually without the marker. Copy
+                // yields verbatim item text.
                 appendBreak()
                 for (idx, item) in items.enumerated() {
                     if idx > 0 { out.append(AttributedString("\n")) }
-                    var bullet = AttributedString("•  ")
-                    bullet.foregroundColor = SoulColor.fgSubtle
-                    out.append(bullet)
                     out.append(attributedInline(item))
                 }
             case .blank:
