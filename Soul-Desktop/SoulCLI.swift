@@ -2,12 +2,16 @@ import Foundation
 
 enum SoulCLIError: LocalizedError {
     case nonZeroExit(code: Int32, stderr: String)
+    case executableNotFound
     case decodeFailed
 
     var errorDescription: String? {
         switch self {
         case .nonZeroExit(_, let stderr):
-            return stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.isEmpty ? "soul CLI failed." : message
+        case .executableNotFound:
+            return "Could not find the soul CLI at ~/dotfiles/soul/bin/soul."
         case .decodeFailed:
             return "Could not decode soul CLI output."
         }
@@ -30,9 +34,14 @@ enum SoulCLI {
     @discardableResult
     private static func run(_ args: [String], stdin: Data?) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
+            guard let executable = soulExecutablePath() else {
+                throw SoulCLIError.executableNotFound
+            }
+
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["soul"] + args
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = args
+            process.environment = cliEnvironment()
 
             let stdout = Pipe()
             let stderr = Pipe()
@@ -59,5 +68,56 @@ enum SoulCLI {
             }
             return out
         }.value
+    }
+
+    private static func soulExecutablePath() -> String? {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/dotfiles/soul/bin/soul",
+            "\(home)/.local/bin/soul",
+            "\(home)/bin/soul",
+            "/opt/homebrew/bin/soul",
+            "/usr/local/bin/soul"
+        ]
+
+        for candidate in candidates where fm.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":").map(String.init) {
+            let candidate = "\(dir)/soul"
+            if fm.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    private static func cliEnvironment() -> [String: String] {
+        let home = NSHomeDirectory()
+        let extras = [
+            "\(home)/dotfiles/soul/bin",
+            "\(home)/bin",
+            "\(home)/.local/bin",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        let current = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        var seen = Set<String>()
+        let dirs = (current.split(separator: ":").map(String.init) + extras).filter { seen.insert($0).inserted }
+
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = dirs.joined(separator: ":")
+        env["HOME"] = home
+        env["SOUL_PATH"] = "\(home)/dotfiles/soul"
+        return env
     }
 }
