@@ -56,6 +56,16 @@ extension SidebarView {
                 onNewChat(project.id)
             }
         )
+        .contextMenu {
+            Button("New chat") { onNewChat(project.id) }
+            Divider()
+            Button("Edit project...") {
+                pendingProjectEdit = ProjectEditRequest(project: project)
+            }
+            Button("Delete project...", role: .destructive) {
+                pendingProjectDelete = ProjectDeleteRequest(project: project)
+            }
+        }
         if isExpanded(project.id) {
             let all = mergedChatList(for: project)
             let archivedSet = archiveStore.archivedIDs(forProject: project.id)

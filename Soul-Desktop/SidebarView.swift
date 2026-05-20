@@ -77,6 +77,8 @@ struct SidebarView: View {
     @State var sessionListExpanded: Set<String> = []
     let sessionPageSize: Int = 20
     @State var pendingDelete: DeleteConfirmation? = nil
+    @State var pendingProjectEdit: ProjectEditRequest? = nil
+    @State var pendingProjectDelete: ProjectDeleteRequest? = nil
 
     /// One-shot confirmation context for the destructive delete action.
     /// Identifiable so SwiftUI's `.alert(item:)` modifier can drive it.
@@ -228,6 +230,29 @@ struct SidebarView: View {
         // being clipped inside the sidebar's narrow column.
         .sheet(item: $ambiguousRepair) { ctx in
             ambiguousRepairSheet(ctx)
+        }
+        .sheet(item: $pendingProjectEdit) { ctx in
+            ProjectEditSheet(
+                project: ctx.project,
+                onCancel: { pendingProjectEdit = nil },
+                onSaved: {
+                    pendingProjectEdit = nil
+                    Task { await reload() }
+                }
+            )
+        }
+        .sheet(item: $pendingProjectDelete) { ctx in
+            ProjectDeleteSheet(
+                project: ctx.project,
+                onCancel: { pendingProjectDelete = nil },
+                onDeleted: {
+                    pendingProjectDelete = nil
+                    if selectedProject == ctx.project.id {
+                        selectedProject = nil
+                    }
+                    Task { await reload() }
+                }
+            )
         }
         .alert(item: $pendingDelete) { ctx in
             Alert(

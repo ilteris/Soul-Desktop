@@ -13,6 +13,7 @@ struct NewProjectWizard: View {
     @State private var managerBrief: String = ""
     @State private var initGit: Bool = true
     @State private var error: String? = nil
+    @State private var isCreating: Bool = false
 
     private static let defaultManagerBrief = "Standard architectural oversight."
     private static let defaultHarness = "teddy-architect@v1"
@@ -25,7 +26,7 @@ struct NewProjectWizard: View {
         3: "Dormant or archived. Hidden behind the overflow menu."
     ]
 
-    private let pillars = ["Product", "Platform", "Reputation", "Judgment"]
+    private let pillars = ["Admin", "Personal", "Platform", "Product"]
 
     private var resolvedPath: String {
         path.isEmpty ? "~/Code/\(key)" : path
@@ -132,9 +133,11 @@ struct NewProjectWizard: View {
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Create", action: create)
+                Button("Create") {
+                    Task { await create() }
+                }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!canCreate)
+                    .disabled(!canCreate || isCreating)
             }
         }
         .padding(24)
@@ -173,64 +176,23 @@ struct NewProjectWizard: View {
         String(next.dropLast())
     }
 
-    private func create() {
+    private func create() async {
         error = nil
+        isCreating = true
+        defer { isCreating = false }
         guard keyIsValid else {
             error = "Key must be kebab-case (a-z, 0-9, -)."
             return
         }
 
-        let homePath = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-        let projectsURL = URL(fileURLWithPath: homePath)
-            .appendingPathComponent("dotfiles/soul/config/PROJECTS.json")
-
-        guard FileManager.default.fileExists(atPath: projectsURL.path) else {
-            error = "PROJECTS.json not found at \(projectsURL.path)."
-            return
-        }
-
         do {
-            let data = try Data(contentsOf: projectsURL)
-            guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  var projects = json["projects"] as? [String: Any]
-            else {
-                error = "Could not parse PROJECTS.json."
-                return
-            }
-
-            if projects[key] != nil {
-                error = "Project '\(key)' already exists."
-                return
-            }
-
-            // Resolve display path (~/Code/<key> if blank).
             let storedPath: String = path.isEmpty ? "~/Code/\(key)" : path
-            let expanded = NSString(string: storedPath).expandingTildeInPath
-
-            if !FileManager.default.fileExists(atPath: expanded) {
-                try FileManager.default.createDirectory(
-                    atPath: expanded, withIntermediateDirectories: true
-                )
-            }
-
-            if initGit {
-                let gitDir = (expanded as NSString).appendingPathComponent(".git")
-                if !FileManager.default.fileExists(atPath: gitDir) {
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                    p.arguments = ["git", "-C", expanded, "-c", "init.defaultBranch=main", "init"]
-                    p.standardOutput = Pipe()
-                    p.standardError = Pipe()
-                    try? p.run()
-                    p.waitUntilExit()
-                }
-            }
-
             let resolvedBrief = managerBrief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? NewProjectWizard.defaultManagerBrief
                 : managerBrief.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            let entry: [String: Any] = [
+            let payload: [String: Any] = [
+                "key": key,
                 "name": displayName.isEmpty ? titled(key) : displayName,
                 "path": storedPath,
                 "pillar": pillar,
@@ -256,58 +218,19 @@ struct NewProjectWizard: View {
                     ]
                 ]
             ]
-            projects[key] = entry
-            json["projects"] = projects
 
             let out = try JSONSerialization.data(
-                withJSONObject: json,
+                withJSONObject: payload,
                 options: [.prettyPrinted, .sortedKeys]
             )
-            try out.write(to: projectsURL, options: .atomic)
-
-            try writeTeamsFile(homePath: homePath)
-
+            var args = ["project", "create", "--json", "-", "--create-dir"]
+            if initGit {
+                args.append("--git-init")
+            }
+            try await SoulCLI.runMutation(args, stdin: out)
             onCreated(key)
         } catch let e {
-            error = "Write failed: \(e.localizedDescription)"
+            error = "Create failed: \(e.localizedDescription)"
         }
-    }
-
-    /// Write the canonical ~/soul_registry/teams/<key>/main.json so kernel readers
-    /// (get_lead_persona, get_active_persona, _active_specialists) resolve the
-    /// project to a real persona instead of the default fallback.
-    private func writeTeamsFile(homePath: String) throws {
-        let teamsDir = URL(fileURLWithPath: homePath)
-            .appendingPathComponent("soul_registry/teams")
-            .appendingPathComponent(key)
-        try FileManager.default.createDirectory(
-            at: teamsDir, withIntermediateDirectories: true
-        )
-        let main: [String: Any] = [
-            "project_key": key,
-            "name": displayName.isEmpty ? titled(key) : displayName,
-            "pillar": pillar,
-            "team": [
-                [
-                    "persona": "systems_architect",
-                    "model": NewProjectWizard.leadModel,
-                    "status": "active"
-                ],
-                [
-                    "persona": "registry_guardian",
-                    "model": NewProjectWizard.helperModel
-                ],
-                [
-                    "persona": "terrain_mapper",
-                    "model": NewProjectWizard.helperModel
-                ]
-            ],
-            "default_model": NewProjectWizard.helperModel
-        ]
-        let data = try JSONSerialization.data(
-            withJSONObject: main,
-            options: [.prettyPrinted, .sortedKeys]
-        )
-        try data.write(to: teamsDir.appendingPathComponent("main.json"), options: .atomic)
     }
 }
