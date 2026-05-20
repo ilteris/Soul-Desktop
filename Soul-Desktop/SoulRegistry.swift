@@ -711,19 +711,35 @@ enum SoulRegistry {
         return NSString(string: p).expandingTildeInPath
     }
 
+    // SOUL-SOUL_DESKTOP-165: cache the three formatters as static-let
+    // singletons. The previous parseTimestamp() instantiated all three on
+    // every call — sample 5 (2026-05-20) showed 82+ samples in
+    // parseTimestamp/ISO8601DateFormatter init across one short window
+    // because session scans call it per JSON line. ISO8601DateFormatter
+    // and DateFormatter are documented thread-safe for parsing.
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let iso8601Plain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    private static let kernelMicrosFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
     static func parseTimestamp(_ s: String?) -> Date? {
         guard let s, !s.isEmpty else { return nil }
-        let f1 = ISO8601DateFormatter()
-        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f1.date(from: s) { return d }
-        let f2 = ISO8601DateFormatter()
-        f2.formatOptions = [.withInternetDateTime]
-        if let d = f2.date(from: s) { return d }
-        let f3 = DateFormatter()
-        f3.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-        f3.locale = Locale(identifier: "en_US_POSIX")
-        f3.timeZone = TimeZone(identifier: "UTC")
-        return f3.date(from: s)
+        if let d = iso8601Fractional.date(from: s) { return d }
+        if let d = iso8601Plain.date(from: s) { return d }
+        return kernelMicrosFormatter.date(from: s)
     }
 
     static func mtime(_ path: String) -> Date {
