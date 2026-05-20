@@ -364,7 +364,7 @@ enum SoulRegistry {
         return nil
     }
 
-    enum BackfillResult {
+    enum BackfillResult: Equatable {
         case hit(String)
         case alreadyMapped(String)
         case miss

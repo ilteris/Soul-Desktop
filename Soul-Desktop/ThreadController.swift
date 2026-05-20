@@ -159,84 +159,11 @@ final class ThreadController {
     /// one the agent is actively chewing on.
 var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
-    /// Groups tool calls for compact rendering. 
-    /// 1. File-changing tools (edit/write) for the same file are merged into 
-    ///    a single cumulative group even if non-consecutive.
-    /// 2. Verification tools (read, execute, search) are carouselled by kind,
-    ///    but are HIDDEN if they occur after a file change in the same turn.
-    /// 3. All grouping is turn-scoped (resets on user/agent messages).
     var groupedItems: [ThreadItem] {
         if let cache = groupedItemsCache, cache.version == itemsVersion {
             return cache.value
         }
-
-        var result: [ThreadItem] = []
-        /// Maps file paths to their index in `result`.
-        var fileGroupMap: [String: Int] = [:]
-        /// Maps tool kinds to their index in `result` (for non-file tools).
-        var kindGroupMap: [String: Int] = [:]
-        /// Track if we've seen any file changes in the current tool sequence.
-        var turnHasFileChanges = false
-
-        for item in items {
-            guard case .toolCall(let id, let kind, let title, _, let loc, _) = item else {
-                result.append(item)
-                // SOUL-SOUL_DESKTOP-104b: only userMessage resets the grouping
-                // context. Pi (and Claude Code on long turns) interleaves
-                // agentMessage chunks between consecutive tool calls — the
-                // agent narrating "I'll try X now" between two greps — and
-                // the original "reset on any non-toolCall" rule turned every
-                // execute into its own group. The carousel never engaged
-                // because each group ended up with count == 1 and got
-                // unwrapped. Now only a real turn boundary (a new user
-                // message) resets the maps.
-                if case .userMessage = item {
-                    fileGroupMap.removeAll()
-                    kindGroupMap.removeAll()
-                    turnHasFileChanges = false
-                }
-                continue
-            }
-
-            let isFileChange = (kind == "edit" || kind == "write")
-            let isVerification = (kind == "read" || kind == "execute" || kind == "search")
-            let fileKey = loc ?? title
-
-            if isFileChange {
-                turnHasFileChanges = true
-                if let idx = fileGroupMap[fileKey] {
-                    if case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = result[idx] {
-                        gItems.append(item)
-                        result[idx] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
-                    }
-                } else {
-                    fileGroupMap[fileKey] = result.count
-                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
-                }
-            } else if isVerification && turnHasFileChanges {
-                // Noise! Skip rendering verification tools that happen during 
-                // or after a file-change sequence in the same turn.
-                continue
-            } else {
-                if let idx = kindGroupMap[kind] {
-                    if case .toolCallGroup(let gId, let gKind, let gTitle, let gLoc, var gItems) = result[idx] {
-                        gItems.append(item)
-                        result[idx] = .toolCallGroup(id: gId, kind: gKind, title: gTitle, locationHint: gLoc, items: gItems)
-                    }
-                } else {
-                    kindGroupMap[kind] = result.count
-                    result.append(.toolCallGroup(id: id, kind: kind, title: title, locationHint: loc, items: [item]))
-                }
-            }
-        }
-
-        // Unwrap groups containing only one item.
-        result = result.map { entry in
-            if case .toolCallGroup(_, _, _, _, let inner) = entry, inner.count == 1 {
-                return inner[0]
-            }
-            return entry
-        }
+        let result = ThreadItemGrouper.group(items)
         groupedItemsCache = (itemsVersion, result)
         return result
     }
@@ -255,6 +182,15 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// items as historical so they don't accidentally trigger one-shot
     /// behaviors like first-turn title generation.
     var isReplayingLoad: Bool = false
+
+    /// SOUL-SOUL_DESKTOP-231: true while `hydrateFromDisk` is reading the
+    /// on-disk transcript and appending into `items`. Distinct from
+    /// `isReplayingLoad` (which only covers the ACP `session/load` path);
+    /// the sidebar-click read-first flow goes through hydrateFromDisk and
+    /// would never trip isReplayingLoad. ThreadView's skeleton overlay
+    /// gates on this so the user sees a loading state during the disk
+    /// read instead of watching rows pop in one-by-one.
+    var isHydrating: Bool = false
 
     /// Set when a gemini-CLI `session/load` fails on a corrupted chat file
     /// (force-quit mid-write etc.). AppShell observes this and surfaces a
