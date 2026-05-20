@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct AppShell: View {
-    @State private var selectedProject: String? = nil
+    @State var selectedProject: String? = nil
     /// User's appearance preference. Values: "system", "light", "dark".
     /// `system` means follow the macOS appearance (the SoulColor tokens
     /// already do that via dynamic NSColor); the other two force a side.
@@ -12,7 +12,7 @@ struct AppShell: View {
     /// swap, not a teardown — agent processes keep streaming in the
     /// background, no re-spawn, no re-hydration.
     @State var sessions = AppSessionCoordinator()
-    @State private var replay = AppReplayCoordinator()
+    @State var replay = AppReplayCoordinator()
     /// Optimistic selection: the live-row ID the user just tapped, used for
     /// sidebar highlight before the spawn completes and `thread.sessionId`
     /// is real. Cleared once the thread's own session ID catches up.
@@ -21,22 +21,22 @@ struct AppShell: View {
     /// button). SidebarView observes this and auto-expands the parent
     /// project of the new thread. Restored-at-launch sessions don't bump
     /// this, so launch UX stays "all projects collapsed."
-    @State private var newChatNonce: Int = 0
+    @State var newChatNonce: Int = 0
     /// Pre-thread composer text. Used by HeroEmptyState (no thread yet) and
     /// while the draft-session row is selected. Once a real thread exists,
     /// each ThreadController owns its own `composerDraft` so keystrokes
     /// don't invalidate AppShell.body.
-    @State private var prompt: String = ""
+    @State var prompt: String = ""
     /// True while a background `claude -p` subprocess is composing a branch-
     /// seed sentence for a freshly-spawned cross-provider draft. The composer
     /// uses this to show a "Summarizing previous chat…" placeholder while the
     /// LLM is thinking; the seed populates `prompt` when it lands.
-    @State private var branchSeedLoading: Bool = false
-    @State private var showSmoke = false
+    @State var branchSeedLoading: Bool = false
+    @State var showSmoke = false
     @State private var codexSmokeModel = CodexSmokeViewModel()
-    @State private var showSettings = false
+    @State var showSettings = false
     @State private var showNewProject = false
-    @State private var harness: Provider = .geminiCLI
+    @State var harness: Provider = .geminiCLI
 
     @AppStorage(SoulColor.accentStorageKey) private var accentHex: Int = Int(SoulColor.defaultAccentHex)
 
@@ -44,15 +44,15 @@ struct AppShell: View {
     @State var showTerminal: Bool = false
     @AppStorage("soul.review.visible") var showReview: Bool = false
     @State var rightPane = AppRightPaneCoordinator()
-    @AppStorage("soul.sidebar.visible") private var showSidebar: Bool = true
+    @AppStorage("soul.sidebar.visible") var showSidebar: Bool = true
     /// SOUL-208: NavigationSplitView visibility binding.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+    @State var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @State var devServerRunning: Bool = false
     @AppStorage("soul.terminal.height") var terminalHeight: Double = 260
     @State var dragStartHeight: Double? = nil
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
-    @State private var pendingPermissionMode: PermissionMode = .fullAccess
+    @State var pendingPermissionMode: PermissionMode = .fullAccess
     /// SOUL-SOUL_DESKTOP-035: when the user clicks a live row owned by an
     /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
     /// and surface a sheet offering the read-only Replay path instead.
@@ -63,9 +63,9 @@ struct AppShell: View {
     /// Lifted from SidebarView so the repair-session toast renders at the
     /// top center of the whole window instead of being clipped inside the
     /// 320pt sidebar column. SidebarView writes here via Binding.
-    @State private var repairToast: String? = nil
+    @State var repairToast: String? = nil
 
-    private var contextUsage: ContextUsage? {
+    var contextUsage: ContextUsage? {
         if let replay = replay.controller {
             // During replay, simulate the context window filling as events
             // reveal — sum text bytes from `visible` (the prefix of all
@@ -115,7 +115,7 @@ struct AppShell: View {
         )
     }
 
-    private func startThread(display: String, agent: String) {
+    func startThread(display: String, agent: String) {
         guard let project = currentProject() else { return }
         sessions.draftSession = nil
         let controller = ThreadController(provider: harness, project: project)
@@ -125,7 +125,7 @@ struct AppShell: View {
         Task { await controller.send(display: display, agent: agent) }
     }
 
-    private func loadSession(_ session: SoulSession) {
+    func loadSession(_ session: SoulSession) {
         if let draft = sessions.draftSession, draft.id == session.id {
             // Tapping the draft row keeps the hero composer up — no agent
             // spawn until the user actually sends.
@@ -351,7 +351,7 @@ struct AppShell: View {
     /// already-open case is supported — branching from an unopen session
     /// would need a kernel-ledger hydrate first, which we defer to a
     /// follow-up. Provides quiet no-op when target == source's provider.
-    private func handleBranch(session: SoulSession, target: Provider) {
+    func handleBranch(session: SoulSession, target: Provider) {
         guard let source = sessions.existingThread(sessionId: session.id) else {
             // Source isn't open. Open it first; user re-clicks to branch.
             // Surfacing a sheet here would over-engineer v0.1 — the user
@@ -374,7 +374,7 @@ struct AppShell: View {
     /// user's own one-line bridge prompt is what makes cross-provider
     /// handoff work. A model produces that bridge from intent + current
     /// state better than any static template; the user just edits/sends.
-    private func branchFrom(_ source: ThreadController, to target: Provider) {
+    func branchFrom(_ source: ThreadController, to target: Provider) {
         let items = source.items
         let sourceProvider = source.provider
         // Mark the source's transcript + ledger so when the user returns to
@@ -446,7 +446,7 @@ struct AppShell: View {
     /// populated no content rows (race, silent transcript read failure,
     /// agent process disappeared mid-load), there was no UI affordance to
     /// re-try short of restarting the app. Now: ⋯ menu → Reload session.
-    private func reloadActiveSession() {
+    func reloadActiveSession() {
         guard let key = sessions.activeThreadKey,
               let controller = sessions.threads[key],
               let sid = controller.sessionId
@@ -519,19 +519,19 @@ struct AppShell: View {
         )
     }
 
-    private func exitReplay() {
+    func exitReplay() {
         replay.exit(sidebarVisible: showSidebar, setSidebarVisible: setSidebarVisible)
     }
 
-    private func cancelTurn() {
+    func cancelTurn() {
         Task { await thread?.cancel() }
     }
 
-    private func openNewProjectWizard() {
+    func openNewProjectWizard() {
         showNewProject = true
     }
 
-    private func toggleSidebar() {
+    func toggleSidebar() {
         // SOUL-208: drive NavigationSplitView's column directly; onChange
         // syncs the showSidebar AppStorage so other readers stay current.
         // SOUL-208: NavigationSplitView's reopen path is `.doubleColumn`
@@ -546,7 +546,7 @@ struct AppShell: View {
         withAnimation(sidePanelAnimation) { showSidebar = visible }
     }
 
-    private func toggleReview() {
+    func toggleReview() {
         withAnimation(sidePanelAnimation) {
             rightPane.toggleReview()
             showReview = rightPane.reviewVisible
@@ -557,173 +557,6 @@ struct AppShell: View {
         withAnimation(sidePanelAnimation) {
             rightPane.setFilePreviewPath(path)
         }
-    }
-
-    /// Window-level top-leading control cluster: sidebar toggle + provider
-    /// picker. Lives in the empty strip above the sidebar pane so the two
-    /// primary controls share one visual row (same horizontal line as the
-    /// right-side toolbar icons). Position is fixed via `.padding(.leading,
-    /// 20)` regardless of sidebar open/closed state.
-    @ViewBuilder
-    private var sidebarToggleOverlay: some View {
-        // Harness picker moved to the composer toolbar next to the
-        // PermissionModePicker — keeps related controls (which agent +
-        // what permissions) co-located instead of split across the
-        // top-left overlay and the bottom composer.
-        Button(action: toggleSidebar) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(showSidebar ? SoulColor.accent : SoulColor.fgMuted)
-        }
-        .buttonStyle(SoulHoverButtonStyle(isActive: showSidebar))
-        .help("Toggle sidebar (⌘\\)")
-        .padding(.leading, 32)
-        .padding(.top, 10)
-        .opacity(replay.isActive ? 0.35 : 1)
-    }
-
-    /// Closure handed to every composer surface (ThreadView, HeroEmptyState)
-    /// so the user can switch harness from the bottom toolbar. Mirrors the
-    /// old sidebar-overlay behavior: changing harness mid-thread starts a
-    /// new chat because a Claude session can't be continued by Pi etc.
-    private var onPickHarness: (Provider) -> Void {
-        { picked in
-            if thread != nil { newChat() }
-            harness = picked
-        }
-    }
-
-    private var mainCanvas: some View {
-        VStack(spacing: 0) {
-            CanvasToolbar(
-                harness: harness,
-                onPickHarness: { picked in
-                    if thread != nil { newChat() }
-                    harness = picked
-                },
-                onSmokeTest: { showSmoke = true },
-                onNewChat: { newChat() },
-                onBranch: { provider in
-                    if let source = thread { branchFrom(source, to: provider) }
-                },
-                onReload: { reloadActiveSession() },
-                onToggleSidebar: toggleSidebar,
-                onToggleTerminal: toggleTerminal,
-                onToggleReview: toggleReview,
-                threadActive: thread != nil || replay.isActive,
-                sidebarActive: showSidebar,
-                terminalActive: showTerminal,
-                reviewActive: rightPane.reviewVisible,
-                replayActive: replay.isActive,
-                contextUsage: contextUsage,
-                thread: thread
-            )
-            ZStack {
-                SoulColor.bg.ignoresSafeArea()
-                if let replay = replay.controller {
-                    ReplayView(controller: replay, onExit: exitReplay)
-                } else {
-                    // Mount every open thread regardless of which one (if any)
-                    // is active. Switching between threads is a visibility
-                    // toggle — no teardown, no rebuild, no re-parse. When
-                    // activeThreadKey is nil (e.g. user clicked "New chat"),
-                    // every thread sits at opacity 0 and the HeroEmptyState
-                    // composer renders on top so the new-chat composer is
-                    // available without tearing down the background threads.
-                    ZStack {
-                        ForEach(sessions.mountedThreads, id: \.id) { ctrl in
-                            let isActive = sessions.activeThreadKey == ctrl.id
-                            ThreadView(
-                                controller: ctrl,
-                                prompt: sessions.bindingForDraft(ctrl.id),
-                                onCancel: { if isActive { cancelTurn() } },
-                                onPickHarness: onPickHarness,
-                                branchSeedLoading: isActive && branchSeedLoading,
-                                terminalActive: showTerminal,
-                                onToggleTerminal: toggleTerminal
-                            )
-                            .opacity(isActive ? 1 : 0)
-                            .allowsHitTesting(isActive)
-                            .accessibilityHidden(!isActive)
-                            .zIndex(isActive ? 1 : 0)
-                        }
-                        if sessions.activeThreadKey == nil {
-                            HeroEmptyState(
-                                projectName: currentProject()?.name ?? "your project",
-                                projectPath: currentProject()?.path,
-                                currentProjectID: selectedProject ?? "",
-                                prompt: $prompt,
-                                onSend: { display, agent in startThread(display: display, agent: agent) },
-                                onSelectProject: { selectedProject = $0 },
-                                onNewProject: openNewProjectWizard,
-                                devCommand: currentProject()?.devCommand,
-                                devURL: currentProject()?.devURL,
-                                devRunning: devServerRunning,
-                                onRunLocal: runLocal,
-                                pendingPermissionMode: $pendingPermissionMode,
-                                provider: harness,
-                                onPickHarness: onPickHarness,
-                                branchSeedLoading: branchSeedLoading
-                            )
-                            .zIndex(100)
-                        }
-                    }
-                }
-            }
-            if showTerminal {
-                terminalSection
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            // SOUL-SOUL_DESKTOP-054: hover-revealed branch+artifacts card.
-            // Suppressed when:
-            //  - a right-side pane is open (FilePreview / Review fight for
-            //    the right edge), or
-            //  - the canvas is in Replay mode (the overlay's git/branch
-            //    actions don't apply to a read-only chapter view)
-            if !rightPane.isOpen, !replay.isActive {
-                CanvasInfoOverlay(
-                    projectPath: thread?.project.path ?? currentProject()?.path,
-                    projectName: thread?.project.name ?? currentProject()?.name,
-                    projectKey: thread?.project.id ?? currentProject()?.id
-                )
-                .allowsHitTesting(true)
-            }
-        }
-        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-        .geometryGroup()
-    }
-
-    @ViewBuilder
-    private var sidebarPane: some View {
-        ZStack(alignment: .leading) {
-            SidebarView(
-                selectedProject: $selectedProject,
-                onSelectSession: loadSession,
-                onReplaySession: startReplay,
-                onNewChat: { target in newChat(targetProjectID: target) },
-                onBranch: { session, target in handleBranch(session: session, target: target) },
-                onOpenSettings: { showSettings = true },
-                onToggleSidebar: toggleSidebar,
-                activeReplaySessionId: replay.controller?.sessionId,
-                replayProgress: replay.fraction,
-                replayIndex: replay.controller?.index ?? 0,
-                replayTotal: replay.controller?.total ?? 0,
-                replayPrompts: replay.controller?.promptCount ?? 0,
-                replayReplies: replay.controller?.replyCount ?? 0,
-                activeSessionId: thread?.sessionId ?? sessions.pendingActiveId,
-                activeProjectId: thread?.project.id ?? replay.controller?.project.id ?? sessions.draftSession?.project,
-                currentProvider: harness,
-                draftSession: sessions.draftSession,
-                activeThreads: sessions.mountedThreads,
-                newChatNonce: newChatNonce,
-                repairToast: $repairToast
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        // SOUL-208: NavigationSplitView owns the column width and
-        // visibility; old fixed-width + zero-on-hide clipping retired.
     }
 
     var body: some View {
