@@ -179,6 +179,40 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         return result
     }
 
+    /// Cached counts of tool calls + user-message chapters in `items`. The
+    /// toolbar `SessionStatsChip` reads these on every TimelineView tick
+    /// (once per second) for the elapsed-time help text; without caching,
+    /// long sessions paid O(N) per tick forever. Cache piggybacks on
+    /// `itemsVersion`, which the `items` didSet already bumps.
+    var toolCount: Int {
+        refreshStatsCache()
+        return statsCache?.tools ?? 0
+    }
+
+    var chapterCount: Int {
+        refreshStatsCache()
+        return statsCache?.chapters ?? 0
+    }
+
+    private func refreshStatsCache() {
+        if let c = statsCache, c.version == itemsVersion { return }
+        var tools = 0
+        var chapters = 0
+        for item in items {
+            switch item {
+            case .userMessage:
+                chapters += 1
+            case .toolCall:
+                tools += 1
+            case .toolCallGroup(_, _, _, _, let inner):
+                tools += inner.count
+            default:
+                break
+            }
+        }
+        statsCache = (itemsVersion, tools, chapters)
+    }
+
     /// Per-thread scroll anchor. ThreadView records the top-most visible item
     /// as the user scrolls and restores it on re-appear so switching threads
     /// (multiplexer) doesn't snap each view back to the top.
@@ -546,6 +580,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     var toolCallPreviousLineCount: [String: Int] = [:]
     @ObservationIgnored private var itemsVersion: Int = 0
     @ObservationIgnored private var groupedItemsCache: (version: Int, value: [ThreadItem])?
+    @ObservationIgnored private var statsCache: (version: Int, tools: Int, chapters: Int)?
     /// Set when Stop / Recover intentionally tears down the provider child to
     /// force an in-flight prompt continuation to unwind. The resulting
     /// childTerminated error is expected and should not render as a red row.

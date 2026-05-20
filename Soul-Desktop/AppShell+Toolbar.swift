@@ -337,24 +337,8 @@ private struct ContextUsageChip: View {
 private struct SessionStatsChip: View {
     @Bindable var controller: ThreadController
 
-    private var toolCount: Int {
-        controller.items.reduce(into: 0) { acc, item in
-            switch item {
-            case .toolCall:
-                acc += 1
-            case .toolCallGroup(_, _, _, _, let inner):
-                acc += inner.count
-            default:
-                break
-            }
-        }
-    }
-
-    private var chapterCount: Int {
-        controller.items.reduce(into: 0) { acc, item in
-            if case .userMessage = item { acc += 1 }
-        }
-    }
+    private var toolCount: Int { controller.toolCount }
+    private var chapterCount: Int { controller.chapterCount }
 
     private func elapsedLabel(now: Date) -> String {
         // Cap at lastActivityAt so idle wall-clock time doesn't inflate

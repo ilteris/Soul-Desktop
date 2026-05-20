@@ -33,14 +33,31 @@ struct ContextUsage {
     /// Dispatch on provider. Falls back to nil only if no transcript file
     /// can be located — providers we know how to estimate always return a
     /// value, even if coarse.
+    ///
+    /// SOUL-SOUL_DESKTOP-234: read from `AppShell.contextUsage`, which is a
+    /// computed property hit on every AppShell.body re-eval. Each call
+    /// opens (and for Claude, parses line-by-line) a session-sized JSONL
+    /// file on the main thread. A 2-second memo coalesces redundant reads;
+    /// the token-count chip doesn't need sub-2s freshness.
     static func compute(provider: Provider, sessionId: String, cwd: String) -> ContextUsage? {
-        switch provider {
-        case .claude:    return computeClaude(sessionId: sessionId, cwd: cwd)
-        case .geminiCLI: return computeGemini(sessionId: sessionId, cwd: cwd)
-        case .pi:        return computePi(sessionId: sessionId, cwd: cwd)
-        case .codex:     return nil  // Phase 1 stub: token usage not wired yet
+        let key = "\(provider.rawValue)|\(cwd)|\(sessionId)"
+        let now = Date()
+        if let cached = memo[key], now.timeIntervalSince(cached.date) < memoTTL {
+            return cached.value
         }
+        let result: ContextUsage?
+        switch provider {
+        case .claude:    result = computeClaude(sessionId: sessionId, cwd: cwd)
+        case .geminiCLI: result = computeGemini(sessionId: sessionId, cwd: cwd)
+        case .pi:        result = computePi(sessionId: sessionId, cwd: cwd)
+        case .codex:     result = nil  // Phase 1 stub: token usage not wired yet
+        }
+        memo[key] = (now, result)
+        return result
     }
+
+    private static var memo: [String: (date: Date, value: ContextUsage?)] = [:]
+    private static let memoTTL: TimeInterval = 2.0
 
     /// Coarse running estimate from the items revealed so far in a Replay.
     /// Sums message text bytes and divides by 4 (the same chars-per-token

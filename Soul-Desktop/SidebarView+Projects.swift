@@ -62,8 +62,23 @@ extension SidebarView {
     /// freshly-expanded row exists for `scrollTo` to find.
     func scrollToActiveSession(proxy: ScrollViewProxy, sessionId: String?) {
         guard let sid = sessionId else { return }
+        // SOUL-SOUL_DESKTOP-234: was calling mergedChatList per project just
+        // to test membership — building a sorted dict-merged list to answer
+        // a `contains` question. Direct scan over the underlying disk rows
+        // and active threads is O(M) per project with zero allocations.
         let owner = projects.first(where: { p in
-            mergedChatList(for: p).contains(where: { $0.id == sid })
+            if let rows = sessionsByProject[p.id], rows.contains(where: { $0.id == sid }) {
+                return true
+            }
+            if activeThreads.contains(where: {
+                $0.project.id == p.id && ($0.sessionId == sid || "thread-\($0.id)" == sid)
+            }) {
+                return true
+            }
+            if let draft = draftSession, draft.project == p.id, draft.id == sid {
+                return true
+            }
+            return false
         })
         if let owner, !isExpanded(owner.id) {
             setExpanded(owner.id, true)

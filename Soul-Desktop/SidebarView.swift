@@ -361,8 +361,21 @@ struct SidebarView: View {
         // currently-active session id.
         let projectId: String? = activeProjectId
             ?? projects.first(where: { p in
-                let list = mergedChatList(for: p)
-                return list.contains(where: { $0.id == activeSessionId })
+                // SOUL-SOUL_DESKTOP-234: cheap membership check — no
+                // dict-merge + sort just to answer `contains`.
+                guard let sid = activeSessionId else { return false }
+                if let rows = sessionsByProject[p.id], rows.contains(where: { $0.id == sid }) {
+                    return true
+                }
+                if activeThreads.contains(where: {
+                    $0.project.id == p.id && ($0.sessionId == sid || "thread-\($0.id)" == sid)
+                }) {
+                    return true
+                }
+                if let draft = draftSession, draft.project == p.id, draft.id == sid {
+                    return true
+                }
+                return false
             })?.id
         guard let pid = projectId,
               let project = projects.first(where: { $0.id == pid })
