@@ -54,6 +54,12 @@ extension SidebarView {
             onSelect: { selectedProject = project.id },
             onNewChat: {
                 onNewChat(project.id)
+            },
+            onEdit: {
+                pendingProjectEdit = ProjectEditRequest(project: project)
+            },
+            onDelete: {
+                pendingProjectDelete = ProjectDeleteRequest(project: project)
             }
         )
         .contextMenu {

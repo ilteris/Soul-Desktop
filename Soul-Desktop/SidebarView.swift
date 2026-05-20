@@ -6,6 +6,7 @@ struct SidebarView: View {
     var onSelectSession: (SoulSession) -> Void = { _ in }
     var onReplaySession: (SoulSession) -> Void = { _ in }
     var onNewChat: (_ targetProjectID: String?) -> Void = { _ in }
+    var onNewProject: () -> Void = {}
     /// Cross-provider branch: AppShell looks up the active ThreadController
     /// for the session (or hydrates from kernel ledger), then composes a
     /// branch-seed via background LLM and pre-fills the composer.
@@ -165,6 +166,14 @@ struct SidebarView: View {
                         .background(SoulColor.surface, in: Capsule())
                 }
                 Spacer()
+                Button(action: onNewProject) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SoulColor.fgMuted)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.soulHover)
+                .help("Add project")
             }
             .padding(.top, 18)
             .padding(.horizontal, 16)

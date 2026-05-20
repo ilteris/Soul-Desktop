@@ -244,9 +244,12 @@ struct ProjectSidebarRow: View {
     var chatCount: Int = 0
     let onSelect: () -> Void
     let onNewChat: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
 
     @State private var hovering = false
     @State private var buttonHover = false
+    @State private var menuHover = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -279,6 +282,24 @@ struct ProjectSidebarRow: View {
             .onHover { buttonHover = $0 }
             .opacity(hovering ? 1 : 0)
             .allowsHitTesting(hovering)
+            Menu {
+                Button("Add chat", action: onNewChat)
+                Divider()
+                Button("Edit project...", action: onEdit)
+                Button("Remove project...", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(menuHover ? SoulColor.fg : SoulColor.fgMuted)
+                    .frame(width: 20, height: 20)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .onHover { menuHover = $0 }
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+            .help("Project actions")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
