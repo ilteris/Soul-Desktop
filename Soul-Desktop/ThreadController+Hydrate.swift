@@ -112,10 +112,13 @@ extension ThreadController {
                 items.append(contentsOf: ledgerItems)
                 injectSlashCommandPrompts(result.slashPrompts)
                 injectFinalizeSummary(sessionId: sid)
-                items.append(.status(id: UUID(), text: "ℹ rendered from kernel ledger — first message starts a fresh \(provider.rawValue) session"))
-                // Intentionally do NOT set pendingResumeOnFirstSend: without
-                // a native UUID, ACP session/load would rpcError on first
-                // send. Let ensureSession take the fresh-session path.
+                // SOUL-SOUL_DESKTOP-245 (Phase B): mint preamble from the
+                // ledger items so the fresh provider session gets the
+                // prior conversation as inline context on first send.
+                // Previously this branch had no resume path at all — the
+                // agent started cold and the user had to recap manually.
+                stagePreambleForResume(from: items)
+                pendingResumeOnFirstSend = true
                 return
             }
             if provider == .claude || provider == .geminiCLI {
@@ -151,7 +154,29 @@ extension ThreadController {
         // a finalized row immediately answers "what did we accomplish here?"
         // without anyone needing to `cat` the JSON.
         injectFinalizeSummary(sessionId: sid)
+        // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. Render
+        // the prior items into a text preamble that gets prefixed to the
+        // user's first prompt in dispatchPending. This replaces the old
+        // session/load resume path that re-fed the entire transcript to
+        // the agent and overflowed the context window on long sessions.
+        stagePreambleForResume(from: items)
         pendingResumeOnFirstSend = true
+    }
+
+    /// SOUL-SOUL_DESKTOP-245 (Phase B). Build the preamble blob from
+    /// what's now in `items`. Too large → drop with a visible status row
+    /// so the user knows summarization (Phase A) hasn't landed yet.
+    func stagePreambleForResume(from rendered: [ThreadItem]) {
+        guard let built = LedgerPreamble.build(from: rendered) else { return }
+        if built.truncated {
+            items.append(.status(
+                id: UUID(),
+                text: "ℹ prior context too large for direct injection (\(built.turnCount) turns) — agent will start fresh until summarization ships"
+            ))
+            pendingContextPreamble = nil
+            return
+        }
+        pendingContextPreamble = built.text
     }
 
     static func looksLikeUUID(_ s: String) -> Bool {

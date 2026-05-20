@@ -1,0 +1,106 @@
+import Foundation
+
+/// SOUL-SOUL_DESKTOP-245 (Phase B — bypass-first resume).
+///
+/// Renders a hydrated thread's prior items into a single text block that
+/// gets prefixed to the user's first prompt after a resume. The agent
+/// reads it as inline context and continues naturally; the canvas still
+/// shows the full transcript above. This replaces the old
+/// `session/load`-based resume that was re-feeding the entire history
+/// back to the agent (and blowing the context window — see the 1.7M-token
+/// screenshot bug that motivated -245).
+///
+/// Phase A will replace `build(...)` with a summarizer when `byteCount`
+/// exceeds the safe threshold. Today we either inject verbatim (small
+/// session) or skip and start fresh (with a status row explaining why).
+enum LedgerPreamble {
+
+    /// Anything larger than this gets dropped instead of injected. 300K
+    /// chars ≈ 75K tokens. Sized for Claude Sonnet's 200K window minus
+    /// system prompt + tool schemas + the new user turn + headroom for
+    /// the reply (~50K reserved). Gemini and Pi have larger windows so
+    /// this is conservative for them; Codex (GPT-5 class, varies) is
+    /// roughly comparable to Sonnet. Phase A will make this per-provider
+    /// keyed; for Phase B one floor is fine and the audit caught the
+    /// previous 500K value as too aggressive for Claude.
+    static let maxChars = 300_000
+
+    struct Built {
+        var text: String
+        var turnCount: Int
+        var truncated: Bool
+    }
+
+    /// Returns nil when there's nothing worth injecting (empty / only
+    /// status rows / errors).
+    static func build(from items: [ThreadItem]) -> Built? {
+        var lines: [String] = []
+        var turns = 0
+
+        for item in items {
+            switch item {
+            case .userMessage(_, let text, _):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                lines.append("User: \(trimmed)")
+                turns += 1
+
+            case .agentMessage(_, let text, _, _):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                lines.append("You: \(trimmed)")
+
+            case .branchSummary(_, let summary, let from, let to, _):
+                lines.append("[branched from \(from.label) to \(to.label)]")
+                lines.append("Summary: \(summary)")
+
+            case .toolCall(_, let kind, let title, let status, let hint, _):
+                let hintPart = hint.map { " (\($0))" } ?? ""
+                lines.append("[tool: \(kind) \(title)\(hintPart) — \(status)]")
+
+            case .toolCallGroup(_, let kind, let title, let hint, let inner):
+                let hintPart = hint.map { " (\($0))" } ?? ""
+                lines.append("[tool group: \(kind) \(title)\(hintPart) — \(inner.count) calls]")
+
+            case .finalize(_, let intent, let summary, _, _, let next, _):
+                var bits: [String] = ["[prior session finalized]"]
+                if let intent, !intent.isEmpty { bits.append("Intent: \(intent)") }
+                if let summary, !summary.isEmpty { bits.append("Summary: \(summary)") }
+                if let next, !next.isEmpty { bits.append("Next: \(next)") }
+                lines.append(bits.joined(separator: " "))
+
+            case .agentThought, .plan, .status, .error:
+                continue
+            }
+        }
+
+        guard turns > 0 else { return nil }
+
+        let body = lines.joined(separator: "\n\n")
+        let wrapped = """
+        <prior_session_context>
+        You're resuming an existing conversation. The user can see the full
+        prior transcript in their UI above your reply — do NOT recap it.
+        Below is that conversation so you have context. Continue naturally
+        from the new user message that follows.
+
+        ---
+        \(body)
+        ---
+        </prior_session_context>
+
+        """
+
+        if wrapped.count > maxChars {
+            return Built(text: "", turnCount: turns, truncated: true)
+        }
+        return Built(text: wrapped, turnCount: turns, truncated: false)
+    }
+
+    /// Prefix the preamble to the agent-channel text for the first send.
+    /// Leaves `display` untouched — the canvas already shows the prior items.
+    static func prefix(_ preamble: String, to agent: String) -> String {
+        guard !preamble.isEmpty else { return agent }
+        return preamble + "\nNew user message:\n" + agent
+    }
+}

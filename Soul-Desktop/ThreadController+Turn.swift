@@ -159,7 +159,16 @@ extension ThreadController {
                         relocateQueuedBubbleToEnd(turn)
                     }
                     isFirstTurn = false
-                    try await sendCodex(text: turn.agent)
+                    // SOUL-SOUL_DESKTOP-245 (Phase B): inject preamble on
+                    // first dispatch for resumed codex sessions too.
+                    let agentText: String = {
+                        if let pre = pendingContextPreamble {
+                            pendingContextPreamble = nil
+                            return LedgerPreamble.prefix(pre, to: turn.agent)
+                        }
+                        return turn.agent
+                    }()
+                    try await sendCodex(text: agentText)
 
                     // Persist the codex agent's final reply text to the
                     // kernel hooks ledger, same way the ACP branch does.
@@ -206,8 +215,20 @@ extension ThreadController {
                     }
                 }
                 isFirstTurn = false
+                // SOUL-SOUL_DESKTOP-245 (Phase B): if hydrate staged a
+                // preamble for this resumed session, prefix it to the
+                // agent-channel text on the first dispatch and clear so
+                // subsequent turns don't re-send it. Display text is
+                // untouched — the canvas already shows the prior items.
+                let agentText: String = {
+                    if let pre = pendingContextPreamble {
+                        pendingContextPreamble = nil
+                        return LedgerPreamble.prefix(pre, to: turn.agent)
+                    }
+                    return turn.agent
+                }()
                 do {
-                    _ = try await client.prompt(sessionId: nid, text: turn.agent)
+                    _ = try await client.prompt(sessionId: nid, text: agentText)
                 } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
                     // SOUL-SOUL_DESKTOP-103: Gemini-CLI rotates / drops the
                     // session mid-conversation (observed: session loaded fine,
@@ -230,7 +251,13 @@ extension ThreadController {
                         isReplayingLoad = false
                     }
                     try await client.loadSession(sessionId: nid, cwd: project.path)
-                    _ = try await client.prompt(sessionId: nid, text: turn.agent)
+                    // Retry uses agentText (preamble + prompt), not the
+                    // bare turn.agent. SOUL-SOUL_DESKTOP-245 audit S1: if
+                    // the first attempt failed at the RPC layer the agent
+                    // never saw the preamble, and pendingContextPreamble
+                    // was already cleared above. Re-sending agentText
+                    // makes the recovery idempotent.
+                    _ = try await client.prompt(sessionId: nid, text: agentText)
                 }
 
                 // Persist the agent's full reply text to the kernel hooks

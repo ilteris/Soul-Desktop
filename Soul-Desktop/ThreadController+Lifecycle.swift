@@ -258,70 +258,49 @@ extension ThreadController {
         }
         if hasInitialized, client != nil, sessionId != nil { return }
 
-        // A manual stop / stall recovery tears down the child process to
-        // resolve the in-flight prompt continuation. Keep the logical kernel
-        // session, then resume the provider-native session on the next send
-        // instead of minting a new kernel row.
+        // SOUL-SOUL_DESKTOP-245 (Phase B): stop / stall recovery. Manual
+        // cancel tears down the child process; on the next send we used
+        // to call session/load to re-register the prior native sid with
+        // the agent. That worked but re-fed the entire transcript to the
+        // model — same overflow class as the archive-open path. Now we
+        // mint a fresh native sid and stage a preamble built from the
+        // current in-canvas items so the agent picks up where it left off
+        // without re-reading every prior turn. Kernel sid preserved.
         if let sid = sessionId, nativeSessionId != nil {
             try await spawnAndInitialize(skipNewSession: true)
             guard let client else { return }
-            let resumeId = nativeSessionId ?? sid
-            do {
-                suppressLoadReplay = true
-                isReplayingLoad = true
-                try await client.loadSession(sessionId: resumeId, cwd: project.path)
-                suppressLoadReplay = false
-                isReplayingLoad = false
-                nativeSessionId = resumeId
-                hasInitialized = true
-                return
-            } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
-                // SOUL-SOUL_DESKTOP-176: native UUID is stale (agent doesn't
-                // know this session, e.g. provider rotated transcripts /
-                // user trashed it). Fall through to a fresh session/new so
-                // the next prompt actually lands instead of erroring out.
-                // Kernel sid is preserved — same conversation row in the
-                // sidebar continues writing to its own ledger.
-                suppressLoadReplay = false
-                isReplayingLoad = false
-                try await mintFreshNativeSession(client: client, kernelSid: sid, reason: "stale native id")
-                return
-            }
+            stagePreambleForResume(from: items)
+            try await mintFreshNativeSession(
+                client: client,
+                kernelSid: sid,
+                reason: "stop/stall recovery — Phase B fresh-session bypass",
+                variant: .phaseBBypass
+            )
+            return
         }
 
-        // SOUL-SOUL_DESKTOP-043: hydrated from disk, no agent yet. Spawn now,
-        // ask the agent to load this session, and suppress its replay stream
-        // so the disk-rendered items don't get duplicated. The user is
-        // already in the "send" path — they expect a beat — so the spawn
-        // cost pays for itself by making the *open* instant.
+        // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. We
+        // hydrated the canvas from the kernel ledger; rather than asking
+        // the agent to `session/load` and replay the full transcript
+        // (which overflows the context window on long sessions and forces
+        // the user to watch an AI recap they didn't ask for), mint a
+        // fresh native session and let the preamble we staged in hydrate
+        // carry the prior conversation as inline context on first send.
+        // Kernel sid is preserved by mintFreshNativeSession — same row,
+        // same ledger, new agent process.
         if pendingResumeOnFirstSend, let sid = sessionId {
             pendingResumeOnFirstSend = false
             try await spawnAndInitialize(skipNewSession: true)
             guard let client else { return }
-            let resumeId = nativeSessionId ?? sid
-            // Backup mirror — gemini-cli's session/new fallback can rewrite
-            // the agent's chat file. Claude doesn't, but the backup is cheap
-            // and makes the failure mode survivable across providers.
-            _ = Self.backupAgentChatIfPresent(
-                provider: provider,
-                sessionId: resumeId,
-                cwd: project.path
+            try await mintFreshNativeSession(
+                client: client,
+                kernelSid: sid,
+                reason: pendingContextPreamble != nil
+                    ? "Phase B bypass — preamble carries prior context"
+                    : "Phase B bypass — no preamble (empty / too large)",
+                variant: .phaseBBypass
             )
-            do {
-                suppressLoadReplay = true
-                isReplayingLoad = true
-                try await client.loadSession(sessionId: resumeId, cwd: project.path)
-                suppressLoadReplay = false
-                isReplayingLoad = false
-                nativeSessionId = resumeId
-                hasInitialized = true
-                return
-            } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
-                suppressLoadReplay = false
-                isReplayingLoad = false
-                try await mintFreshNativeSession(client: client, kernelSid: sid, reason: "stale native id on first send")
-                return
-            }
+            return
         }
 
         logLifecycle("ensureSession.newSession",
@@ -384,16 +363,34 @@ extension ThreadController {
     /// the mapping so future resumes hit the new UUID. Adds an inline
     /// status row so the user knows the resume failed silently and new
     /// turns will be in a fresh agent session.
+    /// Variant marker for the status row. SOUL-SOUL_DESKTOP-245 (Phase B)
+    /// callers shouldn't surface "resume failed" — they never tried to
+    /// resume in the first place, they intentionally bypassed loadSession.
+    enum MintReason {
+        case staleResume   // legacy: loadSession rpcError, falling through
+        case phaseBBypass  // happy path: deliberate bypass of session/load
+    }
+
     private func mintFreshNativeSession(
         client: ACPClient,
         kernelSid: String,
-        reason: String
+        reason: String,
+        variant: MintReason = .staleResume
     ) async throws {
         logLifecycle("ensureSession.mintFreshNativeSession", note: reason)
-        items.append(.status(
-            id: UUID(),
-            text: "ℹ resume failed (\(reason)) — starting a fresh \(provider.rawValue) session for new turns"
-        ))
+        switch variant {
+        case .staleResume:
+            items.append(.status(
+                id: UUID(),
+                text: "ℹ resume failed (\(reason)) — starting a fresh \(provider.rawValue) session for new turns"
+            ))
+        case .phaseBBypass:
+            // Happy path: canvas is already painted from the ledger and
+            // the preamble (if any) is queued for first send. No user-
+            // visible status row — the experience should feel like the
+            // session just opened.
+            break
+        }
         let nid = try await client.newSession(cwd: project.path)
         nativeSessionId = nid
         hasInitialized = true

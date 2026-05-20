@@ -264,6 +264,23 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// during the spawn window doesn't re-enter the resume path.
     var pendingResumeOnFirstSend: Bool = false
 
+    /// SOUL-SOUL_DESKTOP-245 (Phase B). When set, the next first-turn
+    /// dispatch prefixes this text to its agent-channel prompt — giving
+    /// the freshly-minted provider session the prior conversation as
+    /// inline context instead of calling `session/load` (which re-feeds
+    /// the entire history and blows the context window on long sessions).
+    /// Cleared as soon as it's consumed.
+    ///
+    /// Known race (documented, not fixed in Phase B): if the user sends
+    /// a prompt before `hydrateFromDisk`'s detached read returns, the
+    /// send's `ensureSession` runs first, mints a fresh native sid
+    /// without a preamble, and the late hydrate then populates this
+    /// field — which gets consumed on the *second* user turn instead of
+    /// the first. Mitigation today: AppShell chains hydrate→ensureSession
+    /// in the click path so the warm-up beats the user typing. Phase A
+    /// will add an explicit `awaitHydrate()` gate.
+    var pendingContextPreamble: String? = nil
+
     /// Running task for ensureSession() to prevent concurrent executions.
     @ObservationIgnored var ensureSessionTask: Task<Void, Error>? = nil
 
