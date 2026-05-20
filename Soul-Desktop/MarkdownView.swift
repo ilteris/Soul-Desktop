@@ -354,10 +354,54 @@ struct MarkdownView: View, Equatable {
                 attr[run.range].font = SoulType.bodyItalic
             }
         }
+        // SOUL-SOUL_DESKTOP-160: Apple's AttributedString(markdown:) parser
+        // silently leaves some `[label](url)` constructs un-linked — file://
+        // URLs are the worst offender. Symptom from the bug report: the
+        // bracket TEXT got auto-styled by linkifyPaths because it looked
+        // path-shaped, while the literal `](url)` remained as ASCII text
+        // after the styled run. Convert any `[label](url)` patterns still
+        // present in the post-parser AttributedString to real link runs.
+        applyMarkdownLinkFallback(&attr)
         linkifyPaths(&attr)
         stripLinkUnderlines(&attr)
         return attr
     }
+
+    /// SOUL-SOUL_DESKTOP-160: scan the AttributedString's plain text for
+    /// surviving `[label](url)` patterns (i.e., the ones Apple's markdown
+    /// parser didn't convert) and replace each with the label text carrying
+    /// a `.link` attribute. Processes matches in reverse so the
+    /// `attr.range(of:)` lookups don't get invalidated by earlier
+    /// replacements.
+    private static func applyMarkdownLinkFallback(_ attr: inout AttributedString) {
+        let plain = String(attr.characters)
+        guard plain.contains("](") else { return }
+        guard let regex = markdownLinkRegex else { return }
+        let nsPlain = plain as NSString
+        let matches = regex.matches(in: plain, range: NSRange(location: 0, length: nsPlain.length))
+        for m in matches.reversed() {
+            guard m.numberOfRanges == 3 else { continue }
+            let fullMatch = nsPlain.substring(with: m.range)
+            let labelText = nsPlain.substring(with: m.range(at: 1))
+            let urlText = nsPlain.substring(with: m.range(at: 2))
+            // file:// URLs with spaces (rare but possible from agent
+            // line-wraps that escaped collapseMultilineLinks) need percent
+            // encoding before URL() will accept them.
+            let encoded = urlText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlText
+            guard let url = URL(string: urlText) ?? URL(string: encoded) else { continue }
+            guard let attrRange = attr.range(of: fullMatch) else { continue }
+            var replacement = AttributedString(labelText)
+            replacement.link = url
+            attr.replaceSubrange(attrRange, with: replacement)
+        }
+    }
+
+    /// `[label](url)` matcher. Label can contain any char except `]`; URL
+    /// can contain any char except `)`. CommonMark allows nested parens via
+    /// escaping but agent outputs effectively never use that.
+    private static let markdownLinkRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^)]+)\)"#)
+    }()
 
     private func inline(_ s: String) -> Text { MarkdownView.inline(s) }
 
