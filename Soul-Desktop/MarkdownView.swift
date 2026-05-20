@@ -1,6 +1,15 @@
 import SwiftUI
 
-struct MarkdownView: View {
+/// SOUL-SOUL_DESKTOP-162: `Equatable` conformance + a manual `==` over
+/// the stored input lets `.equatable()` at the use site short-circuit
+/// SwiftUI's body re-evals when none of the input changed. Without it,
+/// every items.count change in a parent re-evaluates every visible
+/// MarkdownView body and re-runs the markdown parse + linkify regex on
+/// the full text — a profile (2026-05-20) showed this dominating CPU
+/// after the registry-store cache landed. `@Environment` is intentionally
+/// excluded from `==`: the openFilePreview action's identity changes
+/// across container re-creates but its observable behavior is stable.
+struct MarkdownView: View, Equatable {
     let text: String
     var codeFont: Font = SoulType.code
     var bodyFont: Font = SoulType.body
@@ -16,6 +25,17 @@ struct MarkdownView: View {
     var lazy: Bool = false
 
     @Environment(\.openFilePreview) private var openFilePreview
+
+    static func == (lhs: MarkdownView, rhs: MarkdownView) -> Bool {
+        lhs.text == rhs.text
+            && lhs.codeFont == rhs.codeFont
+            && lhs.bodyFont == rhs.bodyFont
+            && lhs.headerColor == rhs.headerColor
+            && lhs.bodyColor == rhs.bodyColor
+            && lhs.codeColor == rhs.codeColor
+            && lhs.codeBackground == rhs.codeBackground
+            && lhs.lazy == rhs.lazy
+    }
 
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: scroll-perf telemetry. MarkdownView is
@@ -264,7 +284,29 @@ struct MarkdownView: View {
 
     /// Same styling pipeline as `inline(_:)` but returns the raw
     /// AttributedString so callers can concatenate runs before rendering.
+    ///
+    /// SOUL-SOUL_DESKTOP-162: memoized by source string. The expensive
+    /// portion is `linkifyPaths` (NSRegularExpression scan over the merged
+    /// inline) which a profile (2026-05-20) showed firing per body
+    /// re-eval per visible MarkdownView. Each line of agent prose is
+    /// stable once received, so caching by `s` is a clean hit pattern
+    /// during streaming — only the actively-growing last line misses.
     static func attributedInline(_ s: String) -> AttributedString {
+        if let hit = inlineAttrCache[s] { return hit }
+        let result = computeAttributedInline(s)
+        if inlineAttrCache.count > 512 {
+            inlineAttrCache.removeAll(keepingCapacity: true)
+        }
+        inlineAttrCache[s] = result
+        return result
+    }
+
+    /// Process-wide cache keyed by raw inline string. Bounded; reset
+    /// wholesale at the cap so we never grow unbounded across long
+    /// sessions. Mirrors the `parseCache` pattern.
+    private static var inlineAttrCache: [String: AttributedString] = [:]
+
+    private static func computeAttributedInline(_ s: String) -> AttributedString {
         guard var attr = try? AttributedString(
             markdown: s,
             options: AttributedString.MarkdownParsingOptions(
