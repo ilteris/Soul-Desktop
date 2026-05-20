@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 880" font-family="-apple-system, system-ui, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,12 L10,6 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arrow-bottom" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,12 L10,6 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrow-warm" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,12 L10,6 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="540" y="38" text-anchor="middle" font-size="22" font-weight="700" fill="#111827">Thread lifecycle — what happens when you click a session</text>
+  <text x="540" y="62" text-anchor="middle" font-size="13" fill="#6b7280">Soul-Desktop · ThreadController · ThreadView · ScrollView restore (SOUL-233)</text>
+
+  <!-- User action node -->
+  <rect x="430" y="92" width="220" height="56" rx="8" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+  <text x="540" y="116" text-anchor="middle" font-size="14" font-weight="600" fill="#f9fafb">User clicks session row</text>
+  <text x="540" y="134" text-anchor="middle" font-size="12" fill="#9ca3af">in the sidebar</text>
+
+  <!-- Decision 1: active? -->
+  <polygon points="540,180 700,235 540,290 380,235" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="540" y="225" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">activeThreadKey</text>
+  <text x="540" y="243" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">== this session?</text>
+  <text x="540" y="265" text-anchor="middle" font-size="11" fill="#92400e">(already the foreground thread)</text>
+
+  <line x1="540" y1="148" x2="540" y2="180" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- yes branch → Case 2 -->
+  <text x="715" y="232" font-size="12" font-weight="700" fill="#374151">yes</text>
+  <line x1="700" y1="235" x2="850" y2="235" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="850" y="195" width="200" height="80" rx="8" fill="#374151" stroke="#4b5563" stroke-width="1.5"/>
+  <text x="950" y="222" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">Case 2: No-op</text>
+  <text x="950" y="244" text-anchor="middle" font-size="11" fill="#d1d5db">Nothing changes.</text>
+  <text x="950" y="260" text-anchor="middle" font-size="11" fill="#d1d5db">Stays where it was.</text>
+
+  <!-- no branch → Decision 2 -->
+  <text x="465" y="312" font-size="12" font-weight="700" fill="#374151">no</text>
+  <line x1="540" y1="290" x2="540" y2="335" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Decision 2: controller mounted? -->
+  <polygon points="540,335 720,395 540,455 360,395" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="540" y="386" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">Controller still</text>
+  <text x="540" y="404" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">in threads dict?</text>
+  <text x="540" y="426" text-anchor="middle" font-size="11" fill="#92400e">(opened earlier, LRU not yet evicted)</text>
+
+  <!-- yes branch → Case 3 (opacity switch) -->
+  <text x="725" y="392" font-size="12" font-weight="700" fill="#374151">yes</text>
+  <line x1="720" y1="395" x2="850" y2="395" stroke="#2563eb" stroke-width="1.8" marker-end="url(#arrow-warm)"/>
+
+  <rect x="850" y="340" width="200" height="110" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.8"/>
+  <text x="950" y="367" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">Case 3: Opacity switch</text>
+  <text x="950" y="389" text-anchor="middle" font-size="11" fill="#1e40af">setActiveThread(...)</text>
+  <text x="950" y="405" text-anchor="middle" font-size="11" fill="#1e40af">opacity 0 → 1</text>
+  <text x="950" y="425" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">ScrollView never unmounts</text>
+  <text x="950" y="441" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a8a">→ position preserved</text>
+
+  <!-- no branch → Decision 3 -->
+  <text x="465" y="478" font-size="12" font-weight="700" fill="#374151">no</text>
+  <line x1="540" y1="455" x2="540" y2="500" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Decision 3: ever mounted? -->
+  <polygon points="540,500 720,560 540,620 360,560" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="540" y="554" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">Was it mounted</text>
+  <text x="540" y="572" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">earlier this launch?</text>
+  <text x="540" y="594" text-anchor="middle" font-size="11" fill="#92400e">(LRU evicted it since)</text>
+
+  <!-- yes → Case 4 -->
+  <text x="725" y="557" font-size="12" font-weight="700" fill="#374151">yes</text>
+  <line x1="720" y1="560" x2="850" y2="560" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arrow-bottom)"/>
+
+  <rect x="850" y="505" width="200" height="110" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+  <text x="950" y="532" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Case 4: Re-open after LRU</text>
+  <text x="950" y="554" text-anchor="middle" font-size="11" fill="#166534">Controller was torn down.</text>
+  <text x="950" y="570" text-anchor="middle" font-size="11" fill="#166534">Rebuilt from scratch.</text>
+  <text x="950" y="590" text-anchor="middle" font-size="11" font-weight="600" fill="#14532d">Identical to Case 1</text>
+  <text x="950" y="606" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">→ lands at bottom</text>
+
+  <!-- no → Case 1 -->
+  <text x="465" y="643" font-size="12" font-weight="700" fill="#374151">no</text>
+  <line x1="540" y1="620" x2="540" y2="660" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arrow-bottom)"/>
+
+  <rect x="380" y="660" width="320" height="170" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="540" y="686" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">Case 1: Cold open</text>
+  <text x="540" y="704" text-anchor="middle" font-size="11" fill="#166534">Never seen this sid this launch.</text>
+
+  <line x1="400" y1="715" x2="680" y2="715" stroke="#86efac" stroke-width="1"/>
+
+  <text x="396" y="733" font-size="11" font-weight="600" fill="#14532d">①</text>
+  <text x="410" y="733" font-size="11" fill="#166534">new ThreadController, assignSessionId(sid)</text>
+
+  <text x="396" y="751" font-size="11" font-weight="600" fill="#14532d">②</text>
+  <text x="410" y="751" font-size="11" fill="#166534">sessions.mount(...) → ThreadView appears</text>
+
+  <text x="396" y="769" font-size="11" font-weight="600" fill="#14532d">③</text>
+  <text x="410" y="769" font-size="11" fill="#166534">Task: hydrateFromDisk →  isHydrating = true</text>
+
+  <text x="396" y="787" font-size="11" font-weight="600" fill="#14532d">④</text>
+  <text x="410" y="787" font-size="11" fill="#166534">read transcript off-main, items.append, defer</text>
+
+  <text x="396" y="805" font-size="11" font-weight="600" fill="#14532d">⑤</text>
+  <text x="410" y="805" font-size="11" fill="#166534">isHydrating → false  ·  skeleton fades out</text>
+
+  <text x="396" y="823" font-size="11" font-weight="700" fill="#14532d">⑥</text>
+  <text x="410" y="823" font-size="11" font-weight="700" fill="#14532d">two-pass scrollTo("__bottom__")  →  BOTTOM</text>
+
+  <!-- Side legend -->
+  <rect x="40" y="195" width="280" height="290" rx="10" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="180" y="220" text-anchor="middle" font-size="13" font-weight="700" fill="#111827">Where it lands</text>
+
+  <rect x="58" y="240" width="16" height="16" rx="3" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="82" y="253" font-size="12" font-weight="600" fill="#14532d">Cold open / re-open after LRU</text>
+  <text x="82" y="269" font-size="11" fill="#374151">Controller built fresh, hydrate runs.</text>
+  <text x="82" y="283" font-size="11" fill="#374151">Scroll → bottom (two-pass).</text>
+
+  <rect x="58" y="310" width="16" height="16" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="82" y="323" font-size="12" font-weight="600" fill="#1e3a8a">Opacity switch (mounted, inactive)</text>
+  <text x="82" y="339" font-size="11" fill="#374151">No re-mount. ScrollView</text>
+  <text x="82" y="353" font-size="11" fill="#374151">remembers its position from</text>
+  <text x="82" y="367" font-size="11" fill="#374151">before you switched away.</text>
+
+  <rect x="58" y="392" width="16" height="16" rx="3" fill="#374151"/>
+  <text x="82" y="405" font-size="12" font-weight="600" fill="#374151">No-op (already active)</text>
+  <text x="82" y="421" font-size="11" fill="#374151">Click on the foreground thread</text>
+  <text x="82" y="435" font-size="11" fill="#374151">does nothing.</text>
+
+  <line x1="58" y1="450" x2="302" y2="450" stroke="#e5e7eb"/>
+  <text x="180" y="468" text-anchor="middle" font-size="11" font-style="italic" fill="#6b7280">All thread state is in-memory.</text>
+  <text x="180" y="481" text-anchor="middle" font-size="11" font-style="italic" fill="#6b7280">Quit + relaunch ≡ cold for every thread.</text>
+
+  <!-- LRU primer box -->
+  <rect x="40" y="510" width="280" height="200" rx="10" fill="#fef9c3" stroke="#facc15" stroke-width="1.5"/>
+  <text x="180" y="535" text-anchor="middle" font-size="13" font-weight="700" fill="#713f12">LRU eviction (-220)</text>
+
+  <text x="58" y="560" font-size="12" fill="#713f12">Max 3 ThreadControllers mounted</text>
+  <text x="58" y="576" font-size="12" fill="#713f12">at any time. setActiveThread bumps</text>
+  <text x="58" y="592" font-size="12" fill="#713f12">the active key to the front of the</text>
+  <text x="58" y="608" font-size="12" fill="#713f12">recency list; anything past 3 (except</text>
+  <text x="58" y="624" font-size="12" fill="#713f12">the active key) gets .teardown().</text>
+
+  <text x="58" y="650" font-size="12" font-weight="600" fill="#713f12">Why it matters here:</text>
+  <text x="58" y="666" font-size="12" fill="#713f12">an evicted controller is GONE.</text>
+  <text x="58" y="682" font-size="12" fill="#713f12">Clicking that session again is</text>
+  <text x="58" y="698" font-size="12" fill="#713f12">indistinguishable from cold open.</text>
+
+  <!-- Bottom note about Case 5 -->
+  <rect x="720" y="725" width="330" height="105" rx="10" fill="#fdf2f8" stroke="#ec4899" stroke-width="1.2"/>
+  <text x="885" y="748" text-anchor="middle" font-size="12" font-weight="700" fill="#831843">Hidden Case 5 (rare)</text>
+  <text x="735" y="768" font-size="11" fill="#9f1239">ScrollView re-mounts on a still-hydrated</text>
+  <text x="735" y="783" font-size="11" fill="#9f1239">controller (window restructure, parent .id</text>
+  <text x="735" y="798" font-size="11" fill="#9f1239">change). .onAppear runs performScroll-</text>
+  <text x="735" y="813" font-size="11" fill="#9f1239">Restore → uses saved anchor.</text>
+  <text x="735" y="827" font-size="10" font-style="italic" fill="#be185d">Doesn't fire from normal user actions.</text>
+</svg>
