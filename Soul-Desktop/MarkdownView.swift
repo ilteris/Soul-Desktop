@@ -150,20 +150,33 @@ struct MarkdownView: View, Equatable {
         case .bullet(let lines):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•")
-                            .font(bodyFont)
-                            .foregroundStyle(SoulColor.fgSubtle)
-                        if let code = MarkdownView.bareInlineCode(item) {
-                            CopyableInlineCodeRow(code: code, font: codeFont)
-                        } else {
-                            inline(item)
+                    // SOUL-SOUL_DESKTOP-224: inline the bullet glyph into the
+                    // prose Text rather than putting it in a sibling HStack
+                    // child. A single Text run has no inter-child baseline
+                    // negotiation, so SwiftUI never reaches into
+                    // FallbackAlignmentProvider → SelectionOverlay.updateNSView
+                    // → NSCell.setFont — which was the font-invalidation
+                    // feedback loop pegging the main thread at 100% CPU on
+                    // certain bullet content. Copying a bullet line yields
+                    // "•  the text" which strips cleanly.
+                    //
+                    // Bare inline-code items keep an HStack-with-glyph
+                    // layout (no prose Text to prepend to). `.top` alignment
+                    // avoids the same loop without bridging via NSView.
+                    if let code = MarkdownView.bareInlineCode(item) {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("•")
                                 .font(bodyFont)
-                                .foregroundStyle(bodyColor)
-                                .lineSpacing(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .modifier(LinkHoverCursor(active: MarkdownView.hasAnyLink(item)))
+                                .foregroundStyle(SoulColor.fgSubtle)
+                            CopyableInlineCodeRow(code: code, font: codeFont)
                         }
+                    } else {
+                        (Text("•  ").foregroundColor(SoulColor.fgSubtle)
+                            + inline(item).foregroundColor(bodyColor))
+                            .font(bodyFont)
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .modifier(LinkHoverCursor(active: MarkdownView.hasAnyLink(item)))
                     }
                 }
             }
