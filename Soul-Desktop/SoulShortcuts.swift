@@ -18,18 +18,24 @@ import SwiftUI
 ///      in the view that handles the action.
 enum SoulShortcut: String, CaseIterable, Identifiable {
     case previousSession
+    case olderSession
+    case newerSession
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .previousSession: return "Previous Session"
+        case .olderSession:    return "Older Session"
+        case .newerSession:    return "Newer Session"
         }
     }
 
     var key: KeyEquivalent {
         switch self {
         case .previousSession: return "o"
+        case .olderSession:    return "["
+        case .newerSession:    return "]"
         }
     }
 
@@ -41,12 +47,15 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
         // sees it. ⌘⇧O is free across default configs and reads as a
         // natural "Open prior" gesture.
         case .previousSession: return [.command, .shift]
+        case .olderSession, .newerSession: return [.command]
         }
     }
 
     var notification: Notification.Name {
         switch self {
         case .previousSession: return .soulPreviousSession
+        case .olderSession:    return .soulOlderSession
+        case .newerSession:    return .soulNewerSession
         }
     }
 }
@@ -55,4 +64,8 @@ extension Notification.Name {
     /// Posted when the user invokes the "previous session" shortcut. Subscribed
     /// by `SidebarView` (which owns session ordering per project).
     static let soulPreviousSession = Notification.Name("soul.kbd.previousSession")
+    /// ⌘[ — walk one row down in the recency-sorted list (toward older sessions).
+    static let soulOlderSession = Notification.Name("soul.kbd.olderSession")
+    /// ⌘] — walk one row up in the recency-sorted list (toward newer sessions).
+    static let soulNewerSession = Notification.Name("soul.kbd.newerSession")
 }

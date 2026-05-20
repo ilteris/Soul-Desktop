@@ -14,6 +14,12 @@ struct AppShell: View {
     /// background, no re-spawn, no re-hydration.
     @State var sessions = AppSessionCoordinator()
     @State var replay = AppReplayCoordinator()
+    /// Browser-style cross-project view history. ⌘[ / ⌘] walk this stack.
+    @State var viewHistory = SessionViewHistory()
+    /// True while `loadSession` is being driven by `goBack`/`goForward`. The
+    /// session-flow path checks this to avoid re-pushing onto the history
+    /// stack (which would corrupt the back/forward semantics).
+    @State var isNavigatingHistory: Bool = false
     /// Optimistic selection: the live-row ID the user just tapped, used for
     /// sidebar highlight before the spawn completes and `thread.sessionId`
     /// is real. Cleared once the thread's own session ID catches up.
@@ -198,6 +204,14 @@ struct AppShell: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: SoulAppDelegate.toggleReviewNotification)) { _ in
             toggleReview()
+        }
+        // ⌘[ / ⌘] — browser-style back / forward through viewed sessions.
+        // Cross-project: jumps the sidebar to the target's project too.
+        .onReceive(NotificationCenter.default.publisher(for: .soulOlderSession)) { _ in
+            navigateHistory(forward: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .soulNewerSession)) { _ in
+            navigateHistory(forward: true)
         }
         .onAppear {
             rightPane.reviewVisible = showReview

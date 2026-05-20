@@ -107,6 +107,21 @@ extension SidebarView {
             }
         }
 
+        // SOUL-SOUL_DESKTOP-234: TTL gate on stage-2 scans. Browser-style
+        // ⌘[/⌘] navigation can switch projects multiple times per second.
+        // Every switch was firing a 100-session disk walk per visit, even
+        // when the project's rows were already in `sessionsByProject` from
+        // a scan moments ago. Skip stage 2 if the project was fully
+        // scanned within the last 5s — RegistryWatcher already keeps the
+        // currently selected project fresh; revisits to recent projects
+        // see no real disk churn worth re-walking.
+        if alreadyWarm,
+           let last = projectLastFullScanAt[projectId],
+           Date().timeIntervalSince(last) < 5 {
+            return
+        }
+        projectLastFullScanAt[projectId] = Date()
+
         // Stage 2: full scan in background. The default limit (100) covers
         // the "Show more" expanded case. Warm the cache so subsequent
         // reloadSessions paint-instant paths see the full list.

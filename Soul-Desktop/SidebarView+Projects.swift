@@ -25,20 +25,54 @@ extension SidebarView {
     /// Replay can render even without a provider transcript.
     @ViewBuilder
     var projectsScroll: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(projects) { project in
-                    projectRow(project)
+        // SOUL-SOUL_DESKTOP-234: wrap in ScrollViewReader so every
+        // session-selection change (sidebar click, ⌘[ / ⌘] history nav,
+        // restore-on-launch, external open) can pull the active row into
+        // view. Without this, ⌘[ across projects would correctly switch
+        // the canvas but leave the sidebar scrolled to wherever it was.
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(projects) { project in
+                        projectRow(project)
+                    }
                 }
+                .padding(.horizontal, 8)
             }
-            .padding(.horizontal, 8)
+            .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
+            .background(NSScrollViewConfigurator { sv in
+                sv.verticalScrollElasticity = .none
+                sv.horizontalScrollElasticity = .none
+            })
+            .onChange(of: activeSessionId) { _, newId in
+                scrollToActiveSession(proxy: proxy, sessionId: newId)
+            }
+            .onAppear {
+                // First render after launch: if we already have an active
+                // session (e.g. restored from prior run), pull it into view.
+                scrollToActiveSession(proxy: proxy, sessionId: activeSessionId)
+            }
         }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .background(NSScrollViewConfigurator { sv in
-            sv.verticalScrollElasticity = .none
-            sv.horizontalScrollElasticity = .none
+    }
+
+    /// SOUL-SOUL_DESKTOP-234: ensure the row for `sessionId` is in view.
+    /// Expands the owning project if it's collapsed (rows wouldn't render
+    /// otherwise), then schedules a scroll on the next runloop so the
+    /// freshly-expanded row exists for `scrollTo` to find.
+    func scrollToActiveSession(proxy: ScrollViewProxy, sessionId: String?) {
+        guard let sid = sessionId else { return }
+        let owner = projects.first(where: { p in
+            mergedChatList(for: p).contains(where: { $0.id == sid })
         })
+        if let owner, !isExpanded(owner.id) {
+            setExpanded(owner.id, true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(sid, anchor: .center)
+            }
+        }
     }
 
     @ViewBuilder
@@ -311,10 +345,42 @@ extension SidebarView {
     /// disk-count badge in that case (which gets corrected on first expand
     /// when the Stage-1 scan populates sessionsByProject).
     func filteredChatCount(for project: SoulProject) -> Int? {
-        guard sessionsByProject[project.id] != nil else { return nil }
-        let merged = mergedChatList(for: project)
+        // SOUL-SOUL_DESKTOP-234: avoid calling mergedChatList here. That
+        // helper builds a [String: SoulSession] dict and sorts the result
+        // — work the badge only needs counted, not ordered. Expand/collapse
+        // re-renders every project row, so this path is hit N times per
+        // body invocation. The dict+sort across ~100 sessions per project
+        // for 10+ projects was producing a visible main-thread beachball.
+        // O(M) scan with a Set for de-dup is enough.
+        guard let onDisk = sessionsByProject[project.id] else { return nil }
         let archivedSet = archiveStore.archivedIDs(forProject: project.id)
-        return merged.filter { !archivedSet.contains($0.id) }.count
+        var seenIds = Set<String>()
+        seenIds.reserveCapacity(onDisk.count)
+        var count = 0
+        for s in onDisk {
+            if !s.substantive { continue }
+            if !showUnreadable, !(s.loadable || s.replayable) { continue }
+            if let f = chatSourceFilter, (s.source ?? s.liveProvider ?? "") != f { continue }
+            if hideUntitled {
+                let title = (s.intent ?? s.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.isEmpty { continue }
+            }
+            if archivedSet.contains(s.id) { continue }
+            seenIds.insert(s.id)
+            count += 1
+        }
+        for ctrl in activeThreads where ctrl.project.id == project.id {
+            let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
+            if archivedSet.contains(sid) { continue }
+            if seenIds.insert(sid).inserted { count += 1 }
+        }
+        if let draft = draftSession,
+           draft.project == project.id,
+           !archivedSet.contains(draft.id),
+           seenIds.insert(draft.id).inserted {
+            count += 1
+        }
+        return count
     }
 
     func mergedChatList(for project: SoulProject) -> [SoulSession] {

@@ -63,6 +63,8 @@ struct Soul_DesktopApp: App {
             // case to SoulShortcut + add one more line here.
             CommandMenu("Navigate") {
                 shortcutButton(.previousSession)
+                shortcutButton(.olderSession)
+                shortcutButton(.newerSession)
             }
         }
 

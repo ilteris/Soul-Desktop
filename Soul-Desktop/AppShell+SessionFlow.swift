@@ -11,7 +11,23 @@ extension AppShell {
         Task { await controller.send(display: display, agent: agent) }
     }
 
+    /// ⌘[ (forward: false) / ⌘] (forward: true) — pop one off the corresponding
+    /// view-history stack and load it. No-op when the stack is empty.
+    func navigateHistory(forward: Bool) {
+        guard let target = forward ? viewHistory.goForward() : viewHistory.goBack()
+        else { return }
+        isNavigatingHistory = true
+        loadSession(target)
+        isNavigatingHistory = false
+    }
+
     func loadSession(_ session: SoulSession) {
+        // Browser-style view history: every user-initiated open pushes here.
+        // Loads triggered by ⌘[ / ⌘] navigation set `isNavigatingHistory`
+        // and skip the push (otherwise back would just retrace itself).
+        if !isNavigatingHistory {
+            viewHistory.push(session)
+        }
         if let draft = sessions.draftSession, draft.id == session.id {
             replay.stop()
             sessions.activeThreadKey = nil

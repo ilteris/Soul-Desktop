@@ -101,6 +101,13 @@ struct SidebarView: View {
     }
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
     @State private var watcher: RegistryWatcher? = nil
+    /// SOUL-SOUL_DESKTOP-234: per-project timestamp of last full disk scan.
+    /// Cross-project browser-history nav (⌘[ / ⌘]) was thrashing
+    /// `loadProject` and burning ~200% CPU on `allSessions` because every
+    /// project switch re-scanned. RegistryWatcher keeps the currently
+    /// selected project fresh; other projects get a short TTL (5s) so
+    /// rapid back-and-forth coalesces to a single scan.
+    @State var projectLastFullScanAt: [String: Date] = [:]
     /// SOUL-SOUL_DESKTOP-036: per-project expand/collapse state, persisted
     /// to UserDefaults keyed by project id. Default = expanded for the
     /// selected project, collapsed for others. Mirrored into local state so
@@ -333,21 +340,22 @@ struct SidebarView: View {
             }
             Task { await reloadSessions() }
         }
-        // SOUL-SOUL_DESKTOP-234: ⇧⌃O = jump to the session row above the
+        // SOUL-SOUL_DESKTOP-234: ⌘⇧O = jump to the session row above the
         // currently-active one in the sidebar. Defined in SoulShortcuts.swift;
         // menu bar entry under Navigate → "Previous Session".
         .onReceive(NotificationCenter.default.publisher(for: .soulPreviousSession)) { _ in
-            navigateToPreviousSession()
+            navigateSession(delta: -1)
         }
+        // ⌘[ / ⌘] (back/forward through view history) are NOT handled here —
+        // AppShell owns the cross-project view history stack.
     }
 
-    /// SOUL-SOUL_DESKTOP-234: handler for the ⇧⌃O previous-session shortcut.
-    /// "Previous" = the row immediately above the active session in the
-    /// sidebar's recency-sorted list (which is the next-newer session).
-    /// Falls back to the most recent visible session if nothing is active.
-    /// Respects the same filter pipeline the rendered list uses (substantive,
-    /// loadable/replayable, source filter, hideUntitled, archived).
-    private func navigateToPreviousSession() {
+    /// SOUL-SOUL_DESKTOP-234: walk `delta` rows in the sidebar's recency-sorted
+    /// list (delta < 0 = newer, delta > 0 = older). Falls back to the most
+    /// recent visible session if nothing is active. Respects the same filter
+    /// pipeline the rendered list uses (substantive, loadable/replayable,
+    /// source filter, hideUntitled, archived).
+    private func navigateSession(delta: Int) {
         // Find which project owns the active session. Prefer activeProjectId
         // when set; otherwise scan projects for the one containing the
         // currently-active session id.
@@ -366,13 +374,13 @@ struct SidebarView: View {
         guard !visible.isEmpty else { return }
 
         if let currentIdx = visible.firstIndex(where: { $0.id == activeSessionId }) {
-            let prevIdx = currentIdx - 1
-            guard prevIdx >= 0 else { return }   // no-op at top of list
-            onSelectSession(visible[prevIdx])
+            let targetIdx = currentIdx + delta
+            guard targetIdx >= 0, targetIdx < visible.count else { return }   // no-op at list edge
+            onSelectSession(visible[targetIdx])
         } else {
             // No active session in this project's list (or activeSessionId is
             // nil) — jump to the most-recent visible row as the natural
-            // "previous" target.
+            // landing target regardless of delta direction.
             onSelectSession(visible[0])
         }
     }
