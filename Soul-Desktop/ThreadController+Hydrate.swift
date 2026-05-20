@@ -179,6 +179,29 @@ extension ThreadController {
         pendingContextPreamble = built.text
     }
 
+    /// SOUL-SOUL_DESKTOP-245 (Phase B, visibility helper). Records the
+    /// preamble payload to two places so you can actually see what got
+    /// sent: a one-line summary into the lifecycle log (visible in the
+    /// right-panel agent log AND ~/Library/Logs/Soul-Desktop/acp-
+    /// protocol.jsonl), plus the full text to
+    /// `~/soul_registry/sessions/<project>/<sid>/preamble.txt` — a
+    /// plain file you can `cat` after the click. Overwritten on each
+    /// injection so the latest send is always what's there.
+    func recordPreambleInjection(_ preamble: String) {
+        logLifecycle(
+            "preamble.inject",
+            note: "chars=\(preamble.count) sessionId=\(sessionId ?? "nil") — see ~/soul_registry/sessions/\(project.id)/\(sessionId ?? "")/preamble.txt"
+        )
+        guard let sid = sessionId else { return }
+        let dir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("soul_registry/sessions")
+            .appendingPathComponent(project.id)
+            .appendingPathComponent(sid)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("preamble.txt")
+        try? preamble.write(to: path, atomically: true, encoding: .utf8)
+    }
+
     static func looksLikeUUID(_ s: String) -> Bool {
         UUID(uuidString: s) != nil
     }

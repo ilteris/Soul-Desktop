@@ -164,7 +164,9 @@ extension ThreadController {
                     let agentText: String = {
                         if let pre = pendingContextPreamble {
                             pendingContextPreamble = nil
-                            return LedgerPreamble.prefix(pre, to: turn.agent)
+                            let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
+                            recordPreambleInjection(prefixed)
+                            return prefixed
                         }
                         return turn.agent
                     }()
@@ -223,7 +225,9 @@ extension ThreadController {
                 let agentText: String = {
                     if let pre = pendingContextPreamble {
                         pendingContextPreamble = nil
-                        return LedgerPreamble.prefix(pre, to: turn.agent)
+                        let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
+                        recordPreambleInjection(prefixed)
+                        return prefixed
                     }
                     return turn.agent
                 }()
