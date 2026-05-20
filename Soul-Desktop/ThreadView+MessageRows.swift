@@ -123,12 +123,17 @@ struct AgentMessageRow: View, Equatable {
         let _ = SoulSignposts.event("AgentMessageRow.body")
         let mutedFg = SoulColor.fg.opacity(0.62)
         VStack(alignment: .leading, spacing: 4) {
+            // SOUL-SOUL_DESKTOP-162: .equatable() short-circuits body
+            // re-evals when stored input is unchanged — items.count growth
+            // during streaming no longer re-runs the markdown parse +
+            // linkify regex on every other visible row.
             MarkdownView(
                 text: split.visible,
                 headerColor: isHistorical ? mutedFg : SoulColor.fg,
                 bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                 codeColor: isHistorical ? mutedFg : SoulColor.fg
             )
+                .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
 
@@ -345,6 +350,7 @@ struct UserMessageRow: View {
                             bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                             codeColor: isHistorical ? mutedFg : SoulColor.fg
                         )
+                        .equatable() // SOUL-SOUL_DESKTOP-162
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -368,6 +374,7 @@ struct UserMessageRow: View {
                     bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                     codeColor: isHistorical ? mutedFg : SoulColor.fg
                 )
+                .equatable() // SOUL-SOUL_DESKTOP-162
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
