@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct AppShell: View {
+    var registryStore: SoulRegistryStore = LiveSoulRegistryStore.shared
     @State var selectedProject: String? = nil
     /// User's appearance preference. Values: "system", "light", "dark".
     /// `system` means follow the macOS appearance (the SoulColor tokens
@@ -96,7 +97,7 @@ struct AppShell: View {
 
     func currentProject() -> SoulProject? {
         guard let key = selectedProject else { return nil }
-        return SoulRegistry.projects().first { $0.id == key }
+        return registryStore.projects().first { $0.id == key }
     }
 
     /// The thread the canvas is currently showing. Multiple controllers

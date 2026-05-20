@@ -6,13 +6,13 @@ extension SidebarView {
         // happen lazily when the user expands a folder. For accounts with
         // many projects × hundreds of finalized JSONs (soul, job-hunt) this
         // turns a multi-second startup stall into a single PROJECTS.json read.
-        let projs = SoulRegistry.activeProjects()
+        let projs = registryStore.activeProjects()
         // Cheap session-count pass (no JSON parsing) so collapsed projects
         // still get an accurate badge without paying the lazy-load cost.
         let counts: [String: Int] = await Task.detached(priority: .userInitiated) {
             var c: [String: Int] = [:]
             for p in projs {
-                let n = SoulRegistry.sessionCount(forProject: p.id)
+                let n = registryStore.sessionCount(forProject: p.id)
                 if n > 0 { c[p.id] = n }
             }
             return c
@@ -35,7 +35,7 @@ extension SidebarView {
         let primed: [(String, [SoulSession])] = await Task.detached(priority: .userInitiated) {
             var out: [(String, [SoulSession])] = []
             for p in projs {
-                if let cached = SoulRegistry.cachedSessions(forProject: p.id), !cached.isEmpty {
+                if let cached = registryStore.cachedSessions(forProject: p.id), !cached.isEmpty {
                     out.append((p.id, cached))
                 }
             }
@@ -70,7 +70,7 @@ extension SidebarView {
     /// of ms instead of hundreds.
     func loadProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId })
-            ?? SoulRegistry.activeProjects().first(where: { $0.id == projectId })
+            ?? registryStore.activeProjects().first(where: { $0.id == projectId })
         else { return }
 
         // Stage 1: fast scan, bounded to the page size we'll actually render.
@@ -89,7 +89,7 @@ extension SidebarView {
         if !alreadyWarm {
             let quickLimit = sessionPageSize
             let quickRows: [SoulSession] = await Task.detached(priority: .userInitiated) {
-                SoulRegistry.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
+                registryStore.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
             }.value
             await MainActor.run {
                 if !quickRows.isEmpty, (self.sessionsByProject[projectId]?.isEmpty ?? true) {
@@ -102,8 +102,8 @@ extension SidebarView {
         // the "Show more" expanded case. Warm the cache so subsequent
         // reloadSessions paint-instant paths see the full list.
         let fullRows: [SoulSession] = await Task.detached(priority: .background) {
-            let r = SoulRegistry.allSessions(forProject: project.id, projectPath: project.path)
-            SoulRegistry.warmCache(forProject: project.id, sessions: r)
+            let r = registryStore.allSessions(forProject: project.id, projectPath: project.path)
+            registryStore.warmCache(forProject: project.id, sessions: r)
             return r
         }.value
         await MainActor.run {
@@ -121,7 +121,7 @@ extension SidebarView {
         let path = projects.first(where: { $0.id == key })?.path
 
         // 1. Paint cached data instantly so switching feels snappy.
-        if let cached = SoulRegistry.cachedSessions(forProject: key), !cached.isEmpty {
+        if let cached = registryStore.cachedSessions(forProject: key), !cached.isEmpty {
             await MainActor.run {
                 self.sessionsByProject[key] = cached
             }
@@ -130,8 +130,8 @@ extension SidebarView {
         // 2. Fresh scan off the main actor — the file I/O is synchronous but
         //    we don't want any UI tick coupling to disk latency.
         let rows: [SoulSession] = await Task.detached(priority: .userInitiated) {
-            let r = SoulRegistry.allSessions(forProject: key, projectPath: path)
-            SoulRegistry.warmCache(forProject: key, sessions: r)
+            let r = registryStore.allSessions(forProject: key, projectPath: path)
+            registryStore.warmCache(forProject: key, sessions: r)
             return r
         }.value
 

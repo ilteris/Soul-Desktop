@@ -254,7 +254,7 @@ extension SidebarView {
         }
 
         // Provider files. Resolve the project's cwd from PROJECTS.
-        if let project = SoulRegistry.projects().first(where: { $0.id == session.project }) {
+        if let project = registryStore.projects().first(where: { $0.id == session.project }) {
             let trimmed = project.path.hasSuffix("/") ? String(project.path.dropLast()) : project.path
             // Claude
             let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
@@ -283,7 +283,7 @@ extension SidebarView {
         }
 
         archiveStore.unarchive(session.id, project: session.project)
-        SoulRegistry.invalidateCache(forProject: session.project)
+        registryStore.invalidateCache(forProject: session.project)
         // Reload sessions so the sidebar repaints without the row.
         Task { await loadProject(session.project) }
         return urls.count

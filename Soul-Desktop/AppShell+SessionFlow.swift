@@ -19,7 +19,7 @@ extension AppShell {
             return
         }
         sessions.draftSession = nil
-        guard let project = SoulRegistry.projects().first(where: { $0.id == session.project })
+        guard let project = registryStore.projects().first(where: { $0.id == session.project })
                 ?? currentProject()
         else { return }
         if selectedProject != session.project {
@@ -75,7 +75,7 @@ extension AppShell {
             routedProject.path = override
         }
         let controller = ThreadController(provider: provider, project: routedProject)
-        if let origin = SoulRegistry.firstHookTimestamp(projectKey: routedProject.id, sessionId: session.id) {
+        if let origin = registryStore.firstHookTimestamp(projectKey: routedProject.id, sessionId: session.id) {
             controller.startedAt = origin
         } else {
             controller.startedAt = session.timestamp
@@ -115,7 +115,7 @@ extension AppShell {
             text: "↗ branched to \(target.label)"
         ))
         if let sourceSid = source.sessionId {
-            SoulRegistry.appendHook(
+            registryStore.appendHook(
                 projectKey: source.project.id,
                 sessionId: sourceSid,
                 event: [
@@ -157,7 +157,7 @@ extension AppShell {
               let sid = controller.sessionId
         else { return }
         let projectKey = controller.project.id
-        guard let session = SoulRegistry.cachedSessions(forProject: projectKey)?
+        guard let session = registryStore.cachedSessions(forProject: projectKey)?
                 .first(where: { $0.id == sid })
         else { return }
         _ = sessions.removeThread(key)
@@ -174,7 +174,7 @@ extension AppShell {
         }
         let resolvedProject: SoulProject? = {
             if let id = targetProjectID {
-                return SoulRegistry.projects().first { $0.id == id }
+                return registryStore.projects().first { $0.id == id }
             }
             return currentProject()
         }()
@@ -238,7 +238,7 @@ extension AppShell {
         case "geminiCLI": return .geminiCLI
         default: break
         }
-        if let recorded = SoulRegistry.findProvider(projectKey: session.project, sessionId: session.id) {
+        if let recorded = registryStore.findProvider(projectKey: session.project, sessionId: session.id) {
             switch recorded {
             case "claude":    return .claude
             case "geminiCLI": return .geminiCLI

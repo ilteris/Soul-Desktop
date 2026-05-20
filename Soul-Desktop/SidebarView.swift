@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SidebarView: View {
+    var registryStore: SoulRegistryStore = LiveSoulRegistryStore.shared
     @Binding var selectedProject: String?
     var onSelectSession: (SoulSession) -> Void = { _ in }
     var onReplaySession: (SoulSession) -> Void = { _ in }
@@ -47,7 +48,7 @@ struct SidebarView: View {
     // Seed projects synchronously from PROJECTS.json so the first render
     // already has data instead of flashing an empty "Projects" + "No chats"
     // header for the ~250ms until the async reload finishes.
-    @State var projects: [SoulProject] = SoulRegistry.activeProjects()
+    @State var projects: [SoulProject] = LiveSoulRegistryStore.shared.activeProjects()
     /// Unified per-project session list, populated by `SoulRegistry.allSessions`.
     /// Each entry carries derived `isLive` / `isDirty` / `loadable` /
     /// `replayable` / `substantive` flags so the sidebar doesn't have to
@@ -326,7 +327,7 @@ struct SidebarView: View {
         let sessionId = session.id
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                SoulRegistry.backfillNativeSessionID(
+                registryStore.backfillNativeSessionID(
                     projectKey: projectKey,
                     sessionId: sessionId,
                     provider: provider,
@@ -427,7 +428,7 @@ struct SidebarView: View {
                 .foregroundStyle(SoulColor.fgMuted)
             ForEach(ctx.candidates, id: \.self) { uuid in
                 Button {
-                    SoulRegistry.writeNativeSessionID(
+                    registryStore.writeNativeSessionID(
                         projectKey: ctx.projectKey,
                         sessionId: ctx.sessionId,
                         nativeId: uuid,
