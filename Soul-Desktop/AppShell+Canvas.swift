@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension AppShell {
     @ViewBuilder
@@ -114,6 +115,50 @@ extension AppShell {
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .geometryGroup()
+        .onDrop(
+            of: DropAttachmentHandler.acceptedTypes,
+            isTargeted: Binding(
+                get: { self.isImageDropTargeted && !self.replay.isActive },
+                set: { self.isImageDropTargeted = $0 }
+            )
+        ) { providers in
+            guard !self.replay.isActive else { return false }
+            if let activeCtrl = self.sessions.activeThread {
+                let new = DropAttachmentHandler.process(
+                    providers: providers,
+                    projectPath: activeCtrl.project.path,
+                    existing: activeCtrl.droppedAttachments
+                )
+                guard !new.isEmpty else { return false }
+                activeCtrl.droppedAttachments.append(contentsOf: new)
+                return true
+            } else {
+                let path = self.currentProject()?.path
+                let new = DropAttachmentHandler.process(
+                    providers: providers,
+                    projectPath: path,
+                    existing: self.emptyStateDroppedAttachments
+                )
+                guard !new.isEmpty else { return false }
+                self.emptyStateDroppedAttachments.append(contentsOf: new)
+                return true
+            }
+        }
+        .overlay {
+            if isImageDropTargeted && !replay.isActive {
+                ZStack {
+                    SoulColor.accent.opacity(0.08)
+                    RoundedRectangle(cornerRadius: SoulMetric.radiusL)
+                        .strokeBorder(
+                            SoulColor.accent,
+                            style: StrokeStyle(lineWidth: 2, dash: [8, 5])
+                        )
+                        .padding(8)
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder
@@ -128,7 +173,8 @@ extension AppShell {
                     onPickHarness: onPickHarness,
                     branchSeedLoading: isActive && branchSeedLoading,
                     terminalActive: showTerminal,
-                    onToggleTerminal: toggleTerminal
+                    onToggleTerminal: toggleTerminal,
+                    isImageDropTargeted: $isImageDropTargeted
                 )
                 .opacity(isActive ? 1 : 0)
                 .allowsHitTesting(isActive)
@@ -151,7 +197,9 @@ extension AppShell {
                     pendingPermissionMode: $pendingPermissionMode,
                     provider: harness,
                     onPickHarness: onPickHarness,
-                    branchSeedLoading: branchSeedLoading
+                    branchSeedLoading: branchSeedLoading,
+                    droppedAttachments: $emptyStateDroppedAttachments,
+                    isImageDropTargeted: $isImageDropTargeted
                 )
                 .zIndex(100)
             }

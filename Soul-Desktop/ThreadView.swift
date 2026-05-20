@@ -48,8 +48,131 @@ struct ThreadView: View {
     /// the whole ThreadView accepts image/file drops, not just the composer
     /// chip strip. Bound into ComposerView so the chips render and submit
     /// behavior stays unchanged.
-    @State private var droppedAttachments: [String] = []
-    @State private var isImageDropTargeted: Bool = false
+    @Binding var isImageDropTargeted: Bool
+
+    // Extracted to keep `body` under the Swift type-checker's budget.
+    // The LazyVStack ForEach + per-row anchor closures was the heaviest
+    // chunk of work inside the ScrollView; pulling it out drops the
+    // surrounding ScrollViewReader / ZStack expression back under budget.
+    @ViewBuilder
+    private var transcriptList: some View {
+        let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+        let mainItems = split.main
+        let queuedItems = split.queued
+        LazyVStack(alignment: .leading, spacing: 0) {
+            Color.clear.frame(height: 8)
+            ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
+                ThreadItemRow(
+                    projectPath: controller.project.path,
+                    projectKey: controller.project.id,
+                    item: item,
+                    isHistorical: controller.historicalIDs.contains(item.id),
+                    isQueued: false,
+                    showAgentFooter: isLastInAgentRun(at: i, items: mainItems)
+                )
+                .padding(.top, leadingGap(at: i, items: mainItems))
+                .id(item.id)
+                .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
+                .frame(minHeight: 24, alignment: .topLeading)
+                .onAppear {
+                    guard !suppressAnchorWrites else { return }
+                    anchor.visibleIds.insert(item.id)
+                    updateAnchor(in: mainItems)
+                }
+                .onDisappear {
+                    guard !suppressAnchorWrites else { return }
+                    anchor.visibleIds.remove(item.id)
+                    updateAnchor(in: mainItems)
+                }
+            }
+            if branchSeedLoading {
+                BranchSeedIndicator().padding(.top, 18)
+            }
+            if controller.isWorking {
+                WorkingIndicator(controller: controller).padding(.top, 18)
+            }
+            ForEach(queuedItems, id: \.id) { item in
+                ThreadItemRow(
+                    projectPath: controller.project.path,
+                    projectKey: controller.project.id,
+                    item: item,
+                    isHistorical: false,
+                    isQueued: true
+                )
+                .padding(.top, 18)
+                .id(item.id)
+            }
+            Color.clear
+                .frame(height: 44)
+                .id("__bottom__")
+                .onAppear {
+                    guard !suppressAnchorWrites else { return }
+                    anchor.atBottom = true
+                }
+                .onDisappear {
+                    guard !suppressAnchorWrites else { return }
+                    anchor.atBottom = false
+                }
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+    }
+
+    // Extracted to keep `body` under the Swift type-checker's budget.
+    // ComposerView's ~20-arg initializer + many closures was the dominant
+    // cost; splitting it into its own builder lets the main body type-check
+    // in reasonable time.
+    @ViewBuilder
+    private var composerSection: some View {
+        VStack(spacing: 8) {
+            ComposerView(
+                prompt: $prompt,
+                projectName: controller.project.name,
+                projectPath: controller.project.path,
+                commands: controller.availableCommands,
+                onSend: { display, agent in
+                    // Sync prefix: paint the user bubble on the same
+                    // runloop tick as the Enter keystroke. Async tail
+                    // (ensureSession + ACP prompt) runs in a Task so it
+                    // doesn't block the composer's keyDown handler.
+                    guard let pending = controller.acceptUserPrompt(display: display, agent: agent) else { return }
+                    Task { await controller.dispatchPending(pending) }
+                },
+                onCancel: onCancel,
+                isWorking: controller.isWorking,
+                queuedCount: controller.queuedPrompts.count,
+                queuedTail: controller.queuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
+                onEditQueued: { id, newText in
+                    controller.editQueuedPrompt(itemId: id, newText: newText)
+                },
+                onClearQueue: { controller.clearQueue() },
+                onSteer: { Task { await controller.steerToNextQueued() } },
+                terminalActive: terminalActive,
+                onToggleTerminal: onToggleTerminal,
+                permissionMode: Binding(
+                    get: { controller.permissionMode },
+                    set: { controller.permissionMode = $0 }
+                ),
+                provider: controller.provider,
+                onPickHarness: onPickHarness,
+                isImageDropTargeted: $isImageDropTargeted,
+                droppedAttachments: controllerDroppedAttachments,
+                branchSeedLoading: branchSeedLoading
+            )
+            .frame(maxWidth: 760)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 16)
+        .padding(.top, 8)
+    }
+
+    private var controllerDroppedAttachments: Binding<[String]> {
+        Binding(
+            get: { controller.droppedAttachments },
+            set: { controller.droppedAttachments = $0 }
+        )
+    }
 
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry.
@@ -64,82 +187,7 @@ struct ThreadView: View {
                     // continuous thought instead of three islands. Mixed
                     // boundaries (user→agent, tool→agent, etc.) keep the
                     // full 18pt for visual breathing room.
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        Color.clear.frame(height: 8)
-                        let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
-                        let mainItems = split.main
-                        let queuedItems = split.queued
-                        ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
-                            ThreadItemRow(
-                                projectPath: controller.project.path,
-                                projectKey: controller.project.id,
-                                item: item,
-                                isHistorical: controller.historicalIDs.contains(item.id),
-                                isQueued: false,
-                                showAgentFooter: isLastInAgentRun(at: i, items: mainItems)
-                            )
-                                .padding(.top, leadingGap(at: i, items: mainItems))
-                                .id(item.id)
-                                .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
-                                // SOUL-SOUL_DESKTOP-192: floor every row at the
-                                // status-row height. Gives LazyVStack a non-zero
-                                // baseline so the scrollbar thumb tracks closer
-                                // to true contentSize, mitigating the fast-drag
-                                // blank-band without eagerly rendering bubbles.
-                                .frame(minHeight: 24, alignment: .topLeading)
-                                .onAppear {
-                                    // SOUL-SOUL_DESKTOP-233: row anchor writes
-                                    // must respect suppressAnchorWrites. Without
-                                    // this guard, rows mounting after hydrate
-                                    // landed an empty ScrollView would clobber
-                                    // the saved anchor before performScrollRestore
-                                    // had a chance to run, producing
-                                    // top/middle/bottom inconsistency on session
-                                    // open.
-                                    guard !suppressAnchorWrites else { return }
-                                    anchor.visibleIds.insert(item.id)
-                                    updateAnchor(in: mainItems)
-                                }
-                                .onDisappear {
-                                    guard !suppressAnchorWrites else { return }
-                                    anchor.visibleIds.remove(item.id)
-                                    updateAnchor(in: mainItems)
-                                }
-                        }
-                        if branchSeedLoading {
-                            BranchSeedIndicator()
-                                .padding(.top, 18)
-                        }
-                        if controller.isWorking {
-                            WorkingIndicator(controller: controller)
-                                .padding(.top, 18)
-                        }
-                        ForEach(queuedItems, id: \.id) { item in
-                            ThreadItemRow(
-                                projectPath: controller.project.path,
-                                projectKey: controller.project.id,
-                                item: item,
-                                isHistorical: false,
-                                isQueued: true
-                            )
-                                .padding(.top, 18)
-                                .id(item.id)
-                        }
-                        Color.clear
-                            .frame(height: 44)
-                            .id("__bottom__")
-                            .onAppear {
-                                guard !suppressAnchorWrites else { return }
-                                anchor.atBottom = true
-                            }
-                            .onDisappear {
-                                guard !suppressAnchorWrites else { return }
-                                anchor.atBottom = false
-                            }
-                    }
-                    .frame(maxWidth: 760, alignment: .leading)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 24)
+                    transcriptList
                 }
                 // Vertical bounce always on (so reaching top/bottom rubber-bands
                 // — natural macOS feel). Horizontal elasticity killed via the
@@ -297,82 +345,10 @@ struct ThreadView: View {
                 .animation(.easeOut(duration: 0.18), value: controller.isHydrating)
             }
 
-            VStack(spacing: 8) {
-                ComposerView(
-                    prompt: $prompt,
-                    projectName: controller.project.name,
-                    projectPath: controller.project.path,
-                    commands: controller.availableCommands,
-                    onSend: { display, agent in
-                        // Sync prefix: paint the user bubble on the same
-                        // runloop tick as the Enter keystroke. Async tail
-                        // (ensureSession + ACP prompt) runs in a Task so it
-                        // doesn't block the composer's keyDown handler.
-                        guard let pending = controller.acceptUserPrompt(display: display, agent: agent) else { return }
-                        Task { await controller.dispatchPending(pending) }
-                    },
-                    onCancel: onCancel,
-                    isWorking: controller.isWorking,
-                    queuedCount: controller.queuedPrompts.count,
-                    queuedTail: controller.queuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
-                    onEditQueued: { id, newText in
-                        controller.editQueuedPrompt(itemId: id, newText: newText)
-                    },
-                    onClearQueue: { controller.clearQueue() },
-                    onSteer: { Task { await controller.steerToNextQueued() } },
-                    terminalActive: terminalActive,
-                    onToggleTerminal: onToggleTerminal,
-                    permissionMode: Binding(
-                        get: { controller.permissionMode },
-                        set: { controller.permissionMode = $0 }
-                    ),
-                    provider: controller.provider,
-                    onPickHarness: onPickHarness,
-                    isImageDropTargeted: $isImageDropTargeted,
-                    droppedAttachments: $droppedAttachments,
-                    branchSeedLoading: branchSeedLoading
-                )
-                .frame(maxWidth: 760)
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
-            .padding(.top, 8)
+            composerSection
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // SOUL-SOUL_DESKTOP-147: dashed-border drop-target affordance now
-        // traces the whole ThreadView so the user can see exactly where
-        // drops will land. Inset slightly so the border doesn't clip
-        // against the window chrome.
-        .overlay {
-            RoundedRectangle(cornerRadius: SoulMetric.radiusL)
-                .strokeBorder(
-                    SoulColor.accent,
-                    style: StrokeStyle(lineWidth: 2, dash: [8, 5])
-                )
-                .padding(8)
-                .opacity(isImageDropTargeted ? 1 : 0)
-                .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
-                .allowsHitTesting(false)
-        }
-        // SOUL-SOUL_DESKTOP-146: whole-canvas drop target. Drops anywhere
-        // in the ThreadView area land in `droppedAttachments`, which the
-        // composer below renders as chips and submits as markdown links.
-        // The composer keeps its own inner `.onDrop` too — innermost wins
-        // for drops directly on it, but both write through the same
-        // Binding so the canvas-wide highlight tracks targeting state.
-        .onDrop(
-            of: DropAttachmentHandler.acceptedTypes,
-            isTargeted: $isImageDropTargeted
-        ) { providers in
-            let new = DropAttachmentHandler.process(
-                providers: providers,
-                projectPath: controller.project.path,
-                existing: droppedAttachments
-            )
-            guard !new.isEmpty else { return false }
-            droppedAttachments.append(contentsOf: new)
-            return true
-        }
+
         .alert("Rename chat", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
             Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }

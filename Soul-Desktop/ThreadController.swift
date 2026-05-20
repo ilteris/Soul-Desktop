@@ -111,6 +111,7 @@ final class ThreadController {
     /// only ThreadView's body re-evaluates. Survives thread-switch without
     /// requiring a top-level dictionary.
     var composerDraft: String = ""
+    var droppedAttachments: [String] = []
     var isWorking: Bool = false
     var lastError: String?
     var availableCommands: [SlashCommand] = []
@@ -262,6 +263,9 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// false`. Reset to false the moment we begin spawning so a second send
     /// during the spawn window doesn't re-enter the resume path.
     var pendingResumeOnFirstSend: Bool = false
+
+    /// Running task for ensureSession() to prevent concurrent executions.
+    @ObservationIgnored var ensureSessionTask: Task<Void, Error>? = nil
 
     /// While true, drop content events (`user_message_chunk` /
     /// `agent_message_chunk` / tool calls / plans) coming through `apply` —
