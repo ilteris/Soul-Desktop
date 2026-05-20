@@ -248,8 +248,6 @@ struct ProjectSidebarRow: View {
     let onDelete: () -> Void
 
     @State private var hovering = false
-    @State private var buttonHover = false
-    @State private var menuHover = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -268,38 +266,6 @@ struct ProjectSidebarRow: View {
                     .background(SoulColor.surface, in: Capsule())
             }
             Spacer(minLength: 0)
-            // The pencil button always occupies its slot in the layout so the
-            // row's text doesn't shift on hover. Only the opacity changes,
-            // which keeps it visually hidden until the user is over the row.
-            Button(action: onNewChat) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(buttonHover ? SoulColor.fg : SoulColor.fgMuted)
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.soulChip)
-            .onHover { buttonHover = $0 }
-            .opacity(hovering ? 1 : 0)
-            .allowsHitTesting(hovering)
-            Menu {
-                Button("Add chat", action: onNewChat)
-                Divider()
-                Button("Edit project...", action: onEdit)
-                Button("Remove project...", role: .destructive, action: onDelete)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(menuHover ? SoulColor.fg : SoulColor.fgMuted)
-                    .frame(width: 20, height: 20)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .onHover { menuHover = $0 }
-            .opacity(hovering ? 1 : 0)
-            .allowsHitTesting(hovering)
-            .help("Project actions")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -320,7 +286,7 @@ struct ProjectSidebarRow: View {
             withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
         }
         .onHover { h in
-            withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
+            hovering = h
         }
     }
 }
