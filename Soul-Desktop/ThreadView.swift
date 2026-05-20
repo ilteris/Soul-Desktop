@@ -52,6 +52,7 @@ struct ThreadView: View {
         let _ = SoulSignposts.event("ThreadView.body")
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
+                ZStack {
                 ScrollView {
                     // SOUL-SOUL_DESKTOP-180: per-row spacing instead of a
                     // flat 18pt gap. Consecutive agent messages now sit
@@ -217,6 +218,25 @@ struct ThreadView: View {
                     controller.scrollAnchorAtBottom = anchor.atBottom
                     controller.scrollAnchorItemId = anchor.itemId
                 }
+                // SOUL-SOUL_DESKTOP-231: skeleton renders as a peer of the
+                // ScrollView inside a ZStack, NOT as an .overlay on the
+                // ScrollView, and the cross-fade .animation(value:) is
+                // attached to the ZStack — not the ScrollView. Earlier
+                // attempt put .overlay { ... }.animation(value: isHydrating)
+                // on the ScrollView itself; that installed an animation
+                // context spanning the entire LazyVStack subtree. Combined
+                // with row-level .fixedSize markdown and concurrent
+                // items.count growth + a scroll gesture during streaming,
+                // SwiftUI's ideal-size negotiation never converged and the
+                // main thread spun in StackLayout/_FlexFrameLayout/MoveTransition
+                // recursion until the stack overflowed.
+                if controller.isHydrating {
+                    ThreadSkeletonView()
+                        .background(SoulColor.bg)
+                        .transition(.opacity)
+                }
+                }
+                .animation(.easeOut(duration: 0.18), value: controller.isHydrating)
             }
 
             VStack(spacing: 8) {
