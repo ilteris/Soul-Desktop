@@ -6,6 +6,15 @@ extension SidebarView {
         // happen lazily when the user expands a folder. For accounts with
         // many projects × hundreds of finalized JSONs (soul, job-hunt) this
         // turns a multi-second startup stall into a single PROJECTS.json read.
+        //
+        // SOUL-SOUL_DESKTOP-161: the sidebar is one of the explicit
+        // refresh trigger points. Hit disk here (so the user sees fresh
+        // data on reload), then read the now-warmed cache. Other body
+        // re-reads of registryStore.activeProjects() get the cached
+        // copy without re-scanning.
+        if let live = registryStore as? LiveSoulRegistryStore {
+            live.refresh()
+        }
         let projs = registryStore.activeProjects()
         // Cheap session-count pass (no JSON parsing) so collapsed projects
         // still get an accurate badge without paying the lazy-load cost.

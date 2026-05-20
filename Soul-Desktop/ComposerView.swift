@@ -414,7 +414,12 @@ struct ComposerView: View {
             HStack(spacing: 14) {
                 ProjectChip(
                     currentName: projectName,
-                    projects: SoulRegistry.activeProjects(),
+                    // SOUL-SOUL_DESKTOP-161: read from the @Observable
+                    // cache instead of calling SoulRegistry.activeProjects()
+                    // here. The previous inline call triggered a disk-stat
+                    // sweep on every ComposerView re-render — during hydrate
+                    // that meant one stat-per-project per appended item.
+                    projects: LiveSoulRegistryStore.shared.cachedActive,
                     currentID: currentProjectID,
                     onSelect: onSelectProject,
                     onCreate: onNewProject

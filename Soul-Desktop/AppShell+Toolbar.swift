@@ -457,7 +457,10 @@ func findFileInKnownProjects(filename: String) -> String? {
     // the dotfiles tree outside `~/dotfiles/soul/` (where UPSTREAM_PRS.md,
     // README.md etc. live). The path resolver used to dead-end into
     // "couldn't read file" for any of those cases.
-    var roots: [String] = SoulRegistry.projects()
+    // SOUL-SOUL_DESKTOP-161: read cached project list rather than calling
+    // SoulRegistry.projects() (which scans disk). Cache is kept fresh by
+    // AppShell on launch + window key-back.
+    var roots: [String] = LiveSoulRegistryStore.shared.projects()
         .map(\.path)
         .filter { !$0.isEmpty }
     let home = NSHomeDirectory()

@@ -98,7 +98,7 @@ enum SessionLoadability {
     /// match means we know the real cwd. If no project matches, fall back
     /// to naive decode and accept the risk.
     private static func decodeClaudeCwd(encoded: String) -> String {
-        for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
+        for proj in LiveSoulRegistryStore.shared.activeProjects() where !proj.path.isEmpty {
             let trimmed = proj.path.hasSuffix("/") ? String(proj.path.dropLast()) : proj.path
             if trimmed.replacingOccurrences(of: "/", with: "-") == encoded {
                 return trimmed
@@ -191,7 +191,7 @@ enum SessionLoadability {
         if let raw = try? String(contentsOfFile: markerPath, encoding: .utf8) {
             let resolved = URL(fileURLWithPath: raw.trimmingCharacters(in: .whitespacesAndNewlines))
                 .resolvingSymlinksInPath().path
-            for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
+            for proj in LiveSoulRegistryStore.shared.activeProjects() where !proj.path.isEmpty {
                 let projResolved = URL(fileURLWithPath: proj.path).resolvingSymlinksInPath().path
                 if projResolved == resolved { return proj.path }
             }
@@ -212,7 +212,7 @@ enum SessionLoadability {
         }()
         let strippedLC = stripped.lowercased()
         let dirLC = dir.lowercased()
-        for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
+        for proj in LiveSoulRegistryStore.shared.activeProjects() where !proj.path.isEmpty {
             let basenameLC = (proj.path as NSString).lastPathComponent.lowercased()
             if basenameLC == strippedLC || basenameLC == dirLC { return proj.path }
         }
@@ -289,7 +289,7 @@ enum SessionLoadability {
         var stripped = encoded
         if stripped.hasPrefix("--") { stripped.removeFirst(2) }
         if stripped.hasSuffix("--") { stripped.removeLast(2) }
-        for proj in SoulRegistry.activeProjects() where !proj.path.isEmpty {
+        for proj in LiveSoulRegistryStore.shared.activeProjects() where !proj.path.isEmpty {
             let candidate = piEncode(cwd: proj.path)
             if candidate == encoded { return proj.path }
         }
@@ -312,7 +312,7 @@ enum SessionLoadability {
         for projectKey in projects {
             let path = "\(base)/\(projectKey)/\(sid)/transcript.jsonl"
             if fm.fileExists(atPath: path) {
-                let cwd = SoulRegistry.activeProjects()
+                let cwd = LiveSoulRegistryStore.shared.activeProjects()
                     .first(where: { $0.id == projectKey })?.path ?? ""
                 if cwd.isEmpty { continue }
                 return LoadableLocation(provider: "codex", cwd: cwd, transcriptPath: path)

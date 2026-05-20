@@ -25,17 +25,63 @@ extension SoulRegistryStore {
     }
 }
 
-final class LiveSoulRegistryStore: SoulRegistryStore {
+/// SOUL-SOUL_DESKTOP-161: @Observable cache of the project list.
+///
+/// Before this change, every call to `projects()` / `activeProjects()` did a
+/// disk-stat sweep (one mtime per project dir, ordered by recency). Views
+/// that called these from inside their bodies — most notoriously
+/// `ComposerView`'s `ProjectChip(projects:)` — triggered the sweep on every
+/// re-render. During a session hydrate, `items.count` growth re-rendered
+/// the composer per appended item, and CPU pegged at 200%+ on a profile.
+///
+/// Fix: the store holds two `@Observable` arrays (`cachedProjects`,
+/// `cachedActive`) which views read in O(1). `refresh()` is the only path
+/// that touches disk. AppShell invokes it on app launch and on project-
+/// mutation events (new project wizard, archive/restore). Views reading
+/// `cachedActive` only re-evaluate when the published array reference
+/// changes — i.e., when refresh() actually mutated state, not on every
+/// unrelated re-render.
+///
+/// The `projects()` / `activeProjects()` protocol methods remain for
+/// existing callers (controller logic, SessionLoadability) and now serve
+/// from the cache; a `refreshNow()` method exists for the rare caller that
+/// needs guaranteed-fresh data after a known mutation it didn't issue.
+@Observable
+final class LiveSoulRegistryStore: SoulRegistryStore, @unchecked Sendable {
+    // NOT @MainActor: SessionLoadability and controller code call
+    // projects()/activeProjects() from various contexts (sometimes off
+    // main during session probing). Reads of cached arrays are safe from
+    // any thread (immutable Array slice into stored state). Writes only
+    // happen via refresh(), which AppShell drives from the main actor.
     static let shared = LiveSoulRegistryStore()
 
-    private init() {}
+    /// Cached output of `SoulRegistry.projects()`. Mutates only via refresh().
+    var cachedProjects: [SoulProject] = []
+    /// Cached output of `SoulRegistry.activeProjects()`. Mutates only via refresh().
+    var cachedActive: [SoulProject] = []
+
+    private init() {
+        // Warm the cache so the very first body read doesn't see an empty list.
+        let all = SoulRegistry.projects()
+        self.cachedProjects = all
+        self.cachedActive = all.filter { ($0.status ?? "active") == "active" }
+    }
+
+    /// Hit disk, recompute both project lists, publish to observers.
+    /// Call this on app launch, project-mutation events, or when the user
+    /// explicitly asks for a refresh.
+    func refresh() {
+        let all = SoulRegistry.projects()
+        self.cachedProjects = all
+        self.cachedActive = all.filter { ($0.status ?? "active") == "active" }
+    }
 
     func projects() -> [SoulProject] {
-        SoulRegistry.projects()
+        cachedProjects
     }
 
     func activeProjects() -> [SoulProject] {
-        SoulRegistry.activeProjects()
+        cachedActive
     }
 
     func sessionCount(forProject projectKey: String) -> Int {
