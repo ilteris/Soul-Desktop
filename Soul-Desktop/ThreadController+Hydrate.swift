@@ -117,7 +117,7 @@ extension ThreadController {
                 // prior conversation as inline context on first send.
                 // Previously this branch had no resume path at all — the
                 // agent started cold and the user had to recap manually.
-                stagePreambleForResume(from: items)
+                await stagePreambleForResume(sid: sid, rendered: items)
                 pendingResumeOnFirstSend = true
                 return
             }
@@ -159,14 +159,50 @@ extension ThreadController {
         // user's first prompt in dispatchPending. This replaces the old
         // session/load resume path that re-fed the entire transcript to
         // the agent and overflowed the context window on long sessions.
-        stagePreambleForResume(from: items)
+        await stagePreambleForResume(sid: sid, rendered: items)
         pendingResumeOnFirstSend = true
     }
 
-    /// SOUL-SOUL_DESKTOP-245 (Phase B). Build the preamble blob from
-    /// what's now in `items`. Too large → drop with a visible status row
-    /// so the user knows summarization (Phase A) hasn't landed yet.
-    func stagePreambleForResume(from rendered: [ThreadItem]) {
+    /// SOUL-SOUL_DESKTOP-245 SPEC-245-K (Phase A step 2). Build the
+    /// preamble via the kernel CLI (`soul preamble`) instead of running
+    /// the Swift renderer. Kernel reads hooks.jsonl + finalize JSON,
+    /// caches the result, and returns text-or-truncated-flag. The Swift
+    /// renderer (LedgerPreamble.build) remains as a fallback for the
+    /// CLI-unavailable case, since this method runs on the click path
+    /// and degrading to "no preamble" is worse than degrading to a
+    /// stale-by-one-turn render.
+    func stagePreambleForResume(sid: String, rendered: [ThreadItem]) async {
+        do {
+            let payload = try await SoulCLI.runJSON(
+                ["preamble", "--session", sid, "--project", project.id, "--format", "json"],
+                as: PreamblePayload.self
+            )
+            guard !payload.preamble.isEmpty else { return }
+            pendingContextPreamble = payload.preamble
+            return
+        } catch SoulCLIError.nonZeroExit(let code, let stderr) where code == 2 {
+            // Exit 2 = ledger exceeded --max-chars and summarizer is not
+            // ready (Phase A step 3). Surface honestly; agent starts fresh.
+            items.append(.status(
+                id: UUID(),
+                text: "ℹ prior context too large for direct injection — agent will start fresh until summarizer ships"
+            ))
+            _ = stderr
+            pendingContextPreamble = nil
+            return
+        } catch SoulCLIError.executableNotFound {
+            // Kernel not on PATH. Don't strand the user — fall through to
+            // the Swift renderer so resume still works.
+            logLifecycle("preamble.cli.missing", note: "falling back to Swift renderer")
+        } catch SoulCLIError.nonZeroExit(let code, let stderr) {
+            // Exit 3 (no hooks.jsonl), 4 (summarizer fail), or unknown.
+            // Log and fall through to the Swift renderer.
+            logLifecycle("preamble.cli.error", note: "code=\(code) stderr=\(stderr.prefix(200))")
+        } catch {
+            logLifecycle("preamble.cli.error", note: "\(error)")
+        }
+        // Fallback: Swift renderer against the in-memory items. Matches
+        // the Phase B behavior so a kernel hiccup doesn't kill resume.
         guard let built = LedgerPreamble.build(from: rendered) else { return }
         if built.truncated {
             items.append(.status(

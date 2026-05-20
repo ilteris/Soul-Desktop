@@ -13,6 +13,27 @@ import Foundation
 /// Phase A will replace `build(...)` with a summarizer when `byteCount`
 /// exceeds the safe threshold. Today we either inject verbatim (small
 /// session) or skip and start fresh (with a status row explaining why).
+/// SPEC-245-K Phase A step 2. JSON payload returned by
+/// `soul preamble --format json`. Mirrored from
+/// `~/dotfiles/soul/kernel/commands/soul_preamble.py::_emit`.
+struct PreamblePayload: Decodable {
+    let preamble: String
+    let channel: String           // Phase A: "user_prompt_prefix" only
+    let cacheHit: Bool
+    let mode: String              // "verbatim" | "summary"
+    let charCount: Int
+    let turnCount: Int
+    let truncated: Bool
+    let summarized: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case preamble, channel, mode, truncated, summarized
+        case cacheHit = "cache_hit"
+        case charCount = "char_count"
+        case turnCount = "turn_count"
+    }
+}
+
 enum LedgerPreamble {
 
     /// Anything larger than this gets dropped instead of injected. 300K

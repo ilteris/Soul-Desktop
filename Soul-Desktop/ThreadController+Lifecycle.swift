@@ -269,7 +269,7 @@ extension ThreadController {
         if let sid = sessionId, nativeSessionId != nil {
             try await spawnAndInitialize(skipNewSession: true)
             guard let client else { return }
-            stagePreambleForResume(from: items)
+            await stagePreambleForResume(sid: sid, rendered: items)
             try await mintFreshNativeSession(
                 client: client,
                 kernelSid: sid,
