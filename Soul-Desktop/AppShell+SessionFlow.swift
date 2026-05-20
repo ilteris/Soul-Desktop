@@ -105,7 +105,20 @@ extension AppShell {
         sessions.mount(controller)
         let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi
         if useReadFirst {
-            Task { await controller.hydrateFromDisk(id: session.id) }
+            // SOUL-SOUL_DESKTOP-243 (phase 1): chain background spawn-and-resume
+            // after the hydrate paints the canvas. By the time the user finishes
+            // reading the transcript and types, ensureSession is a no-op (the
+            // idempotency check in ThreadController+Lifecycle.swift:228 returns
+            // early once hasInitialized + client + sessionId are set). Any ACP
+            // replay that loadSession streams back is suppressed via
+            // suppressLoadReplay during the spawn, so it never paints on the
+            // canvas. Background-spawn errors are swallowed here — the user
+            // hasn't taken action yet, and the next user send re-enters
+            // ensureSession and will surface a real error then.
+            Task {
+                await controller.hydrateFromDisk(id: session.id)
+                try? await controller.ensureSession()
+            }
         } else {
             Task { await controller.loadSession(id: session.id) }
         }

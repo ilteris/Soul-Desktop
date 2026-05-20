@@ -207,11 +207,14 @@ enum HooksReader {
             readHooks(projectKey: project.id, sessionId: sid)
         }
         let prompts = readClaudePrompts(sessionId: sid, cwd: project.path)
-        // Gemini sessions: the kernel hooks ledger doesn't carry agent reply
-        // text (only prompts + decisions), so without reading the chat file
-        // Replay would render the prompts but no responses. The locator
-        // falls back to `.bak-*` and `.corrupt-*` siblings if the live file
-        // is missing or stubbed.
+        // Gemini sessions: kept for terminal-spawned sessions where Soul-Desktop
+        // is not the writer. Desktop-spawned Gemini sessions persist agent
+        // reply text to the hooks ledger via `AfterAgent` events (see
+        // ThreadController+Turn.swift:244 — SOUL-SOUL_DESKTOP-065). For
+        // those, this merge is belt-and-suspenders. For terminal sessions,
+        // the chat file is the only source of agent reply text and this is
+        // load-bearing. The locator falls back to `.bak-*` and `.corrupt-*`
+        // siblings if the live file is missing or stubbed.
         let geminiTurns = SoulSignposts.interval("HooksReader.readGeminiTurns", id: sid) {
             readGeminiTurns(sessionId: sid, projectKey: project.id)
         }

@@ -207,6 +207,13 @@ extension ThreadController {
         logLifecycle("teardown", note: "controller torn down (e.g. row deselected)")
         finalizeWatcher?.stop()
         finalizeWatcher = nil
+        // SOUL-SOUL_DESKTOP-245 (cleanup from -243): cancel any in-flight
+        // background warm-up before nilling out client. Without this, a
+        // user who clicks a row then immediately switches away leaves a
+        // spawn-in-progress Task running against a controller that's
+        // being torn down, orphaning a child stdio process.
+        ensureSessionTask?.cancel()
+        ensureSessionTask = nil
         eventTask?.cancel()
         await client?.stop()
         client = nil
@@ -222,6 +229,26 @@ extension ThreadController {
     // MARK: - private
 
     func ensureSession() async throws {
+        // SOUL-SOUL_DESKTOP-243: serialize concurrent callers through one
+        // Task. Background spawn-on-click (AppShell+SessionFlow.swift) and
+        // a user-initiated first-send can race; without this the second
+        // caller would re-enter and double-spawn before the first set
+        // hasInitialized = true. Idempotent fast path stays at the top of
+        // _ensureSessionImpl for the warm case.
+        if let existing = ensureSessionTask {
+            try await existing.value
+            return
+        }
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self._ensureSessionImpl()
+        }
+        ensureSessionTask = task
+        defer { ensureSessionTask = nil }
+        try await task.value
+    }
+
+    private func _ensureSessionImpl() async throws {
         logLifecycle("ensureSession enter",
                      note: "hasInitialized=\(hasInitialized) client=\(client != nil) codexClient=\(codexClient != nil) sessionId=\(sessionId ?? "nil") nativeSessionId=\(nativeSessionId ?? "nil") pendingResumeOnFirstSend=\(pendingResumeOnFirstSend)")
         if provider == .codex {
