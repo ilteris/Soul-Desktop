@@ -19,6 +19,10 @@ struct ThreadView: View {
     /// re-mount clobber the saved anchor (and flip `scrollAnchorAtBottom`
     /// false) before the restore call runs.
     @State private var suppressAnchorWrites = false
+    /// SOUL-SOUL_DESKTOP-233: true for ~0.4s after `isHydrating` flips false.
+    /// Gates the .onChange(items.count) auto-scroll so it doesn't fight the
+    /// two-pass scrollTo that the .onChange(isHydrating) handler is running.
+    @State private var recentlyHydrated = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
 
     /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
@@ -84,10 +88,20 @@ struct ThreadView: View {
                                 // blank-band without eagerly rendering bubbles.
                                 .frame(minHeight: 24, alignment: .topLeading)
                                 .onAppear {
+                                    // SOUL-SOUL_DESKTOP-233: row anchor writes
+                                    // must respect suppressAnchorWrites. Without
+                                    // this guard, rows mounting after hydrate
+                                    // landed an empty ScrollView would clobber
+                                    // the saved anchor before performScrollRestore
+                                    // had a chance to run, producing
+                                    // top/middle/bottom inconsistency on session
+                                    // open.
+                                    guard !suppressAnchorWrites else { return }
                                     anchor.visibleIds.insert(item.id)
                                     updateAnchor(in: mainItems)
                                 }
                                 .onDisappear {
+                                    guard !suppressAnchorWrites else { return }
                                     anchor.visibleIds.remove(item.id)
                                     updateAnchor(in: mainItems)
                                 }
@@ -146,19 +160,56 @@ struct ThreadView: View {
                     // invalidation); flushed back on detach.
                     anchor.atBottom = controller.scrollAnchorAtBottom
                     anchor.itemId = controller.scrollAnchorItemId
-                    let atBottom = anchor.atBottom
-                    let anchorId = anchor.itemId
-                    DispatchQueue.main.async {
-                        if atBottom {
-                            proxy.scrollTo("__bottom__", anchor: .bottom)
-                        } else if let id = anchorId {
-                            proxy.scrollTo(id, anchor: .top)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            suppressAnchorWrites = false
-                            // Sync the anchor once the dust has settled on the restore.
-                            let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
-                            updateAnchor(in: splitNow.main)
+                    // SOUL-SOUL_DESKTOP-233: if hydrate is already done (we're
+                    // re-attaching to a thread whose items have been loaded
+                    // for a while), restore immediately. Otherwise wait for
+                    // isHydrating to flip false - see the .onChange below.
+                    // The pre-fix path ran the restore on mount unconditionally,
+                    // which raced against the still-empty items list and left
+                    // the ScrollView in an undefined position.
+                    if !controller.isHydrating {
+                        performScrollRestore(proxy: proxy)
+                    }
+                }
+                .onChange(of: controller.isHydrating) { _, nowHydrating in
+                    // SOUL-SOUL_DESKTOP-233: fresh session open lands at the
+                    // bottom — that's where the conclusion of the conversation
+                    // is, and that's what the user came to see.
+                    //
+                    // The earlier fix scrolled to "__bottom__" (a trailing
+                    // Color.clear marker AFTER the ForEach). On long
+                    // transcripts this landed in the middle because LazyVStack
+                    // hadn't materialized the bottom rows yet, so SwiftUI's
+                    // position estimate for the marker was wrong. Scrolling
+                    // to the LAST REAL ITEM's id instead is reliable —
+                    // LazyVStack materializes it on demand and lands precisely
+                    // because the item's own height anchors the calculation.
+                    guard !nowHydrating else { return }
+                    anchor.atBottom = true
+                    recentlyHydrated = true
+                    // Resolve target id once: prefer the very last visible
+                    // row (queued or main). Fall back to __bottom__ only if
+                    // items is somehow empty.
+                    let splitInit = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                    let targetId: AnyHashable = {
+                        if let lastQueued = splitInit.queued.last { return lastQueued.id }
+                        if let lastMain = splitInit.main.last { return lastMain.id }
+                        return "__bottom__"
+                    }()
+                    // Two passes: first warms the LazyVStack to materialize
+                    // rows near the target; second corrects after layout
+                    // settles. Most sessions only need pass 1, but very
+                    // long transcripts need pass 2.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        proxy.scrollTo(targetId, anchor: .bottom)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            proxy.scrollTo(targetId, anchor: .bottom)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                suppressAnchorWrites = false
+                                recentlyHydrated = false
+                                let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                                updateAnchor(in: splitNow.main)
+                            }
                         }
                     }
                 }
@@ -167,6 +218,13 @@ struct ThreadView: View {
                     // just sent, they want to see the response land. Outside
                     // of a working turn, only follow if they were already at
                     // the bottom.
+                    //
+                    // SOUL-SOUL_DESKTOP-233: skip during the post-hydrate
+                    // window. The hydrate handler is running a two-pass
+                    // scrollTo; an animated scrollTo from here lands in the
+                    // middle because the LazyVStack hasn't materialized the
+                    // bottom rows yet, and the two calls would fight.
+                    guard !recentlyHydrated else { return }
                     guard anchor.atBottom || controller.isWorking else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
@@ -342,6 +400,28 @@ struct ThreadView: View {
         }
     }
 
+    /// SOUL-SOUL_DESKTOP-233: scroll-restore for the re-attach case - ScrollView
+    /// re-mounting on a thread whose controller was already hydrated (e.g., the
+    /// LRU evicted it and the user navigated back). Restores wherever they were.
+    /// Fresh-load (just-hydrated) doesn't use this - it scrolls unconditionally
+    /// to bottom; see the .onChange(of: controller.isHydrating) handler.
+    private func performScrollRestore(proxy: ScrollViewProxy) {
+        let atBottom = anchor.atBottom
+        let anchorId = anchor.itemId
+        DispatchQueue.main.async {
+            if atBottom {
+                proxy.scrollTo("__bottom__", anchor: .bottom)
+            } else if let id = anchorId {
+                proxy.scrollTo(id, anchor: .top)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                suppressAnchorWrites = false
+                let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                updateAnchor(in: splitNow.main)
+            }
+        }
+    }
+
     /// A user message coming after non-user content opens a new turn — give it
     /// extra top padding so the conversation reads as discrete exchanges.
     private func isTurnStart(item: ThreadItem, index: Int, items: [ThreadItem]) -> Bool {
@@ -497,4 +577,3 @@ struct ThreadItemRow: View {
     }
 
 }
-
