@@ -567,6 +567,114 @@ enum SoulRegistry {
         return nil
     }
 
+    /// SOUL-SOUL_DESKTOP-237: per-provider event count for a session, derived
+    /// from the on-disk hooks.jsonl. Used to compute the "dominant provider"
+    /// of a session that received writes from multiple providers, defending
+    /// against the SOUL-SOUL-030 finalize-source bug where a finalize JSON's
+    /// `source` field can disagree with who actually authored the session.
+    struct ProviderTally {
+        /// Provider → count of `provider:<name>` events in the ledger.
+        let counts: [String: Int]
+        /// Provider of the very first `NativeSessionID` event. The
+        /// authoritative "who created this session id" signal.
+        let firstAuthor: String?
+        /// Provider with the highest event count. Tie-break: most-recent
+        /// provider wins.
+        let dominant: String?
+        /// Convenience: did more than one provider write to this session?
+        var isMixed: Bool { counts.count > 1 }
+    }
+
+    static func providerTally(projectKey: String, sessionId: String) -> ProviderTally {
+        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else {
+            return ProviderTally(counts: [:], firstAuthor: nil, dominant: nil)
+        }
+        var counts: [String: Int] = [:]
+        var firstAuthor: String? = nil
+        var mostRecent: String? = nil
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let prov = obj["provider"] as? String
+            else { continue }
+            counts[prov, default: 0] += 1
+            if firstAuthor == nil, (obj["event"] as? String) == "NativeSessionID" {
+                firstAuthor = prov
+            }
+            mostRecent = prov
+        }
+        // Pick the provider with the highest count; if tied, pick most-recent.
+        let dominant: String? = {
+            guard !counts.isEmpty else { return nil }
+            let maxCount = counts.values.max() ?? 0
+            let winners = counts.filter { $0.value == maxCount }.map { $0.key }
+            if winners.count == 1 { return winners[0] }
+            return mostRecent ?? winners.first
+        }()
+        return ProviderTally(counts: counts, firstAuthor: firstAuthor, dominant: dominant)
+    }
+
+    /// SOUL-SOUL_DESKTOP-237: heal a session whose finalize JSON `source`
+    /// field disagrees with the dominant provider in the hooks ledger.
+    /// Rewrites the JSON in place (atomic, .bak backup taken before write).
+    /// Returns the corrected source string on success, nil if there was no
+    /// finalize JSON or no drift to repair.
+    @discardableResult
+    static func repairFinalizeSource(projectKey: String, sessionId: String) -> String? {
+        let dir = "\(registryPath)/sessions/\(projectKey)"
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        var targetPath: String? = nil
+        for name in entries where name.hasSuffix(".json") {
+            let stem = String(name.dropLast(5))
+            if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
+                targetPath = "\(dir)/\(name)"
+                break
+            }
+        }
+        guard let path = targetPath,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              var obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let tally = providerTally(projectKey: projectKey, sessionId: sessionId)
+        // Prefer firstAuthor (the original creator of the kernel sid) over
+        // dominant count, on the principle that the session's identity is
+        // anchored to who minted it — later guest writes shouldn't relabel
+        // the session.
+        let canonical = tally.firstAuthor ?? tally.dominant
+        guard let target = canonical else { return nil }
+        let currentSource = obj["source"] as? String
+        // Map provider raw values to the source-field convention used in
+        // finalize JSONs (claude, gemini, pi-native).
+        let canonicalSource: String = {
+            switch target {
+            case "claude": return "claude"
+            case "geminiCLI": return "gemini"
+            case "pi": return "pi-native"
+            case "codex": return "codex"
+            default: return target
+            }
+        }()
+        if currentSource == canonicalSource { return nil }
+        obj["source"] = canonicalSource
+        // Stamp the prior value into history so future tooling can audit
+        // the heal.
+        var history = obj["source_history"] as? [String] ?? []
+        if let cur = currentSource { history.append(cur) }
+        obj["source_history"] = history
+        // .bak before write
+        let bak = path + ".bak-\(Int(Date().timeIntervalSince1970))"
+        _ = try? FileManager.default.copyItem(atPath: path, toPath: bak)
+        guard let newData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]),
+              (try? newData.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+        else { return nil }
+        invalidateCache(forProject: projectKey)
+        return canonicalSource
+    }
+
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
@@ -602,6 +710,15 @@ enum SoulRegistry {
         let fixed: String?
         let nextStep: String?
         let timestamp: Date?
+        // SOUL-SOUL_DESKTOP-236: operational metadata the FinalizeCard
+        // surfaces alongside the Quad. Project key + on-disk JSON path
+        // give the card a "what" and "where"; decisionsCount surfaces
+        // how many DECISION ops were synthesized; parentId links to a
+        // source session when the user branched into this one.
+        let handoffPath: String?
+        let fixedIssues: [String]
+        let decisionsCount: Int?
+        let parentId: String?
     }
 
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
@@ -622,8 +739,9 @@ enum SoulRegistry {
                     SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(name)")
                     continue
                 }
-                let fixedArray = obj["fixed_issues"] as? [String]
-                let fixedStr = fixedArray?.joined(separator: ", ")
+                let fixedArray = obj["fixed_issues"] as? [String] ?? []
+                let fixedStr: String? = fixedArray.isEmpty ? nil : fixedArray.joined(separator: ", ")
+                let decisions = obj["decisions_events"] as? [Any]
                 SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
                 return FinalizeRecord(
                     sessionId: sessionId,
@@ -632,7 +750,11 @@ enum SoulRegistry {
                     rationale: obj["rationale"] as? String,
                     fixed: fixedStr,
                     nextStep: obj["next_step"] as? String,
-                    timestamp: parseTimestamp(obj["timestamp"] as? String)
+                    timestamp: parseTimestamp(obj["timestamp"] as? String),
+                    handoffPath: "\(dir)/\(name)",
+                    fixedIssues: fixedArray,
+                    decisionsCount: decisions?.count,
+                    parentId: obj["parent_id"] as? String
                 )
             }
         }

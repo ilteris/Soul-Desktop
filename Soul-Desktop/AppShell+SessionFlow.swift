@@ -238,6 +238,23 @@ extension AppShell {
     }
 
     private func providerForSession(_ session: SoulSession) -> Provider {
+        // SOUL-SOUL_DESKTOP-237: defensive provider inference. The kernel
+        // ledger's first NativeSessionID event is the most authoritative
+        // signal of who CREATED this kernel sid. Prefer it over
+        // session.source, which can be stamped wrong by `/finalize` when
+        // the user's runtime harness disagrees with the actual writer
+        // (SOUL-SOUL-030). Falls through to the previous heuristics when
+        // the ledger has no NativeSessionID events to anchor identity.
+        let tally = SoulRegistry.providerTally(projectKey: session.project, sessionId: session.id)
+        if let anchored = tally.firstAuthor {
+            switch anchored {
+            case "claude":    return .claude
+            case "geminiCLI": return .geminiCLI
+            case "pi":        return .pi
+            case "codex":     return .codex
+            default: break
+            }
+        }
         switch session.source {
         case "claude":    return .claude
         case "gemini":    return .geminiCLI

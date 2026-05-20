@@ -39,6 +39,17 @@ struct AppShell: View {
     @State var showNewProject = false
     @State var harness: Provider = .geminiCLI
 
+    /// SOUL-SOUL_DESKTOP-237: presented when the user picks a different
+    /// provider in the composer harness picker while an active thread
+    /// already has items. Sheet asks: continue (closes current, fresh
+    /// draft in new harness) or branch (preserve current, fork into a
+    /// new session via branchFrom). Nil when no decision is pending.
+    @State var pendingHarnessSwitch: HarnessSwitchContext? = nil
+    /// Per-session opt-out for the harness-switch sheet. Resets on app
+    /// relaunch (not @AppStorage by design — the prompt is the safety
+    /// rail, and forgetting an opt-out on next launch is correct).
+    @State var skipHarnessSwitchSheet: Bool = false
+
     @AppStorage(SoulColor.accentStorageKey) private var accentHex: Int = Int(SoulColor.defaultAccentHex)
 
     @StateObject var terminalModel = TerminalPanelModel()
@@ -325,6 +336,24 @@ struct AppShell: View {
         // loadSession finishes failing, not on a re-click.
         .sheet(item: recoveryBinding) { ctx in
             corruptedSessionSheet(ctx)
+        }
+        // SOUL-SOUL_DESKTOP-237: harness-switch confirmation. Presented
+        // when the user picks a provider in the composer harness picker
+        // that differs from the active thread's provider AND the thread
+        // already has items. See AppShell+Canvas.swift:onPickHarness.
+        .sheet(item: $pendingHarnessSwitch) { ctx in
+            HarnessSwitchSheet(
+                context: ctx,
+                onContinue: { remember in
+                    confirmContinueHarnessSwitch(target: ctx.target, rememberChoice: remember)
+                },
+                onBranch: { remember in
+                    confirmBranchHarnessSwitch(target: ctx.target, rememberChoice: remember)
+                },
+                onCancel: {
+                    pendingHarnessSwitch = nil
+                }
+            )
         }
         .background {
             Button("") { showSettings = true }

@@ -17,8 +17,53 @@ extension AppShell {
 
     var onPickHarness: (Provider) -> Void {
         { picked in
+            // SOUL-SOUL_DESKTOP-237: if a populated thread is active and the
+            // user is picking a DIFFERENT provider, show a confirmation sheet.
+            // The user's mental model is usually "branch into a new session"
+            // but today's behavior is "close current, fresh draft in new
+            // harness." Without the sheet that mismatch silently produces
+            // sessions whose finalize JSON gets a misleading `source` field
+            // (see SOUL-SOUL-030 for the kernel-side root cause); on next
+            // reload the wrong-provider controller picks up the original sid
+            // and pollutes the ledger.
+            //
+            // Skipped when: no thread, same provider, thread is empty, or
+            // user opted out for the session.
+            if let activeThread = thread,
+               !activeThread.items.isEmpty,
+               picked != activeThread.provider,
+               !skipHarnessSwitchSheet {
+                pendingHarnessSwitch = HarnessSwitchContext(source: activeThread, target: picked)
+                return
+            }
             if thread != nil { newChat() }
             harness = picked
+        }
+    }
+
+    /// SOUL-SOUL_DESKTOP-237: invoked by the sheet's "Continue" choice.
+    /// Mirrors today's pre-sheet behavior: close the active thread, fresh
+    /// draft in the new harness. Source session is untouched on disk.
+    func confirmContinueHarnessSwitch(target: Provider, rememberChoice: Bool) {
+        if rememberChoice { skipHarnessSwitchSheet = true }
+        pendingHarnessSwitch = nil
+        if thread != nil { newChat() }
+        harness = target
+    }
+
+    /// SOUL-SOUL_DESKTOP-237: invoked by the sheet's "Branch" choice.
+    /// Routes through branchFrom to fork into a new session, preserving
+    /// the source's ledger and creating a fresh sid for the new agent.
+    func confirmBranchHarnessSwitch(target: Provider, rememberChoice: Bool) {
+        if rememberChoice { skipHarnessSwitchSheet = true }
+        pendingHarnessSwitch = nil
+        if let source = thread {
+            branchFrom(source, to: target)
+        } else {
+            // Defensive: shouldn't happen because the sheet only fires when
+            // a thread is active, but if state shifted, fall through to
+            // continue-style behavior.
+            harness = target
         }
     }
 
