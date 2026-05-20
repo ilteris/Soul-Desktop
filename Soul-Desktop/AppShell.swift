@@ -190,6 +190,19 @@ struct AppShell: View {
         }
         .onAppear {
             rightPane.reviewVisible = showReview
+            // SOUL-SOUL_DESKTOP-161: warm the @Observable project cache so
+            // any view (Composer, Sidebar, Toolbar) reading
+            // LiveSoulRegistryStore.shared.cachedActive/cachedProjects hits
+            // an in-memory array instead of a disk-stat sweep per body
+            // re-eval. Refresh is also triggered on window key-back via the
+            // notification below.
+            LiveSoulRegistryStore.shared.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            // SOUL-SOUL_DESKTOP-161: pick up project additions/archives made
+            // outside the app (e.g., direct edits to PROJECTS.json or
+            // wizard completions in another window).
+            LiveSoulRegistryStore.shared.refresh()
         }
         // Top-center toast banner (lifted from SidebarView). Renders here
         // so it spans the whole window — visible regardless of which pane
@@ -293,6 +306,11 @@ struct AppShell: View {
             NewProjectWizard(
                 onCreated: { newKey in
                     showNewProject = false
+                    // SOUL-SOUL_DESKTOP-161: refresh the cached project
+                    // list so the new project appears in Composer's
+                    // ProjectChip menu without waiting for the next
+                    // window-key-back notification.
+                    LiveSoulRegistryStore.shared.refresh()
                     selectedProject = newKey
                 },
                 onCancel: { showNewProject = false }
