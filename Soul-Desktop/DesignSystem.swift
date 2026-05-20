@@ -114,11 +114,16 @@ enum SoulType {
     // doesn't overpower; same face though (composer/sidebar are all mono).
     static let code          = SoulFont.code(14, weight: .regular)
 
-    // Headings — semibold, descending.
-    static let h1            = SoulFont.ui(19, weight: .semibold)
-    static let h2            = SoulFont.ui(16, weight: .semibold)
-    static let h3            = SoulFont.ui(14, weight: .semibold)
-    static let h4            = SoulFont.ui(13, weight: .semibold)
+    // Headings — semibold, descending. SOUL-SOUL_DESKTOP-168: every
+    // heading sits above body (15pt). Pre-fix h3/h4 were 14/13pt and
+    // rendered VISUALLY SMALLER than the body they were supposed to
+    // introduce — agent "## Section" headers looked like they belonged
+    // below their own content. New ladder: 22 / 19 / 17 / 16 keeps a
+    // clear step between each level and never drops below body.
+    static let h1            = SoulFont.ui(22, weight: .semibold)
+    static let h2            = SoulFont.ui(19, weight: .semibold)
+    static let h3            = SoulFont.ui(17, weight: .semibold)
+    static let h4            = SoulFont.ui(16, weight: .semibold)
 
     // Meta — timestamps, footers, badges, sub-headers.
     static let caption       = SoulFont.ui(12, weight: .regular)
