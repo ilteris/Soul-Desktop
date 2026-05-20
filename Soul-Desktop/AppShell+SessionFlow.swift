@@ -1,0 +1,252 @@
+import SwiftUI
+
+extension AppShell {
+    func startThread(display: String, agent: String) {
+        guard let project = currentProject() else { return }
+        sessions.draftSession = nil
+        let controller = ThreadController(provider: harness, project: project)
+        controller.permissionMode = pendingPermissionMode
+        sessions.mount(controller)
+        newChatNonce &+= 1
+        Task { await controller.send(display: display, agent: agent) }
+    }
+
+    func loadSession(_ session: SoulSession) {
+        if let draft = sessions.draftSession, draft.id == session.id {
+            replay.stop()
+            sessions.activeThreadKey = nil
+            sessions.pendingActiveId = draft.id
+            return
+        }
+        sessions.draftSession = nil
+        guard let project = SoulRegistry.projects().first(where: { $0.id == session.project })
+                ?? currentProject()
+        else { return }
+        if selectedProject != session.project {
+            selectedProject = session.project
+        }
+        let provider = providerForSession(session)
+        if sessions.pendingActiveId == session.id, sessions.activeThreadKey != nil {
+            return
+        }
+        sessions.pendingActiveId = session.id
+
+        if let existing = sessions.existingThread(sessionId: session.id) {
+            harness = existing.provider
+            sessions.setActiveThread(existing.id)
+            return
+        }
+        if session.id.hasPrefix("thread-") {
+            if let existing = sessions.existingThread(syntheticSessionId: session.id) {
+                harness = existing.provider
+                sessions.setActiveThread(existing.id)
+                sessions.pendingActiveId = nil
+                return
+            }
+        }
+
+        if !session.canSafelyResume {
+            sessions.pendingActiveId = nil
+            externalLiveSession = session
+            return
+        }
+
+        var discoveredCwdOverride: String? = nil
+        if !session.loadable, session.replayable {
+            if let hit = SessionLoadability.discover(sessionId: session.id) {
+                discoveredCwdOverride = hit.cwd
+            } else if session.promptCount == 0 {
+                sessions.pendingActiveId = nil
+                externalLiveSession = session
+                return
+            }
+        }
+
+        harness = provider
+        var routedProject = project
+        if let wt = session.worktreePath,
+           !wt.isEmpty,
+           FileManager.default.fileExists(atPath: wt) {
+            routedProject.path = wt
+        }
+        if let override = discoveredCwdOverride,
+           session.worktreePath?.isEmpty ?? true,
+           FileManager.default.fileExists(atPath: override) {
+            routedProject.path = override
+        }
+        let controller = ThreadController(provider: provider, project: routedProject)
+        if let origin = SoulRegistry.firstHookTimestamp(projectKey: routedProject.id, sessionId: session.id) {
+            controller.startedAt = origin
+        } else {
+            controller.startedAt = session.timestamp
+        }
+        if let seed = (session.intent ?? session.summary)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !seed.isEmpty {
+            controller.customTitle = seed
+        }
+        controller.lastActivityAt = session.timestamp
+        controller.assignSessionId(session.id)
+        sessions.mount(controller)
+        let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi
+        if useReadFirst {
+            Task { await controller.hydrateFromDisk(id: session.id) }
+        } else {
+            Task { await controller.loadSession(id: session.id) }
+        }
+    }
+
+    func handleBranch(session: SoulSession, target: Provider) {
+        guard let source = sessions.existingThread(sessionId: session.id) else {
+            loadSession(session)
+            return
+        }
+        guard target != source.provider else { return }
+        branchFrom(source, to: target)
+    }
+
+    func branchFrom(_ source: ThreadController, to target: Provider) {
+        let items = source.items
+        let sourceProvider = source.provider
+        let atTurn = items.reduce(into: 0) { acc, item in
+            if case .userMessage = item { acc += 1 }
+        }
+        source.items.append(.status(
+            id: UUID(),
+            text: "↗ branched to \(target.label)"
+        ))
+        if let sourceSid = source.sessionId {
+            SoulRegistry.appendHook(
+                projectKey: source.project.id,
+                sessionId: sourceSid,
+                event: [
+                    "event": "BranchedTo",
+                    "from_provider": sourceProvider.rawValue,
+                    "to_provider": target.rawValue,
+                    "at_turn": atTurn,
+                ]
+            )
+        }
+        harness = target
+        if selectedProject != source.project.id { selectedProject = source.project.id }
+        let project = source.project
+        let controller = ThreadController(provider: target, project: project)
+        controller.permissionMode = pendingPermissionMode
+        sessions.mount(controller)
+        sessions.draftSession = nil
+        newChatNonce &+= 1
+        branchSeedLoading = true
+        controller.composerDraft = ""
+        Task { @MainActor in
+            let seed = await ComposeBranchSeed.run(
+                items: items,
+                sourceProvider: sourceProvider,
+                targetProvider: target
+            )
+            branchSeedLoading = false
+            guard !seed.isEmpty else { return }
+            let displayText = seed
+            let agentText = seed + "\n\n(Continuing from \(sourceProvider.label) — give me a quick summary of where we are and propose the immediate next step.)"
+            guard let pending = controller.acceptUserPrompt(display: displayText, agent: agentText) else { return }
+            await controller.dispatchPending(pending)
+        }
+    }
+
+    func reloadActiveSession() {
+        guard let key = sessions.activeThreadKey,
+              let controller = sessions.threads[key],
+              let sid = controller.sessionId
+        else { return }
+        let projectKey = controller.project.id
+        guard let session = SoulRegistry.cachedSessions(forProject: projectKey)?
+                .first(where: { $0.id == sid })
+        else { return }
+        _ = sessions.removeThread(key)
+        Task { await controller.teardown() }
+        loadSession(session)
+    }
+
+    func newChat(targetProjectID: String? = nil) {
+        replay.stop()
+        sessions.activeThreadKey = nil
+        prompt = ""
+        if let targetProjectID, targetProjectID != selectedProject {
+            selectedProject = targetProjectID
+        }
+        let resolvedProject: SoulProject? = {
+            if let id = targetProjectID {
+                return SoulRegistry.projects().first { $0.id == id }
+            }
+            return currentProject()
+        }()
+        if let project = resolvedProject {
+            let draft = SoulSession(
+                id: "draft-\(UUID().uuidString)",
+                project: project.id,
+                timestamp: Date(),
+                intent: "New chat",
+                summary: nil,
+                source: nil,
+                status: nil,
+                isLive: true,
+                writer: .soulDesktop
+            )
+            sessions.draftSession = draft
+            sessions.pendingActiveId = draft.id
+            newChatNonce &+= 1
+        } else {
+            sessions.draftSession = nil
+            sessions.pendingActiveId = nil
+        }
+    }
+
+    func closeThread(_ key: String) {
+        sessions.closeThread(key)
+        if sessions.activeThreadKey == nil { prompt = "" }
+    }
+
+    func startReplay(_ session: SoulSession) {
+        guard let project = currentProject() else { return }
+        replay.start(
+            session: session,
+            project: project,
+            sidebarVisible: showSidebar,
+            setSidebarVisible: setSidebarVisible
+        )
+    }
+
+    func exitReplay() {
+        replay.exit(sidebarVisible: showSidebar, setSidebarVisible: setSidebarVisible)
+    }
+
+    func cancelTurn() {
+        Task { await thread?.cancel() }
+    }
+
+    func openNewProjectWizard() {
+        showNewProject = true
+    }
+
+    private func providerForSession(_ session: SoulSession) -> Provider {
+        switch session.source {
+        case "claude":    return .claude
+        case "gemini":    return .geminiCLI
+        case "pi-native": return .pi
+        default: break
+        }
+        switch session.liveProvider {
+        case "claude":    return .claude
+        case "geminiCLI": return .geminiCLI
+        default: break
+        }
+        if let recorded = SoulRegistry.findProvider(projectKey: session.project, sessionId: session.id) {
+            switch recorded {
+            case "claude":    return .claude
+            case "geminiCLI": return .geminiCLI
+            case "pi":        return .pi
+            case "codex":     return .codex
+            default: break
+            }
+        }
+        return harness
+    }
+}
