@@ -47,30 +47,35 @@ struct SidebarView: View {
     // Seed projects synchronously from PROJECTS.json so the first render
     // already has data instead of flashing an empty "Projects" + "No chats"
     // header for the ~250ms until the async reload finishes.
-    @State private var projects: [SoulProject] = SoulRegistry.activeProjects()
+    @State var projects: [SoulProject] = SoulRegistry.activeProjects()
     /// Unified per-project session list, populated by `SoulRegistry.allSessions`.
     /// Each entry carries derived `isLive` / `isDirty` / `loadable` /
     /// `replayable` / `substantive` flags so the sidebar doesn't have to
     /// reach back into the registry for filtering decisions.
-    @State private var sessionsByProject: [String: [SoulSession]] = [:]
-    @State private var chatSourceFilter: String? = nil   // nil = all
-    @State private var hideUntitled: Bool = false
+    @State var sessionsByProject: [String: [SoulSession]] = [:]
+    @State var chatSourceFilter: String? = nil   // nil = all
+    @State var hideUntitled: Bool = false
     /// When false (default), the sidebar hides session rows whose provider
     /// transcript file is missing and whose hooks ledger is also empty —
     /// i.e. orphan kernel UUIDs that would dead-end on click. Rows that are
     /// replay-only (transcript gone, hooks intact) still appear by default
     /// because Replay can render them. Toggle this on to also see fully
     /// orphan rows for archaeological purposes.
-    @AppStorage("soul.sidebar.showUnreadable") private var showUnreadable: Bool = false
-    @State private var archiveStore = ArchiveStore.shared
-    @State private var starStore = StarStore.shared
-    @State private var archivedExpanded: [String: Bool] = [:]
+    @AppStorage("soul.sidebar.showUnreadable") var showUnreadable: Bool = false
+    /// SOUL-SOUL_DESKTOP-230: archived sessions hide from the sidebar by
+    /// default (the always-visible "Archived (N)" disclosure was clutter
+    /// per user feedback). Toggle on to reveal the disclosure when you
+    /// need to unarchive or trash an archived row.
+    @AppStorage("soul.sidebar.showArchived") var showArchived: Bool = false
+    @State var archiveStore = ArchiveStore.shared
+    @State var starStore = StarStore.shared
+    @State var archivedExpanded: [String: Bool] = [:]
     /// Per-project "show all sessions" toggle. Default-collapsed: only the
     /// most-recent `sessionPageSize` chats render until the user clicks
     /// "Show N more" on a project with a deeper history.
-    @State private var sessionListExpanded: Set<String> = []
-    private let sessionPageSize: Int = 20
-    @State private var pendingDelete: DeleteConfirmation? = nil
+    @State var sessionListExpanded: Set<String> = []
+    let sessionPageSize: Int = 20
+    @State var pendingDelete: DeleteConfirmation? = nil
 
     /// One-shot confirmation context for the destructive delete action.
     /// Identifiable so SwiftUI's `.alert(item:)` modifier can drive it.
@@ -81,7 +86,7 @@ struct SidebarView: View {
     /// Per-project session count for the sidebar badge. Persisted to
     /// UserDefaults so subsequent launches paint instantly; the fresh scan
     /// then runs in the background and overwrites stale entries.
-    @State private var sessionCounts: [String: Int] = Self.cachedSessionCounts()
+    @State var sessionCounts: [String: Int] = Self.cachedSessionCounts()
 
     private static let sessionCountsCacheKey = "soul.sidebar.sessionCounts.v1"
     private static func cachedSessionCounts() -> [String: Int] {
@@ -177,6 +182,7 @@ struct SidebarView: View {
                         }
                         Toggle("Hide untitled", isOn: $hideUntitled)
                         Toggle("Show unreadable sessions", isOn: $showUnreadable)
+                        Toggle("Show archived", isOn: $showArchived)
                     } label: {
                         Image(systemName: filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
                             .font(.system(size: 13))
@@ -292,426 +298,6 @@ struct SidebarView: View {
         }
     }
 
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text)
-            .font(SoulFont.ui(13))
-            .foregroundStyle(SoulColor.fgSubtle)
-    }
-
-    /// Sentinel label for sessions without a recorded `worktree_path` (i.e.
-    /// started in the main checkout). Kept as a constant so the header
-    /// suppression check stays explicit.
-    fileprivate var mainWorktreeLabel: String { "(main)" }
-
-    /// Bucket live sessions by their `worktreePath`. Order: main first (so
-    /// the common case sits where it always has been), then each worktree
-    /// sorted by basename for stable layout. Returned as an array because
-    /// SwiftUI ForEach needs deterministic iteration order.
-    /// Combined per-project chat list: every live session + every finalized
-    /// session for the project, deduped by id, sorted by timestamp desc.
-    /// Live rows additionally filter by transcript loadability (unless the
-    /// user toggled "Show unreadable sessions") — finalized rows always
-    /// show because they carry summary/intent + a hooks ledger that
-    /// Replay can render even without a provider transcript.
-    @ViewBuilder
-    private var projectsScroll: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(projects) { project in
-                    projectRow(project)
-                }
-            }
-            .padding(.horizontal, 8)
-        }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .background(NSScrollViewConfigurator { sv in
-            sv.verticalScrollElasticity = .none
-            sv.horizontalScrollElasticity = .none
-        })
-    }
-
-    @ViewBuilder
-    private func projectRow(_ project: SoulProject) -> some View {
-        ProjectSidebarRow(
-            project: project,
-            isSelected: activeProjectId == project.id
-                || (selectedProject == project.id
-                    && activeSessionId == nil
-                    && activeReplaySessionId == nil),
-            isExpanded: expansionBinding(for: project.id),
-            chatCount: filteredChatCount(for: project) ?? (sessionCounts[project.id] ?? 0),
-            onSelect: { selectedProject = project.id },
-            onNewChat: {
-                onNewChat(project.id)
-            }
-        )
-        if isExpanded(project.id) {
-            let all = mergedChatList(for: project)
-            let archivedSet = archiveStore.archivedIDs(forProject: project.id)
-            let active = all.filter { !archivedSet.contains($0.id) }
-            let archived = all.filter { archivedSet.contains($0.id) }
-            let showAll = sessionListExpanded.contains(project.id)
-            let visible = showAll ? active : Array(active.prefix(sessionPageSize))
-            ForEach(visible) { session in
-                chatRow(session)
-            }
-            if active.count > visible.count {
-                showMoreButton(for: project, hiddenCount: active.count - visible.count)
-            } else if showAll && active.count > sessionPageSize {
-                showLessButton(for: project)
-            }
-            if !archived.isEmpty {
-                archivedDisclosure(for: project, archived: archived)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func showMoreButton(for project: SoulProject, hiddenCount: Int) -> some View {
-        Button {
-            sessionListExpanded.insert(project.id)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Text("Show \(hiddenCount) more")
-                    .font(SoulFont.ui(12, weight: .regular))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Spacer()
-            }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.soulHover)
-    }
-
-    @ViewBuilder
-    private func showLessButton(for project: SoulProject) -> some View {
-        Button {
-            sessionListExpanded.remove(project.id)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Text("Show less")
-                    .font(SoulFont.ui(12, weight: .regular))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Spacer()
-            }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.soulHover)
-    }
-
-    @ViewBuilder
-    private func archivedDisclosure(for project: SoulProject, archived: [SoulSession]) -> some View {
-        let expanded = archivedExpanded[project.id] ?? false
-        Button {
-            archivedExpanded[project.id] = !expanded
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Image(systemName: "archivebox")
-                    .font(.system(size: 12))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Text("Archived")
-                    .font(SoulFont.ui(12, weight: .regular))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                Text("\(archived.count)")
-                    .font(SoulFont.code(12))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Spacer()
-            }
-            .padding(.leading, 18)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.soulHover)
-        if expanded {
-            ForEach(archived) { session in
-                chatRow(session)
-                    .opacity(0.65)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func chatRow(_ session: SoulSession) -> some View {
-        ChatRow(
-            session: session,
-            isSelected: session.id == activeSessionId,
-            isStarred: starStore.isStarred(session.id, project: session.project),
-            onReplay: { onReplaySession(session) },
-            isActiveReplay: session.id == activeReplaySessionId,
-            replayProgress: replayProgress,
-            replayIndex: replayIndex,
-            replayTotal: replayTotal,
-            replayPrompts: replayPrompts,
-            replayReplies: replayReplies
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // Keep the sidebar's selectedProject in sync with the row's
-            // parent project. AppShell.loadSession also coerces this, but
-            // setting it here means everything else binding to
-            // `selectedProject` (filter chips, expansion state, etc.)
-            // updates atomically with the click instead of in a later
-            // dispatch tick.
-            if selectedProject != session.project {
-                selectedProject = session.project
-            }
-            onSelectSession(session)
-        }
-        .contextMenu {
-            Button("Open chat") { onSelectSession(session) }
-            Button("Replay…") { onReplaySession(session) }
-            Divider()
-            if starStore.isStarred(session.id, project: session.project) {
-                Button("Unstar") {
-                    starStore.unstar(session.id, project: session.project)
-                }
-            } else {
-                Button("Star (pin to top)") {
-                    starStore.star(session.id, project: session.project)
-                }
-            }
-            Divider()
-            if archiveStore.isArchived(session.id, project: session.project) {
-                Button("Unarchive") {
-                    archiveStore.unarchive(session.id, project: session.project)
-                }
-                // Two-step delete: only available on archived rows so a
-                // fat-finger on the main list can't trash a live session.
-                // Files move to ~/.Trash (recoverable), not `rm`.
-                Divider()
-                Button("Delete (move to Trash)…", role: .destructive) {
-                    pendingDelete = DeleteConfirmation(session: session)
-                }
-            } else {
-                Button("Archive") {
-                    archiveStore.archive(session.id, project: session.project)
-                }
-            }
-            if repairableProvider(for: session) != nil {
-                Divider()
-                Button("Repair session link") {
-                    repairSessionLink(session)
-                }
-            }
-        }
-    }
-
-    /// Move every on-disk artifact for a session to ~/.Trash:
-    ///   - kernel ledger:  ~/soul_registry/sessions/<proj>/<sid>/
-    ///   - finalize JSON:  ~/soul_registry/sessions/<proj>/*<sid>.json
-    ///   - Claude file:    ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
-    ///   - Gemini chat:    ~/.gemini/tmp/<basename>(-N)/chats/*<first8>*
-    ///   - Codex transcript sibling lives inside the ledger dir, swept above
-    /// then remove the row from the archive set + invalidate the cache so
-    /// the sidebar repaints without it. Returns the count of trashed paths.
-    @discardableResult
-    fileprivate func deleteSessionToTrash(_ session: SoulSession) -> Int {
-        let fm = FileManager.default
-        var paths: [String] = []
-
-        // Kernel ledger dir.
-        let kernelDir = NSHomeDirectory() + "/soul_registry/sessions/\(session.project)/\(session.id)"
-        if fm.fileExists(atPath: kernelDir) { paths.append(kernelDir) }
-
-        // Finalize JSON siblings (timestamp-prefixed and bare).
-        let projDir = NSHomeDirectory() + "/soul_registry/sessions/\(session.project)"
-        if let entries = try? fm.contentsOfDirectory(atPath: projDir) {
-            for name in entries where name.hasSuffix(".json") {
-                let stem = String(name.dropLast(5))
-                if stem == session.id || stem.hasSuffix("_\(session.id)") {
-                    paths.append("\(projDir)/\(name)")
-                }
-            }
-        }
-
-        // Provider files. Resolve the project's cwd from PROJECTS.
-        if let project = SoulRegistry.projects().first(where: { $0.id == session.project }) {
-            let trimmed = project.path.hasSuffix("/") ? String(project.path.dropLast()) : project.path
-            // Claude
-            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-            let claudePath = NSHomeDirectory() + "/.claude/projects/\(encoded)/\(session.id).jsonl"
-            if fm.fileExists(atPath: claudePath) { paths.append(claudePath) }
-            // Gemini (walk basename + -N siblings)
-            let base = (trimmed as NSString).lastPathComponent
-            let geminiBase = NSHomeDirectory() + "/.gemini/tmp"
-            let first8 = String(session.id.prefix(8))
-            if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
-                for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
-                    let chatsDir = "\(geminiBase)/\(proj)/chats"
-                    guard let files = try? fm.contentsOfDirectory(atPath: chatsDir) else { continue }
-                    for name in files where name.contains(first8) {
-                        paths.append("\(chatsDir)/\(name)")
-                    }
-                }
-            }
-        }
-
-        // Move to Trash via NSWorkspace.recycle (uses Finder's recoverable
-        // path — files appear in ~/.Trash and can be restored).
-        let urls = paths.map { URL(fileURLWithPath: $0) }
-        if !urls.isEmpty {
-            NSWorkspace.shared.recycle(urls) { _, _ in }
-        }
-
-        archiveStore.unarchive(session.id, project: session.project)
-        SoulRegistry.invalidateCache(forProject: session.project)
-        // Reload sessions so the sidebar repaints without the row.
-        Task { await loadProject(session.project) }
-        return urls.count
-    }
-
-    /// Per-project chat list for the sidebar. One disk-derived row per
-    /// session UUID, optionally augmented with synthetic rows for in-memory
-    /// ThreadControllers that haven't written hooks.jsonl yet.
-    ///
-    /// Filter pipeline (default-on, all overridable from the filter menu):
-    ///   - `substantive`            → drop crash-residue dirs
-    ///   - `loadable || replayable` → drop fully orphan rows (toggle: showUnreadable)
-    ///   - `chatSourceFilter`       → optional provider scope
-    ///   - `hideUntitled`           → optional drop of empty-titled rows
-    /// SOUL-SOUL_DESKTOP-148: derive the badge count from the same filter
-    /// the rendered list uses (substantive + loadable/replayable + provider
-    /// filter + hideUntitled), minus archived. Returns nil if the project's
-    /// sessions haven't been loaded yet — caller falls back to the raw
-    /// disk-count badge in that case (which gets corrected on first expand
-    /// when the Stage-1 scan populates sessionsByProject).
-    fileprivate func filteredChatCount(for project: SoulProject) -> Int? {
-        guard sessionsByProject[project.id] != nil else { return nil }
-        let merged = mergedChatList(for: project)
-        let archivedSet = archiveStore.archivedIDs(forProject: project.id)
-        return merged.filter { !archivedSet.contains($0.id) }.count
-    }
-
-    fileprivate func mergedChatList(for project: SoulProject) -> [SoulSession] {
-        let onDisk = (sessionsByProject[project.id] ?? []).filter { s in
-            if !s.substantive { return false }
-            if !showUnreadable, !(s.loadable || s.replayable) { return false }
-            if let f = chatSourceFilter, (s.source ?? s.liveProvider ?? "") != f { return false }
-            if hideUntitled {
-                let title = (s.intent ?? s.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if title.isEmpty { return false }
-            }
-            return true
-        }
-        // Index by id so synthetic rows can merge titles cleanly instead of
-        // duplicating. Live in-memory titles win — a freshly-renamed thread
-        // shouldn't get stomped by the stale disk record.
-        var byId: [String: SoulSession] = [:]
-        for s in onDisk { byId[s.id] = s }
-
-        for ctrl in activeThreads where ctrl.project.id == project.id {
-            let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
-            let synthetic = SoulSession(
-                id: sid,
-                project: project.id,
-                // Stable: use the disk row's existing timestamp when merging
-                // (line below), and `startedAt` only as a fallback when the
-                // session has no disk row yet. Previously this was
-                // `max(lastActivityAt, startedAt)`, which made the row pop to
-                // the top of the sidebar every time the user typed — which
-                // shuffled the list mid-conversation. Disabled per user
-                // request: the sort should not reorder on activity.
-                timestamp: ctrl.startedAt,
-                intent: ctrl.displayTitle,
-                source: ctrl.provider.rawValue,
-                isLive: true,
-                writer: .soulDesktop,
-                liveProvider: ctrl.provider.rawValue,
-                loadable: true,
-                replayable: true,
-                substantive: true,
-                isWorking: ctrl.isWorking
-            )
-            if let existing = byId[sid] {
-                // Take the disk row's metadata (source, worktree, status) and
-                // overlay the live title + timestamp from the controller.
-                var merged = existing
-                let t = ctrl.displayTitle
-                if !t.isEmpty { merged.intent = t }
-                // Keep the disk row's original timestamp — don't bump it from
-                // the live controller's startedAt / lastActivityAt. Live
-                // activity should NOT reorder the sidebar.
-                //
-                // Intentionally preserve `existing.writer` and `existing.isLive`:
-                // opening a row to view it doesn't make us its author or
-                // revive a finalized session. Once the user sends, the
-                // controller's appendHook writes NativeSessionID/Title to
-                // the ledger and the next disk scan reflects writer=.soulDesktop
-                // naturally. Same for isLive — true real state, not derived
-                // from "is a controller pointed at this row."
-                merged.liveProvider = ctrl.provider.rawValue
-                merged.isWorking = ctrl.isWorking
-                // SOUL-216 (revised): live ctrl.items userMessage count is
-                // the canonical source — it matches the ThreadView toolbar
-                // chip's chapterCount, so sidebar and toolbar can never
-                // disagree. Disk's promptCount under-counts external
-                // Gemini sessions (kernel only records UserPrompt when
-                // Soul-Desktop is the writer); ctrl.items reflects the
-                // full transcript.
-                //
-                // SOUL-219: hold the disk count while hydrate is streaming
-                // items in. Without this, the row's turn-count text
-                // climbs 0 → N visibly during the click-to-open animation,
-                // producing a flicker the user can spot. Once
-                // isReplayingLoad flips false, switch to the live ctrl
-                // count (which is now stable for the rest of the session).
-                if !ctrl.isReplayingLoad {
-                    merged.promptCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
-                }
-                byId[sid] = merged
-            } else {
-                byId[sid] = synthetic
-            }
-        }
-        if let draft = draftSession, draft.project == project.id {
-            byId[draft.id] = draft
-        }
-        // SOUL-SOUL_DESKTOP-198: starred sessions float to the top within
-        // their project group; ties (both starred or both unstarred) keep
-        // the existing recency sort.
-        let starred = starStore.starredIDs(forProject: project.id)
-        return byId.values.sorted { a, b in
-            let aStar = starred.contains(a.id)
-            let bStar = starred.contains(b.id)
-            if aStar != bStar { return aStar }
-            return a.timestamp > b.timestamp
-        }
-    }
-
-    fileprivate func worktreeGroups(for lives: [SoulSession]) -> [(label: String, sessions: [SoulSession])] {
-        var buckets: [String: [SoulSession]] = [:]
-        for s in lives {
-            let key: String = {
-                guard let p = s.worktreePath, !p.isEmpty else { return mainWorktreeLabel }
-                return (p as NSString).lastPathComponent
-            }()
-            buckets[key, default: []].append(s)
-        }
-        var out: [(label: String, sessions: [SoulSession])] = []
-        if let main = buckets.removeValue(forKey: mainWorktreeLabel) {
-            out.append((mainWorktreeLabel, main))
-        }
-        for k in buckets.keys.sorted() {
-            out.append((k, buckets[k] ?? []))
-        }
-        return out
-    }
-
     private func reload() async {
         // Only load the project list at startup — per-project session scans
         // happen lazily when the user expands a folder. For accounts with
@@ -779,19 +365,33 @@ struct SidebarView: View {
     /// background and replaces sessionsByProject when ready. For projects
     /// with hundreds of sessions (Soul OS at 111), users see rows in tens
     /// of ms instead of hundreds.
-    fileprivate func loadProject(_ projectId: String) async {
+    func loadProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId })
             ?? SoulRegistry.activeProjects().first(where: { $0.id == projectId })
         else { return }
 
         // Stage 1: fast scan, bounded to the page size we'll actually render.
-        let quickLimit = sessionPageSize
-        let quickRows: [SoulSession] = await Task.detached(priority: .userInitiated) {
-            SoulRegistry.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
-        }.value
-        await MainActor.run {
-            if !quickRows.isEmpty {
-                self.sessionsByProject[projectId] = quickRows
+        //
+        // SOUL-SOUL_DESKTOP-229: stage 1 exists to give a brand-new project
+        // a fast first paint. If `sessionsByProject[projectId]` is already
+        // populated (e.g. -149 prime at launch loaded the on-disk cache,
+        // or a previous loadProject finished), overwriting it with just
+        // the 20-row quick scan visibly shrinks the project's header
+        // chatCount badge until stage 2 restores it ~1-2s later. That's
+        // what users were seeing on session click: clicking a session in
+        // an already-warm project flips `activeProjectId` → fires this
+        // function → stage 1 truncates the 67-row warm cache to 20. Gate
+        // the stage-1 assignment to fresh projects only.
+        let alreadyWarm = (sessionsByProject[projectId]?.isEmpty == false)
+        if !alreadyWarm {
+            let quickLimit = sessionPageSize
+            let quickRows: [SoulSession] = await Task.detached(priority: .userInitiated) {
+                SoulRegistry.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
+            }.value
+            await MainActor.run {
+                if !quickRows.isEmpty, (self.sessionsByProject[projectId]?.isEmpty ?? true) {
+                    self.sessionsByProject[projectId] = quickRows
+                }
             }
         }
 
@@ -868,7 +468,7 @@ struct SidebarView: View {
     /// pi-native (out of scope per -022) and for rows where neither the
     /// session source nor the active harness can give us a content-match
     /// target.
-    private func repairableProvider(for session: SoulSession) -> String? {
+    func repairableProvider(for session: SoulSession) -> String? {
         switch session.source {
         case "gemini": return "geminiCLI"
         case "claude": return "claude"
@@ -883,7 +483,7 @@ struct SidebarView: View {
         }
     }
 
-    private func repairSessionLink(_ session: SoulSession) {
+    func repairSessionLink(_ session: SoulSession) {
         guard let provider = repairableProvider(for: session),
               let path = projects.first(where: { $0.id == session.project })?.path
         else { return }
@@ -928,7 +528,7 @@ struct SidebarView: View {
     /// re-rendered expanded without an animation transaction. With a flat
     /// false default, the only path to true is the toggle inside
     /// withAnimation — every open is animated.
-    private func isExpanded(_ projectId: String) -> Bool {
+    func isExpanded(_ projectId: String) -> Bool {
         // Every launch starts with every project collapsed (outlined folder
         // icon). The user explicitly opens a project to expand it; that
         // state lives in-memory only and resets on app restart. We used to
@@ -938,7 +538,7 @@ struct SidebarView: View {
         return projectExpanded[projectId] ?? false
     }
 
-    private func setExpanded(_ projectId: String, _ value: Bool) {
+    func setExpanded(_ projectId: String, _ value: Bool) {
         projectExpanded[projectId] = value
         UserDefaults.standard.set(value, forKey: "soul.sidebar.expanded.\(projectId)")
         if value {
@@ -946,7 +546,7 @@ struct SidebarView: View {
         }
     }
 
-    private func expansionBinding(for projectId: String) -> Binding<Bool> {
+    func expansionBinding(for projectId: String) -> Binding<Bool> {
         Binding(
             get: { isExpanded(projectId) },
             set: { setExpanded(projectId, $0) }
