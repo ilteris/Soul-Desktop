@@ -90,6 +90,7 @@ final class ThreadController {
     let id: String = UUID().uuidString.lowercased()
     let provider: Provider
     let project: SoulProject
+    @ObservationIgnored var ledger: ThreadLedger = LiveThreadLedger.shared
     /// Best-effort wall-clock moment the underlying *session* started. For a
     /// fresh thread this is the instantiation time; AppShell overwrites it on
     /// session-load with the first hooks.jsonl event timestamp so the

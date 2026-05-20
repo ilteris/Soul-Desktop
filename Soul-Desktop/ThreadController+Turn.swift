@@ -1,15 +1,8 @@
 import Foundation
 
-/// Turn-lifecycle methods lifted out of ThreadController: `send` and its
-/// two-channel variant, the queue drain that fires after each turn
-/// completes, manual + auto turn cancellation, the stall watchdog
-/// (turn-level "quiet for Ns" + ceiling auto-cancel), and the per-tool
-/// timeout sweep that fires when an individual tool call stays
-/// in_progress past its own deadline.
-///
-/// Pure file shuffle, no behavior change. Refactor 8/N — agent
-/// ergonomics: shrink ThreadController.swift below the threshold where
-/// a coding agent can hold it in context.
+/// Turn-lifecycle send loop for ThreadController.
+/// Queue mechanics live in ThreadController+Queue.swift; stall and per-tool
+/// timeout polling lives in ThreadController+Watchdog.swift.
 extension ThreadController {
 
     func send(_ text: String) async {
@@ -63,7 +56,7 @@ extension ThreadController {
             // pick up. UserPrompt is logged here so the hooks ledger
             // reflects the order the user sent things, not the order the
             // agent processed them.
-            SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
+            ledger.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
                 "event": "UserPrompt",
                 "text": trimmedDisplay,
             ])
@@ -111,7 +104,7 @@ extension ThreadController {
                 guard let sid = sessionId else { return }
                 while let turn = current {
                     if isFirstTurn {
-                        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                             "event": "UserPrompt",
                             "text": turn.display,
                         ])
@@ -129,14 +122,14 @@ extension ThreadController {
                     // empty agent responses. With it, `hydrateFromDisk`
                     // (codex branch below) renders full conversations.
                     if let reply = mostRecentAgentReplyText() {
-                        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                             "event": "AfterAgent",
                             "content": reply,
                             "provider": provider.rawValue,
                         ])
                         // SOUL-SOUL_DESKTOP-065: AfterAgent is now the canonical
                         // record; the per-chunk file can retire.
-                        SoulRegistry.retireAgentChunks(projectKey: project.id, sessionId: sid)
+                        ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
                     }
 
                     // Same finalize-card live injection as the ACP branch.
@@ -153,7 +146,7 @@ extension ThreadController {
 
             while let turn = current {
                 if isFirstTurn {
-                    SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                    ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                         "event": "UserPrompt",
                         "text": turn.display,
                     ])
@@ -206,7 +199,7 @@ extension ThreadController {
                 // Soul-Desktop session is replayable from our own ledger
                 // alone, regardless of agent-side disk state.
                 if let reply = mostRecentAgentReplyText() {
-                    SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                    ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                         "event": "AfterAgent",
                         "content": reply,
                         "provider": provider.rawValue,
@@ -214,7 +207,7 @@ extension ThreadController {
                     // SOUL-SOUL_DESKTOP-065: AfterAgent now holds the canonical
                     // reply text; the per-chunk file can retire so it doesn't
                     // grow unbounded across a long session.
-                    SoulRegistry.retireAgentChunks(projectKey: project.id, sessionId: sid)
+                    ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
                 }
 
                 // If this turn was a `/finalize` (the agent just wrote a
@@ -249,145 +242,6 @@ extension ThreadController {
         // flipped false. Draining while this send still owns the active turn
         // can re-enter `send()` and re-queue the same prompt, or worse, open
         // a second provider prompt on the same child process after recovery.
-    }
-
-    private func drainQueuedPromptAfterTurn() {
-        guard !queuedPrompts.isEmpty else { return }
-        let next = queuedPrompts.removeFirst()
-        Task { [weak self] in
-            await self?.send(display: next.display, agent: next.agent)
-        }
-    }
-
-    private func markInFlightToolCallsStopped() {
-        items = items.map { item in
-            if case .toolCall(let id, let kind, let title, let status, let loc, let details) = item,
-               status == "in_progress" || status == "pending" {
-                return .toolCall(id: id, kind: kind, title: title, status: "stopped", locationHint: loc, details: details)
-            }
-            return item
-        }
-    }
-
-    private func resetProviderProcessAfterInterruptedTurn() async {
-        logLifecycle("resetProviderProcessAfterInterruptedTurn", note: "tearing down client; nativeSessionId preserved")
-        suppressNextInterruptedTurnError = true
-        eventTask?.cancel()
-        eventTask = nil
-        if let client {
-            await client.stop()
-            self.client = nil
-        }
-        if let codexClient {
-            await codexClient.stop()
-            self.codexClient = nil
-        }
-        if let cont = codexTurnContinuation {
-            codexTurnContinuation = nil
-            cont.resume(throwing: NSError(
-                domain: "Codex",
-                code: 98,
-                userInfo: [NSLocalizedDescriptionKey: "turn interrupted by recovery"]
-            ))
-        }
-        hasInitialized = false
-        supportsLoadSession = false
-        codexActiveTurnId = nil
-        openAgentMessageId = nil
-        openAgentThoughtId = nil
-        seenToolCallIds.removeAll(keepingCapacity: true)
-        codexItemMap.removeAll(keepingCapacity: true)
-    }
-
-    private func cancelActiveProviderTurn() async {
-        if provider == .codex {
-            if let codex = codexClient,
-               let tid = nativeSessionId ?? sessionId,
-               let turnId = codexActiveTurnId {
-                try? await codex.turnInterrupt(threadId: tid, turnId: turnId)
-            }
-            return
-        }
-
-        if let client, let sid = sessionId {
-            let nid = nativeSessionId ?? sid
-            try? await client.cancel(sessionId: nid)
-        }
-    }
-
-    private func appendCancelStatusIfNeeded() {
-        if case .status(_, let last)? = items.last, last == "■ cancel sent" {
-            return
-        }
-        items.append(.status(id: UUID(), text: "■ cancel sent"))
-    }
-
-    /// Move a queued user bubble out of its insertion position (mid-prior-turn
-    /// in `items[]`, where it was appended at queue time) to the end of
-    /// `items[]` with a fresh timestamp. Without this, the bubble re-renders
-    /// wedged between the previous turn's agent chunks once it's popped from
-    /// `queuedItemIDs` — the "vanished queue" rendering bug in
-    /// SOUL-SOUL_DESKTOP-066. Keeps the original `itemId` so the QueuedPrompt
-    /// → ThreadItem linkage stays intact.
-    private func relocateQueuedBubbleToEnd(_ turn: QueuedPrompt) {
-        if let oldIdx = items.firstIndex(where: { $0.id == turn.itemId }) {
-            items.remove(at: oldIdx)
-        }
-        items.append(.userMessage(id: turn.itemId, text: turn.display, timestamp: Date()))
-    }
-
-    /// Cancel the in-flight ACP turn over the wire and let the outer send()'s
-    /// while-loop pop the queue and dispatch the next prompt on the *same*
-    /// provider process. Shares `cancelActiveProviderTurn()` with Stop
-    /// (`cancel()`) — the difference is Stop drops the queue and tears down
-    /// the child, while Steer keeps both. Wired to the Steer button on the
-    /// composer's queue chip.
-    ///
-    /// Why no `resetProviderProcessAfterInterruptedTurn` here: ACP's
-    /// `session/cancel` resolves the in-flight `client.prompt` with
-    /// stopReason=cancelled, leaving the session alive. Killing the child
-    /// (as Stop and recoverStalledTurn do) would force the next queued
-    /// prompt's send() to spawn a new process and call `session/load` —
-    /// which fails with "invalid session identifier" on a fresh session
-    /// whose session file the agent hasn't had time to persist yet.
-    /// The teardown is appropriate for Stop (user wants out) and for
-    /// recoverStalledTurn (agent is unresponsive). Steer is neither.
-    func steerToNextQueued() async {
-        guard isWorking, !queuedPrompts.isEmpty else { return }
-        suppressNextInterruptedTurnError = true
-        steerPending = true
-        await cancelActiveProviderTurn()
-        markInFlightToolCallsStopped()
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
-            "event": "TurnSteered",
-            "provider": provider.rawValue,
-            "queued_count": queuedPrompts.count,
-        ])
-    }
-
-    /// Drop any queued-but-not-yet-sent prompts. Wired into `cancel()` and
-    /// surfaced via a clear-X on the queue chip in the composer.
-    func clearQueue() {
-        queuedPrompts.removeAll()
-        steerPending = false
-    }
-
-    /// SOUL-SOUL_DESKTOP-199: edit a queued (not-yet-dispatched) user prompt
-    /// in place. Updates both the QueuedPrompt entry (so the agent sees the
-    /// new text when the queue drains) and the visible userMessage bubble
-    /// in `items[]` (so the UI redraws). No-op if the prompt has already
-    /// shipped — by the time the row leaves the queued state the agent's
-    /// turn is in flight.
-    func editQueuedPrompt(itemId: UUID, newText: String) {
-        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let qIdx = queuedPrompts.firstIndex(where: { $0.itemId == itemId }) else { return }
-        let original = queuedPrompts[qIdx]
-        queuedPrompts[qIdx] = QueuedPrompt(itemId: original.itemId, display: trimmed, agent: trimmed)
-        if let iIdx = items.firstIndex(where: { $0.id == itemId }),
-           case .userMessage(let id, _, let ts) = items[iIdx] {
-            items[iIdx] = .userMessage(id: id, text: trimmed, timestamp: ts)
-        }
     }
 
     func cancel() async {
@@ -439,7 +293,7 @@ extension ThreadController {
         let label = source == "auto" ? "⏱ auto-recovered stalled turn (\(stalledSeconds)s)"
                                      : "⏭ recovered stalled turn (\(stalledSeconds)s)"
         items.append(.status(id: UUID(), text: label))
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
             "event": "StallRecovered",
             "provider": provider.rawValue,
             "tool_kind": lastInProgressToolKind ?? "",
@@ -462,210 +316,5 @@ extension ThreadController {
         await recoverStalledTurn(source: "manual")
     }
 
-    /// Start a per-turn watchdog. Polls `lastActivityAt` every second while
-    /// `isWorking` holds; fires a single StallDetected hook when quiet exceeds
-    /// the provider's stall budget, and auto-recovers when quiet exceeds the
-    /// hard ceiling. Cheap: one Task, one timer, no observers.
-    private func startStallWatchdog() {
-        stallWatchdog?.cancel()
-        stallHookEmittedAt = nil
-        lastInProgressToolKind = nil
-        let budget = provider.stallBudgetSeconds
-        let ceiling = StallPolicy.autoCancelCeilingSeconds
-        stallWatchdog = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self else { return }
-                await self.tickStallWatchdog(budget: budget, ceiling: ceiling)
-            }
-        }
-    }
-
-    private func stopStallWatchdog() {
-        stallWatchdog?.cancel()
-        stallWatchdog = nil
-        stallHookEmittedAt = nil
-        lastInProgressToolKind = nil
-        // Drop per-tool-call deadlines at end-of-turn so a stray entry from
-        // a never-resolved tool call doesn't leak across turns.
-        toolCallStartedAt.removeAll()
-        toolCallLastActivityAt.removeAll()
-        toolCallTimedOut.removeAll()
-        toolCallSignposted.removeAll()
-        toolCallPreviousLineCount.removeAll()
-    }
-
-    /// One watchdog tick. Runs on @MainActor so it can read `items` /
-    /// `isWorking` safely without locks.
-    private func tickStallWatchdog(budget: Int, ceiling: Int) async {
-        guard isWorking else { return }
-        let quiet = Int(Date().timeIntervalSince(lastActivityAt))
-
-        // Snapshot the most recent in_progress tool kind for the hook payload.
-        // Walking items.reversed() short-circuits on the first match.
-        if lastInProgressToolKind == nil {
-            for item in items.reversed() {
-                if case .toolCall(_, let kind, _, let status, _, _) = item,
-                   status == "in_progress" || status == "pending" {
-                    lastInProgressToolKind = kind
-                    break
-                }
-            }
-        }
-
-        if quiet >= budget && stallHookEmittedAt == nil {
-            stallHookEmittedAt = Date()
-            SoulRegistry.appendHook(
-                projectKey: project.id,
-                sessionId: sessionId ?? id,
-                event: [
-                    "event": "StallDetected",
-                    "provider": provider.rawValue,
-                    "tool_kind": lastInProgressToolKind ?? "",
-                    "stalled_seconds": quiet,
-                    "threshold": budget,
-                ]
-            )
-        }
-
-        if quiet >= ceiling {
-            await recoverStalledTurn(source: "auto")
-            return
-        }
-
-        // SOUL-SOUL_DESKTOP-033: per-tool-call timeout sweep. Independent
-        // from the turn-level quiet check — catches the `tail -f` case
-        // where a single tool call sits in_progress forever while still
-        // emitting enough output to keep `lastActivityAt` fresh.
-        let toolTimeout = StallPolicy.toolCallTimeoutSeconds
-        let signpostThreshold = Int(Double(toolTimeout) * StallPolicy.toolCallSignpostFraction)
-        let now = Date()
-        var expired: [String] = []
-        var toSignpost: [(toolId: String, quietFor: Int)] = []
-        // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
-        for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
-            let quietFor = Int(now.timeIntervalSince(lastSeen))
-            if quietFor >= toolTimeout {
-                expired.append(toolId)
-                continue
-            }
-            // SOUL-SOUL_DESKTOP-110: midway signpost — surface that the tool
-            // is still working and how far from cancellation we are. Once per
-            // tool per turn; toolCallSignposted dedupes.
-            if signpostThreshold > 0,
-               quietFor >= signpostThreshold,
-               !toolCallSignposted.contains(toolId) {
-                toSignpost.append((toolId, quietFor))
-            }
-        }
-        for entry in toSignpost {
-            emitToolCallSignpost(toolId: entry.toolId, quietFor: entry.quietFor, threshold: toolTimeout)
-        }
-        for toolId in expired {
-            await fireToolCallTimeout(toolId: toolId, threshold: toolTimeout)
-        }
-    }
-
-    /// SOUL-SOUL_DESKTOP-110: emit a one-time "tool still working" status row
-    /// when an in_progress tool call has been quiet for half the timeout
-    /// budget. Lets the user see the tool is alive and how close it is to
-    /// auto-cancel before we yank the turn. Idempotent per (toolId, turn)
-    /// via toolCallSignposted; cleared at end-of-turn.
-    private func emitToolCallSignpost(toolId: String, quietFor: Int, threshold: Int) {
-        toolCallSignposted.insert(toolId)
-        var label = "tool call"
-        if let uuid = seenToolCallIds[toolId],
-           let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .toolCall(_, let k, let t, _, _, _) = items[idx] {
-            let kindPart = k.isEmpty ? "tool" : k
-            let titlePart = t.isEmpty ? "" : " \(t)"
-            label = "\(kindPart)\(titlePart)"
-        }
-        let remaining = max(0, threshold - quietFor)
-        items.append(.status(
-            id: UUID(),
-            text: "⏳ \(label) quiet for \(quietFor)s — will auto-cancel in \(remaining)s if no activity"
-        ))
-        SoulRegistry.appendHook(
-            projectKey: project.id,
-            sessionId: sessionId ?? id,
-            event: [
-                "event": "ToolCallSignpost",
-                "provider": provider.rawValue,
-                "tool_call_id": toolId,
-                "quiet_seconds": quietFor,
-                "threshold": threshold,
-            ]
-        )
-    }
-
-    /// Mark a stuck tool call timed out, flip its row to stopped, write the
-    /// telemetry hook, and cancel the turn so the agent unblocks. ACP today
-    /// has no per-toolCallId cancel surface; the turn-level cancel is the
-    /// only tool we have to free the awaiting `client.prompt`. Idempotent
-    /// via `toolCallTimedOut`.
-    private func fireToolCallTimeout(toolId: String, threshold: Int) async {
-        guard !toolCallTimedOut.contains(toolId) else { return }
-        toolCallTimedOut.insert(toolId)
-        let startedAt = toolCallStartedAt[toolId] ?? Date()
-        let elapsed = Int(Date().timeIntervalSince(startedAt))
-
-        // Snapshot the row's kind/title for the hook and flip its visible
-        // status to stopped so the spinner clears.
-        var kindForHook = ""
-        var titleForHook = ""
-        if let uuid = seenToolCallIds[toolId],
-           let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .toolCall(let id, let k, let t, _, let loc, let details) = items[idx] {
-            kindForHook = k
-            titleForHook = t
-            items[idx] = .toolCall(
-                id: id,
-                kind: k,
-                title: t,
-                status: "stopped",
-                locationHint: loc,
-                details: details
-            )
-        }
-
-        // SOUL-SOUL_DESKTOP-078: classify the hang at firing time. If the
-        // kernel ledger already has an AfterTool for this toolCallId, it's
-        // class B (ACP item/completed never delivered). If not, it's class
-        // A (still working — bump helps) or C (app-server stall). Cheap
-        // tail scan; we read at most 256KB off the end of hooks.jsonl.
-        let afterToolInLedger = SoulRegistry.ledgerContainsAfterTool(
-            projectKey: project.id,
-            sessionId: sessionId ?? id,
-            toolId: toolId
-        )
-
-        SoulRegistry.appendHook(
-            projectKey: project.id,
-            sessionId: sessionId ?? id,
-            event: [
-                "event": "ToolCallTimeout",
-                "provider": provider.rawValue,
-                "tool_call_id": toolId,
-                "tool_kind": kindForHook,
-                "tool_title": titleForHook,
-                "elapsed_seconds": elapsed,
-                "threshold": threshold,
-                "afterTool_in_ledger": afterToolInLedger,
-            ]
-        )
-
-        items.append(.status(
-            id: UUID(),
-            text: "⚠ tool call timed out after \(elapsed)s (limit \(threshold)s) — cancelling turn"
-        ))
-
-        // Best-effort turn cancel, then tear down the provider process so the
-        // awaiting prompt continuation definitely resolves. Tool timeouts are
-        // the same class of failure as a quiet stall: continuing on the same
-        // child risks overlapping the next prompt with a stuck old turn.
-        await cancelActiveProviderTurn()
-        await resetProviderProcessAfterInterruptedTurn()
-    }
 
 }
