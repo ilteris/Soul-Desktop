@@ -186,6 +186,13 @@ struct MarkdownView: View, Equatable {
             TableView(header: header, rows: rows, headerFont: bodyFont, bodyFont: bodyFont)
         case .blank:
             Spacer().frame(height: 4)
+        case .blockquote(let lines):
+            BlockquoteView(lines: lines, bodyFont: bodyFont, bodyColor: bodyColor)
+        case .horizontalRule:
+            Rectangle()
+                .fill(SoulColor.border.opacity(0.5))
+                .frame(height: 1)
+                .padding(.vertical, 6)
         }
     }
 
@@ -221,7 +228,10 @@ struct MarkdownView: View, Equatable {
                 bucket.append(block)
             case .bullet:
                 bucket.append(block)
-            case .heading, .codeBlock, .table:
+            case .heading, .codeBlock, .table, .blockquote, .horizontalRule:
+                // SOUL-SOUL_DESKTOP-160: blockquote and HR own their own
+                // chrome (left rail / divider) — never collapse into a
+                // sibling prose Text.
                 flush(); out.append(.standalone(block))
             }
         }
@@ -288,7 +298,7 @@ struct MarkdownView: View, Equatable {
                 // double-gap (4 newlines visible) between paragraphs
                 // separated by a markdown blank line.
                 continue
-            case .heading, .codeBlock, .table:
+            case .heading, .codeBlock, .table, .blockquote, .horizontalRule:
                 continue // grouping invariant — never present in a prose group
             }
         }
@@ -709,6 +719,115 @@ private struct CodeBlockView: View {
     }
 }
 
+/// SOUL-SOUL_DESKTOP-160: blockquote rendering with hover-revealed copy
+/// button. Left rail + 12pt indent visually separates quoted prose from
+/// the surrounding stream; the top-right button copies the un-prefixed
+/// quote body to the pasteboard (the agent's paste-ready LinkedIn /
+/// email drafts are the primary use case).
+///
+/// Inline formatting (bold/italic/code/links) goes through the same
+/// `attributedInline` pipeline as paragraphs, so wrapped markdown inside
+/// the quote renders correctly.
+private struct BlockquoteView: View {
+    let lines: [String]
+    let bodyFont: Font
+    let bodyColor: Color
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            HStack(alignment: .top, spacing: 10) {
+                Rectangle()
+                    .fill(SoulColor.border.opacity(0.55))
+                    .frame(width: 2)
+                VStack(alignment: .leading, spacing: 6) {
+                    // Group consecutive non-empty lines into paragraphs;
+                    // bare `>` (empty content after stripping) creates a
+                    // paragraph break. Each paragraph runs through
+                    // attributedInline so bold/italic/code/links work.
+                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, para in
+                        Text(MarkdownView.attributedInline(para))
+                            .font(bodyFont)
+                            .foregroundStyle(bodyColor.opacity(0.92))
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 24) // reserve room for the copy button
+            }
+            .padding(.vertical, 4)
+
+            if hovering || copied {
+                Button(action: copy) {
+                    HStack(spacing: 3) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10, weight: .regular))
+                        if copied {
+                            Text("copied")
+                                .font(.system(size: 10, weight: .regular))
+                        }
+                    }
+                    .foregroundStyle(copied ? SoulColor.accent : SoulColor.fgMuted)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity)
+                .help("Copy quoted text")
+                .padding(.top, 2)
+                .padding(.trailing, 4)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { h in
+            withAnimation(.easeInOut(duration: 0.12)) { hovering = h }
+        }
+    }
+
+    /// Re-assemble paragraphs from the stripped lines: consecutive
+    /// non-empty lines join with a space, empty lines (the `>` blank
+    /// separator) start a new paragraph.
+    private var paragraphs: [String] {
+        var out: [String] = []
+        var current: [String] = []
+        for line in lines {
+            if line.isEmpty {
+                if !current.isEmpty {
+                    out.append(current.joined(separator: " "))
+                    current.removeAll(keepingCapacity: true)
+                }
+            } else {
+                current.append(line)
+            }
+        }
+        if !current.isEmpty { out.append(current.joined(separator: " ")) }
+        return out
+    }
+
+    private var copyText: String {
+        // Strip the bare-`>` placeholders, join with single newlines.
+        paragraphs.joined(separator: "\n\n")
+    }
+
+    private func copy() {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(copyText, forType: .string)
+        #endif
+        withAnimation(.easeOut(duration: 0.12)) { copied = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            withAnimation(.easeInOut(duration: 0.12)) { copied = false }
+        }
+    }
+}
+
 /// One-line click-to-copy chip for paragraphs/bullets whose entire content is
 /// a single inline-code span. Less chrome than `CodeBlockView` (no header bar,
 /// no language tag), more affordance than a styled `Text` (cursor changes,
@@ -785,16 +904,128 @@ private enum Block {
     case codeBlock(text: String, lang: String?)
     case table(header: [String], rows: [[String]])
     case blank
+    // SOUL-SOUL_DESKTOP-160: blockquote groups consecutive `> ` lines
+    // (including bare `>` blank lines as inter-paragraph separators).
+    // Lines are stored with the leading `>` (and any single space after
+    // it) stripped — the renderer adds the left rail + indent itself.
+    case blockquote([String])
+    // SOUL-SOUL_DESKTOP-160: `***`, `---`, `___` standalone lines render
+    // as a thin SoulColor divider.
+    case horizontalRule
+}
+
+/// SOUL-SOUL_DESKTOP-160: collapse `\n` inside `[text](url)` constructs to
+/// spaces before the markdown parser sees them. Agent outputs containing
+/// long file:// URLs wrap across multiple lines, but markdown's inline
+/// link syntax doesn't allow newlines inside `[text]` or `(url)` — so
+/// `[applications/x/\nFILE.md](file:///long/wrapped/\nURL.md)` rendered
+/// as literal `]` + raw URL after styled bracket text. This pre-pass
+/// glues the wrapped spans back into one logical line.
+///
+/// State machine walks the string. When `[` is seen, scans for the
+/// matching `]`; then if a `(` follows (whitespace/newline tolerated),
+/// scans for the matching `)`. The full `[text](url)` span is then
+/// re-emitted with internal `\n` replaced by ` `.
+private func collapseMultilineLinks(_ s: String) -> String {
+    var out = ""
+    out.reserveCapacity(s.count)
+    var i = s.startIndex
+    while i < s.endIndex {
+        let c = s[i]
+        if c == "[" {
+            // Scan for the matching `]`.
+            var depth = 1
+            var j = s.index(after: i)
+            while j < s.endIndex {
+                let cj = s[j]
+                if cj == "[" { depth += 1 }
+                else if cj == "]" { depth -= 1; if depth == 0 { break } }
+                j = s.index(after: j)
+            }
+            if j < s.endIndex, s[j] == "]" {
+                // Skip optional whitespace/newlines between `]` and `(`.
+                var k = s.index(after: j)
+                while k < s.endIndex, s[k] == " " || s[k] == "\t" || s[k] == "\n" {
+                    k = s.index(after: k)
+                }
+                if k < s.endIndex, s[k] == "(" {
+                    // Scan for the matching `)`.
+                    var urlDepth = 1
+                    var u = s.index(after: k)
+                    while u < s.endIndex {
+                        let cu = s[u]
+                        if cu == "(" { urlDepth += 1 }
+                        else if cu == ")" { urlDepth -= 1; if urlDepth == 0 { break } }
+                        u = s.index(after: u)
+                    }
+                    if u < s.endIndex, s[u] == ")" {
+                        // Emit the entire span with internal `\n` → ` `.
+                        for ch in s[i...u] {
+                            out.append(ch == "\n" ? " " : ch)
+                        }
+                        i = s.index(after: u)
+                        continue
+                    }
+                }
+            }
+        }
+        out.append(c)
+        i = s.index(after: i)
+    }
+    return out
+}
+
+/// SOUL-SOUL_DESKTOP-160: horizontal-rule detection. Recognizes `***`,
+/// `---`, `___` lines (3+ of the same char, with optional intermixed
+/// spaces — matches CommonMark). The trimmed line must be non-empty
+/// after collapsing whitespace, must be all the same character, and
+/// must be at least 3 chars long.
+private func isHorizontalRule(_ trimmed: String) -> Bool {
+    guard !trimmed.isEmpty else { return false }
+    let compact = trimmed.filter { !$0.isWhitespace }
+    guard compact.count >= 3 else { return false }
+    guard let first = compact.first, "*-_".contains(first) else { return false }
+    return compact.allSatisfy { $0 == first }
 }
 
 private func parse(_ markdown: String) -> [Block] {
     var blocks: [Block] = []
-    let lines = markdown.components(separatedBy: "\n")
+    // SOUL-SOUL_DESKTOP-160: glue `[text](url)` spans wrapped across
+    // newlines before the line split — see collapseMultilineLinks.
+    let preprocessed = collapseMultilineLinks(markdown)
+    let lines = preprocessed.components(separatedBy: "\n")
 
     var i = 0
     while i < lines.count {
         let line = lines[i]
         let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        // SOUL-SOUL_DESKTOP-160: horizontal rule — `***`, `---`, `___`
+        // (3+ same char, optional spaces). Standalone line, no further
+        // content interpretation.
+        if isHorizontalRule(trimmed) {
+            blocks.append(.horizontalRule)
+            i += 1
+            continue
+        }
+
+        // SOUL-SOUL_DESKTOP-160: blockquote — greedy gather consecutive
+        // lines starting with `>` (including bare `>` blank-content
+        // lines, which act as inter-paragraph separators inside the
+        // quoted body). Strip the leading `>` and at most one space.
+        if trimmed.hasPrefix(">") {
+            var quotedLines: [String] = []
+            while i < lines.count {
+                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                guard t.hasPrefix(">") else { break }
+                var inner = String(t.dropFirst())
+                if inner.hasPrefix(" ") { inner.removeFirst() }
+                quotedLines.append(inner)
+                i += 1
+            }
+            blocks.append(.blockquote(quotedLines))
+            continue
+        }
 
         if trimmed.hasPrefix("```") {
             let lang = String(trimmed.dropFirst(3))
