@@ -70,6 +70,55 @@ extension ThreadController {
         return prompt
     }
 
+    func acceptBranchSummaryPrompt(
+        summary: String,
+        sourceProvider: Provider,
+        targetProvider: Provider,
+        agent: String
+    ) -> QueuedPrompt? {
+        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSummary.isEmpty, !trimmedAgent.isEmpty else { return nil }
+
+        let messageId = UUID()
+        items.append(.branchSummary(
+            id: messageId,
+            summary: trimmedSummary,
+            sourceProvider: sourceProvider,
+            targetProvider: targetProvider,
+            timestamp: Date()
+        ))
+        openAgentMessageId = nil
+        lastActivityAt = Date()
+        scrollAnchorAtBottom = true
+        scrollAnchorItemId = nil
+
+        let prompt = QueuedPrompt(
+            itemId: messageId,
+            display: trimmedSummary,
+            agent: trimmedAgent,
+            ledgerEvent: .branchSummary,
+            sourceProvider: sourceProvider,
+            targetProvider: targetProvider
+        )
+
+        if isWorking {
+            ledger.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
+                "event": QueuedPrompt.LedgerEvent.branchSummary.rawValue,
+                "summary": trimmedSummary,
+                "from_provider": sourceProvider.rawValue,
+                "to_provider": targetProvider.rawValue,
+            ])
+            queuedPrompts.append(prompt)
+            return nil
+        }
+
+        isWorking = true
+        turnStartedAt = Date()
+        startStallWatchdog()
+        return prompt
+    }
+
     /// Async half of `send`: ensure a live session, then dispatch the
     /// accepted prompt (and drain any prompts queued while this turn runs).
     /// Must be called on a prompt obtained from `acceptUserPrompt` — that
@@ -104,10 +153,7 @@ extension ThreadController {
                 guard let sid = sessionId else { return }
                 while let turn = current {
                     if isFirstTurn {
-                        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-                            "event": "UserPrompt",
-                            "text": turn.display,
-                        ])
+                        appendPromptHook(turn, sessionId: sid)
                     } else {
                         turnStartedAt = Date()
                         relocateQueuedBubbleToEnd(turn)
@@ -146,10 +192,7 @@ extension ThreadController {
 
             while let turn = current {
                 if isFirstTurn {
-                    ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-                        "event": "UserPrompt",
-                        "text": turn.display,
-                    ])
+                    appendPromptHook(turn, sessionId: sid)
                 } else {
                     turnStartedAt = Date()
                     relocateQueuedBubbleToEnd(turn)
@@ -242,6 +285,28 @@ extension ThreadController {
         // flipped false. Draining while this send still owns the active turn
         // can re-enter `send()` and re-queue the same prompt, or worse, open
         // a second provider prompt on the same child process after recovery.
+    }
+
+    private func appendPromptHook(_ turn: QueuedPrompt, sessionId sid: String) {
+        switch turn.ledgerEvent {
+        case .userPrompt:
+            ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": QueuedPrompt.LedgerEvent.userPrompt.rawValue,
+                "text": turn.display,
+            ])
+        case .branchSummary:
+            var event: [String: Any] = [
+                "event": QueuedPrompt.LedgerEvent.branchSummary.rawValue,
+                "summary": turn.display,
+            ]
+            if let sourceProvider = turn.sourceProvider {
+                event["from_provider"] = sourceProvider.rawValue
+            }
+            if let targetProvider = turn.targetProvider {
+                event["to_provider"] = targetProvider.rawValue
+            }
+            ledger.appendHook(projectKey: project.id, sessionId: sid, event: event)
+        }
     }
 
     func cancel() async {

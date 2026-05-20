@@ -14,6 +14,8 @@ import SwiftUI
 /// the tail of a hydrated read-only transcript so opening a finalized
 /// session immediately surfaces what was accomplished.
 struct FinalizeCard: View {
+    var title: String = "Finalize"
+    var icon: String = "checkmark.seal.fill"
     let intent: String?
     let summary: String?
     let rationale: String?
@@ -25,10 +27,10 @@ struct FinalizeCard: View {
         let _ = SoulSignposts.event("FinalizeCard.body")
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: "checkmark.seal.fill")
+                Image(systemName: icon)
                     .font(.system(size: 15))
                     .foregroundStyle(SoulColor.accent)
-                Text("Finalize")
+                Text(title)
                     .font(SoulFont.ui(15, weight: .semibold))
                     .foregroundStyle(SoulColor.fg)
             }

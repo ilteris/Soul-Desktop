@@ -14,6 +14,10 @@ enum ThreadItemGrouper {
                     fileGroupMap.removeAll()
                     kindGroupMap.removeAll()
                     turnHasFileChanges = false
+                } else if case .branchSummary = item {
+                    fileGroupMap.removeAll()
+                    kindGroupMap.removeAll()
+                    turnHasFileChanges = false
                 }
                 continue
             }

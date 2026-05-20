@@ -422,6 +422,27 @@ enum HooksReader {
                         item: .userMessage(id: UUID(), text: trimmed, timestamp: ts)
                     ))
                 }
+            case "BranchSummary":
+                let summary = (obj["summary"] as? String)
+                    ?? (obj["text"] as? String)
+                    ?? (obj["content"] as? String)
+                    ?? ""
+                let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    let source = Provider(rawValue: obj["from_provider"] as? String ?? "") ?? .claude
+                    let target = Provider(rawValue: obj["to_provider"] as? String ?? "") ?? .geminiCLI
+                    out.append(ReplayEvent(
+                        id: UUID(),
+                        timestamp: ts,
+                        item: .branchSummary(
+                            id: UUID(),
+                            summary: trimmed,
+                            sourceProvider: source,
+                            targetProvider: target,
+                            timestamp: ts
+                        )
+                    ))
+                }
             case "CodexApproval":
                 let op = obj["op"] as? String ?? "APPROVAL"
                 let intent = obj["intent"] as? String ?? "Codex command approval handled"

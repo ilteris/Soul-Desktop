@@ -19,7 +19,7 @@ import Foundation
 enum ComposeBranchSeed {
 
     /// Produce a 1-3 sentence opener from `items`. Returns "" on any
-    /// failure path — caller treats empty as "no seed, user types fresh."
+    /// failure path - caller treats empty as "no seed, user types fresh."
     static func run(
         items: [ThreadItem],
         sourceProvider: Provider,
@@ -41,12 +41,17 @@ enum ComposeBranchSeed {
         \(transcript)
         """
         let raw = await runClaudeSubprocess(executable: claudeExec, prompt: prompt)
-        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // Strip surrounding quotes the model sometimes adds despite the rules.
-        let stripped = trimmed
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'`"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return stripped
+        return sanitizeSeed(raw)
+    }
+
+    static func fallbackSeed(
+        sourceTitle: String,
+        sourceProvider: Provider,
+        targetProvider: Provider
+    ) -> String {
+        let title = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isPlaceholder(title), title != "New chat" else { return "" }
+        return "Continue the \(sourceProvider.label) session in \(targetProvider.label): \(title). First inspect the current repo state, then pick up the work from there."
     }
 
     /// Pack items into a compact transcript: first user prompt (gives the
@@ -69,7 +74,7 @@ enum ComposeBranchSeed {
             case .agentMessage(_, let text, _, _):
                 let visible = SoulTrace.extract(from: text).visible
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !visible.isEmpty else { continue }
+                guard !visible.isEmpty, !isPlaceholder(visible) else { continue }
                 tail.append((role: "Assistant", text: String(visible.prefix(perTurnCap))))
             default:
                 continue
@@ -115,6 +120,26 @@ enum ComposeBranchSeed {
             let data = out.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         }.value
+    }
+
+    private static func sanitizeSeed(_ raw: String?) -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stripped = trimmed
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'`"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return isPlaceholder(stripped) ? "" : stripped
+    }
+
+    private static func isPlaceholder(_ text: String) -> Bool {
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return true }
+        return normalized == "(no response)"
+            || normalized == "no response"
+            || normalized == "(empty)"
+            || normalized == "empty"
+            || normalized == "new chat"
     }
 
     /// Resolve a binary from $PATH. Mirrors `ThreadController.which` (private

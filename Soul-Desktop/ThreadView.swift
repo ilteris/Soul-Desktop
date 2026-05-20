@@ -418,6 +418,16 @@ struct ThreadItemRow: View {
         switch item {
         case .userMessage(_, let text, let ts):
             UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
+        case .branchSummary(_, let summary, let sourceProvider, let targetProvider, _):
+            FinalizeCard(
+                title: "Branch Summary",
+                icon: "arrow.triangle.branch",
+                intent: "Continue from \(sourceProvider.label) in \(targetProvider.label)",
+                summary: summary,
+                rationale: nil,
+                fixed: nil,
+                nextStep: "\(targetProvider.label) received this summary as context and is continuing from here."
+            )
         case .agentMessage(_, let text, _, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
             // MarkdownView rebuild when the row's inputs haven't changed.

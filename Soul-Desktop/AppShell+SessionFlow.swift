@@ -137,16 +137,27 @@ extension AppShell {
         branchSeedLoading = true
         controller.composerDraft = ""
         Task { @MainActor in
-            let seed = await ComposeBranchSeed.run(
+            let generatedSeed = await ComposeBranchSeed.run(
                 items: items,
                 sourceProvider: sourceProvider,
                 targetProvider: target
             )
+            let seed = generatedSeed.isEmpty
+                ? ComposeBranchSeed.fallbackSeed(
+                    sourceTitle: source.displayTitle,
+                    sourceProvider: sourceProvider,
+                    targetProvider: target
+                )
+                : generatedSeed
             branchSeedLoading = false
             guard !seed.isEmpty else { return }
-            let displayText = seed
             let agentText = seed + "\n\n(Continuing from \(sourceProvider.label) — give me a quick summary of where we are and propose the immediate next step.)"
-            guard let pending = controller.acceptUserPrompt(display: displayText, agent: agentText) else { return }
+            guard let pending = controller.acceptBranchSummaryPrompt(
+                summary: seed,
+                sourceProvider: sourceProvider,
+                targetProvider: target,
+                agent: agentText
+            ) else { return }
             await controller.dispatchPending(pending)
         }
     }

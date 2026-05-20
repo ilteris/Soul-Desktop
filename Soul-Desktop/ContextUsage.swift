@@ -52,6 +52,7 @@ struct ContextUsage {
         for item in items {
             switch item {
             case .userMessage(_, let text, _),
+                 .branchSummary(_, let text, _, _, _),
                  .agentMessage(_, let text, _, _),
                  .agentThought(_, let text, _, _):
                 bytes += text.utf8.count

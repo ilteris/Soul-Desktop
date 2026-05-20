@@ -48,6 +48,7 @@ struct ToolCallDetails: Hashable {
 
 indirect enum ThreadItem: Identifiable, Hashable {
     case userMessage(id: UUID, text: String, timestamp: Date)
+    case branchSummary(id: UUID, summary: String, sourceProvider: Provider, targetProvider: Provider, timestamp: Date)
     case agentMessage(id: UUID, text: String, complete: Bool, timestamp: Date)
     /// Streaming reasoning text from `agent_thought_chunk` ACP notifications.
     /// Rendered as a muted, italic, collapsible block — so the user sees
@@ -69,6 +70,7 @@ indirect enum ThreadItem: Identifiable, Hashable {
     var id: UUID {
         switch self {
         case .userMessage(let id, _, _): return id
+        case .branchSummary(let id, _, _, _, _): return id
         case .agentMessage(let id, _, _, _): return id
         case .agentThought(let id, _, _, _): return id
         case .toolCall(let id, _, _, _, _, _): return id
@@ -148,9 +150,17 @@ final class ThreadController {
     /// entry carries both halves of the two-channel send so slash-expanded
     /// agent text and the bare-`/cmd` display bubble stay paired.
     struct QueuedPrompt: Hashable {
+        enum LedgerEvent: String, Hashable {
+            case userPrompt = "UserPrompt"
+            case branchSummary = "BranchSummary"
+        }
+
         let itemId: UUID
         let display: String
         let agent: String
+        var ledgerEvent: LedgerEvent = .userPrompt
+        var sourceProvider: Provider? = nil
+        var targetProvider: Provider? = nil
     }
     var queuedPrompts: [QueuedPrompt] = []
 
@@ -264,6 +274,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             return truncateForTitle(user)
         }
 
+        let firstBranchSummary: String? = items.lazy.compactMap {
+            if case .branchSummary(_, let summary, _, _, _) = $0 { return summary } else { return nil }
+        }.first
+
+        if let summary = firstBranchSummary {
+            return truncateForTitle(summary)
+        }
+
         let firstAgent: String? = items.lazy.compactMap {
             if case .agentMessage(_, let t, _, _) = $0 { return t } else { return nil }
         }.first
@@ -356,6 +374,11 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
             switch item {
             case .userMessage(_, let text, _):
                 out += "**You:** \(text)\n\n"
+            case .branchSummary(_, let summary, let sourceProvider, let targetProvider, _):
+                out += "---\n### Branch Summary\n"
+                out += "**Intent:** Continue from \(sourceProvider.label) in \(targetProvider.label)\n\n"
+                out += "**Summary:** \(summary)\n\n"
+                out += "---\n\n"
             case .agentMessage(_, let text, _, _):
                 out += "**\(provider.label):** \(text)\n\n"
             case .agentThought(_, let text, _, _):
