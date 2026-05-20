@@ -647,27 +647,23 @@ extension SoulRegistry {
     }
 
     private static func worktreePathFromHooks(path: String) -> String? {
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        for line in blob.split(separator: "\n", omittingEmptySubsequences: true).prefix(1) {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  (obj["event"] as? String) == "SESSION_START"
-            else { return nil }
-            return obj["worktree_path"] as? String
-        }
-        return nil
+        // SOUL-SOUL_DESKTOP-164: only first line needed.
+        guard let lines = headLines(path: path, maxLines: 1), let line = lines.first,
+              let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (obj["event"] as? String) == "SESSION_START"
+        else { return nil }
+        return obj["worktree_path"] as? String
     }
 
     static func firstHookTimestamp(projectKey: String, sessionId: String) -> Date? {
         let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        for line in blob.split(separator: "\n", omittingEmptySubsequences: true).prefix(1) {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return nil }
-            return parseTimestamp(obj["timestamp"] as? String)
-        }
-        return nil
+        // SOUL-SOUL_DESKTOP-164: only first line needed.
+        guard let lines = headLines(path: path, maxLines: 1), let line = lines.first,
+              let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return parseTimestamp(obj["timestamp"] as? String)
     }
 
     private static func normalizeCwd(_ p: String) -> String {
@@ -676,11 +672,50 @@ extension SoulRegistry {
         return (s as NSString).standardizingPath
     }
 
+    /// SOUL-SOUL_DESKTOP-164: read up to `maxLines` complete newline-terminated
+    /// lines from `path` via FileHandle. Returns nil if the file can't be
+    /// opened. Replaces `String(contentsOfFile:encoding:.utf8).split("\n")`
+    /// for callers that only need a small prefix — the old pattern read the
+    /// entire file (often multi-MB for Gemini chats) and `split` then walked
+    /// every grapheme. Sample (2026-05-20 sample 4) had 2482 / 2518
+    /// background-queue samples (98.5%) in that grapheme walk on
+    /// isResumableGeminiChatFile alone.
+    ///
+    /// `byteCap` is a defensive backstop in case a single line is pathologically
+    /// long (it's a "give up after this many bytes" rather than a hard
+    /// line-boundary cap). 1 MB is generous for 50 JSON lines.
+    private static func headLines(path: String, maxLines: Int, byteCap: Int = 1_048_576) -> [String]? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        var lines: [String] = []
+        var carry = Data()
+        let chunkSize = 64 * 1024
+        var totalRead = 0
+        outer: while lines.count < maxLines, totalRead < byteCap {
+            let chunk: Data
+            do { chunk = try fh.read(upToCount: chunkSize) ?? Data() }
+            catch { break }
+            if chunk.isEmpty { break }
+            totalRead += chunk.count
+            carry.append(chunk)
+            while let nl = carry.firstIndex(of: 0x0A) {
+                let lineData = carry[carry.startIndex..<nl]
+                carry.removeSubrange(carry.startIndex...nl)
+                if let s = String(data: lineData, encoding: .utf8) {
+                    lines.append(s)
+                    if lines.count >= maxLines { break outer }
+                }
+            }
+        }
+        return lines
+    }
+
     private static func isResumableGeminiChatFile(_ path: String) -> Bool {
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return true }
-        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        // SOUL-SOUL_DESKTOP-164: only the first 50 lines are inspected; no
+        // reason to read & grapheme-walk megabytes of transcript.
+        guard let lines = headLines(path: path, maxLines: 50) else { return true }
         if lines.count <= 1 { return false }
-        for line in lines.prefix(50) {
+        for line in lines {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
@@ -693,8 +728,8 @@ extension SoulRegistry {
     }
 
     private static func firstUserPromptFromHooks(path: String) -> String? {
-        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        // SOUL-SOUL_DESKTOP-164: only the first 40 lines are inspected.
+        guard let lines = headLines(path: path, maxLines: 40) else { return nil }
         for line in lines.prefix(40) {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
