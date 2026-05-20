@@ -55,6 +55,15 @@ struct Soul_DesktopApp: App {
             CommandGroup(after: .windowArrangement) {
                 TypographyLabMenuItem()
             }
+            // SOUL-SOUL_DESKTOP-234: app-wide keyboard shortcuts. Catalog
+            // (SoulShortcuts.swift) still owns the binding values; we just
+            // unroll the menu items by hand because ForEach inside
+            // CommandMenu silently produces empty menus in some Xcode/
+            // SwiftUI version combinations. Adding a new shortcut = add a
+            // case to SoulShortcut + add one more line here.
+            CommandMenu("Navigate") {
+                shortcutButton(.previousSession)
+            }
         }
 
         Window("Typography Lab", id: "typography-lab") {
@@ -72,4 +81,15 @@ private struct TypographyLabMenuItem: View {
         }
         .keyboardShortcut("t", modifiers: [.command, .option])
     }
+}
+
+/// SOUL-SOUL_DESKTOP-234: explicit menu-item Button driven by a
+/// `SoulShortcut` case. The catalog still owns the binding values; this
+/// just sidesteps ForEach-inside-CommandMenu emptiness.
+@ViewBuilder
+private func shortcutButton(_ sc: SoulShortcut) -> some View {
+    Button(sc.label) {
+        NotificationCenter.default.post(name: sc.notification, object: nil)
+    }
+    .keyboardShortcut(sc.key, modifiers: sc.modifiers)
 }

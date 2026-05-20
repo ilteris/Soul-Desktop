@@ -166,6 +166,32 @@ struct SidebarView: View {
                         .background(SoulColor.surface, in: Capsule())
                 }
                 Spacer()
+                Button {
+                    if let project = selectedProjectForMutation {
+                        pendingProjectEdit = ProjectEditRequest(project: project)
+                    }
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(selectedProjectForMutation == nil ? SoulColor.fgSubtle.opacity(0.35) : SoulColor.fgMuted)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.soulHover)
+                .disabled(selectedProjectForMutation == nil)
+                .help("Edit selected project")
+                Button {
+                    if let project = selectedProjectForMutation {
+                        pendingProjectDelete = ProjectDeleteRequest(project: project)
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(selectedProjectForMutation == nil ? SoulColor.fgSubtle.opacity(0.35) : SoulColor.fgMuted)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.soulHover)
+                .disabled(selectedProjectForMutation == nil)
+                .help("Remove selected project")
                 Button(action: onNewProject) {
                     Image(systemName: "plus")
                         .font(.system(size: 11, weight: .semibold))
@@ -307,6 +333,53 @@ struct SidebarView: View {
             }
             Task { await reloadSessions() }
         }
+        // SOUL-SOUL_DESKTOP-234: ⇧⌃O = jump to the session row above the
+        // currently-active one in the sidebar. Defined in SoulShortcuts.swift;
+        // menu bar entry under Navigate → "Previous Session".
+        .onReceive(NotificationCenter.default.publisher(for: .soulPreviousSession)) { _ in
+            navigateToPreviousSession()
+        }
+    }
+
+    /// SOUL-SOUL_DESKTOP-234: handler for the ⇧⌃O previous-session shortcut.
+    /// "Previous" = the row immediately above the active session in the
+    /// sidebar's recency-sorted list (which is the next-newer session).
+    /// Falls back to the most recent visible session if nothing is active.
+    /// Respects the same filter pipeline the rendered list uses (substantive,
+    /// loadable/replayable, source filter, hideUntitled, archived).
+    private func navigateToPreviousSession() {
+        // Find which project owns the active session. Prefer activeProjectId
+        // when set; otherwise scan projects for the one containing the
+        // currently-active session id.
+        let projectId: String? = activeProjectId
+            ?? projects.first(where: { p in
+                let list = mergedChatList(for: p)
+                return list.contains(where: { $0.id == activeSessionId })
+            })?.id
+        guard let pid = projectId,
+              let project = projects.first(where: { $0.id == pid })
+        else { return }
+
+        let archivedSet = archiveStore.archivedIDs(forProject: pid)
+        let visible = mergedChatList(for: project)
+            .filter { !archivedSet.contains($0.id) }
+        guard !visible.isEmpty else { return }
+
+        if let currentIdx = visible.firstIndex(where: { $0.id == activeSessionId }) {
+            let prevIdx = currentIdx - 1
+            guard prevIdx >= 0 else { return }   // no-op at top of list
+            onSelectSession(visible[prevIdx])
+        } else {
+            // No active session in this project's list (or activeSessionId is
+            // nil) — jump to the most-recent visible row as the natural
+            // "previous" target.
+            onSelectSession(visible[0])
+        }
+    }
+
+    private var selectedProjectForMutation: SoulProject? {
+        guard let selectedProject else { return nil }
+        return projects.first { $0.id == selectedProject }
     }
 
     private var buildBadge: some View {
