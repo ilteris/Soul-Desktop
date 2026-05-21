@@ -289,6 +289,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// arrived (e.g. fallback to the in-process Swift renderer).
     var pendingPreambleChannel: PreambleChannel = .userPromptPrefix
 
+    /// SPEC-245-K hotfix (post-step-4). Background Task that builds the
+    /// preamble via the kernel CLI. Spawned at the tail of hydrateFromDisk
+    /// rather than awaited inline, so a 20s summarizer call doesn't pin
+    /// the canvas on the loading skeleton. ensureSession awaits this
+    /// before reading pendingContextPreamble/Channel, so the preamble
+    /// still lands on the first send even if the user types fast.
+    @ObservationIgnored var preambleStagingTask: Task<Void, Never>? = nil
+
     /// Running task for ensureSession() to prevent concurrent executions.
     @ObservationIgnored var ensureSessionTask: Task<Void, Error>? = nil
 

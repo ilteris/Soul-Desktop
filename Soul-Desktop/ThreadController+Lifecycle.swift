@@ -213,6 +213,11 @@ extension ThreadController {
         // spawn-in-progress Task running against a controller that's
         // being torn down, orphaning a child stdio process.
         ensureSessionTask?.cancel()
+        // SPEC-245-K hotfix: cancel any in-flight preamble staging so a
+        // gemini summarizer call doesn't outlive the controller and burn
+        // tokens for nobody.
+        preambleStagingTask?.cancel()
+        preambleStagingTask = nil
         ensureSessionTask = nil
         eventTask?.cancel()
         await client?.stop()
@@ -258,6 +263,17 @@ extension ThreadController {
         }
         if hasInitialized, client != nil, sessionId != nil { return }
 
+        // SPEC-245-K hotfix: hydrate kicks off preamble staging in a
+        // background Task. Await it here so pendingContextPreamble +
+        // pendingPreambleChannel are populated before mintFreshNativeSession
+        // reads them. Free for fast verbatim renders (~76ms) and visible
+        // to the user as a brief "thinking" state for summarizer calls
+        // (~16s) — but only on the first send, not on the canvas paint.
+        if let task = preambleStagingTask {
+            await task.value
+            preambleStagingTask = nil
+        }
+
         // SOUL-SOUL_DESKTOP-245 (Phase B): stop / stall recovery. Manual
         // cancel tears down the child process; on the next send we used
         // to call session/load to re-register the prior native sid with
@@ -269,6 +285,11 @@ extension ThreadController {
         if let sid = sessionId, nativeSessionId != nil {
             try await spawnAndInitialize(skipNewSession: true)
             guard let client else { return }
+            // Stop-recovery path: we already have a live session AND a
+            // user prompt waiting. Awaiting here is fine — there's no
+            // hydrate-skeleton race because the canvas was already
+            // painted in a prior turn. Latency hits the spinner the
+            // user expects when they hit "Send" anyway.
             await stagePreambleForResume(sid: sid, rendered: items)
             try await mintFreshNativeSession(
                 client: client,

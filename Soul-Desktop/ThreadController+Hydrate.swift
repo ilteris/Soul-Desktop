@@ -117,7 +117,16 @@ extension ThreadController {
                 // prior conversation as inline context on first send.
                 // Previously this branch had no resume path at all — the
                 // agent started cold and the user had to recap manually.
-                await stagePreambleForResume(sid: sid, rendered: items)
+                // Don't await — detach to a background Task so the
+                // kernel CLI (potentially 20s when summarizing) doesn't
+                // pin hydrate's loading state. ensureSession awaits this
+                // before reading pendingContextPreamble/Channel.
+                preambleStagingTask?.cancel()
+                let stagingSid = sid
+                let stagingItems = items
+                preambleStagingTask = Task { [weak self] in
+                    await self?.stagePreambleForResume(sid: stagingSid, rendered: stagingItems)
+                }
                 pendingResumeOnFirstSend = true
                 return
             }
