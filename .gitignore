@@ -48,9 +48,12 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 
-# Composer drag-drop staging — images copied here when the user
-# drag-drops or +-attaches into a chat. Per-project ephemera, not source.
-.soul/attachments/
+# Soul runtime state. Canonical runtime data lives under ~/.soul; any
+# project-local .soul directory is per-machine ephemera, not source.
+.soul/
+
+# Local Xcode cache used by ad hoc builds.
+.xcode_cache/
 
 # Local kernel hydration output — soul_hydrate.py rewrites CLAUDE.md
 # each session-start with identity / USER / belief_map blocks that are
