@@ -12,15 +12,18 @@ struct SoulRegistryBackfillTests {
         
         let oldHome = SoulRegistry.homePath
         let oldSoul = SoulRegistry.soulPath
+        let oldSoulHome = SoulRegistry.soulHomePath
         let oldReg = SoulRegistry.registryPath
         
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
         
         defer {
             SoulRegistry.homePath = oldHome
             SoulRegistry.soulPath = oldSoul
+            SoulRegistry.soulHomePath = oldSoulHome
             SoulRegistry.registryPath = oldReg
             try? fm.removeItem(at: tempDir)
         }
@@ -72,7 +75,7 @@ struct SoulRegistryBackfillTests {
             #expect(result == .hit(nativeId))
             
             // Verify hook was written
-            let updatedHooks = try String(contentsOfFile: hooksPath)
+            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"NativeSessionID\""))
             #expect(updatedHooks.contains("\"nativeId\":\"\(nativeId)\""))
             #expect(updatedHooks.contains("\"source\":\"backfill\""))
@@ -189,7 +192,7 @@ struct SoulRegistryBackfillTests {
             } else {
                 Issue.record("Expected ambiguous backfill result, got \(result)")
             }
-            let updatedHooks = try String(contentsOfFile: hooksDir.appendingPathComponent("hooks.jsonl").path)
+            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"BackfillAmbiguous\""))
         }
     }
@@ -298,7 +301,7 @@ struct SoulRegistryBackfillTests {
             ])
 
             let hooksPath = home
-                .appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")
+                .appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")
                 .path
             let line = try String(contentsOfFile: hooksPath)
             #expect(line.contains("\"timestamp\""))

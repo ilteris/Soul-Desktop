@@ -142,7 +142,7 @@ extension ThreadController {
             // the session's Intent/Summary/Next so the canvas isn't
             // truly empty, and ensureSession on first send mints a fresh
             // provider session instead of spawning + loading.
-            let hooksPath = "\(NSHomeDirectory())/soul_registry/sessions/\(proj.id)/\(sid)/hooks.jsonl"
+            let hooksPath = SoulRegistry.hooksPath(projectKey: proj.id, sessionId: sid)
             if FileManager.default.fileExists(atPath: hooksPath) {
                 if let t = result.title, !t.isEmpty { customTitle = t }
                 nativeSessionId = result.nativeId
@@ -258,17 +258,16 @@ extension ThreadController {
     /// sent: a one-line summary into the lifecycle log (visible in the
     /// right-panel agent log AND ~/Library/Logs/Soul-Desktop/acp-
     /// protocol.jsonl), plus the full text to
-    /// `~/soul_registry/sessions/<project>/<sid>/preamble.txt` — a
+    /// `<SOUL_HOME>/sessions/<project>/<sid>/preamble.txt` — a
     /// plain file you can `cat` after the click. Overwritten on each
     /// injection so the latest send is always what's there.
     func recordPreambleInjection(_ preamble: String) {
         logLifecycle(
             "preamble.inject",
-            note: "chars=\(preamble.count) sessionId=\(sessionId ?? "nil") — see ~/soul_registry/sessions/\(project.id)/\(sessionId ?? "")/preamble.txt"
+            note: "chars=\(preamble.count) sessionId=\(sessionId ?? "nil") — see \(SoulRegistry.primarySessionsRoot)/\(project.id)/\(sessionId ?? "")/preamble.txt"
         )
         guard let sid = sessionId else { return }
-        let dir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("soul_registry/sessions")
+        let dir = URL(fileURLWithPath: SoulRegistry.primarySessionsRoot)
             .appendingPathComponent(project.id)
             .appendingPathComponent(sid)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

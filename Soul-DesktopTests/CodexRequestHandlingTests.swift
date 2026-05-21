@@ -104,13 +104,16 @@ struct CodexRequestHandlingTests {
 
         let oldHome = SoulRegistry.homePath
         let oldSoul = SoulRegistry.soulPath
+        let oldSoulHome = SoulRegistry.soulHomePath
         let oldRegistry = SoulRegistry.registryPath
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
         defer {
             SoulRegistry.homePath = oldHome
             SoulRegistry.soulPath = oldSoul
+            SoulRegistry.soulHomePath = oldSoulHome
             SoulRegistry.registryPath = oldRegistry
             try? FileManager.default.removeItem(at: tempDir)
         }
@@ -149,7 +152,7 @@ struct CodexRequestHandlingTests {
         ])
 
         let hooksPath = tempDir
-            .appendingPathComponent("soul_registry/sessions/\(project.id)/\(sessionId)/hooks.jsonl")
+            .appendingPathComponent(".soul/sessions/\(project.id)/\(sessionId)/hooks.jsonl")
             .path
         let hooks = try String(contentsOfFile: hooksPath, encoding: .utf8)
         #expect(hooks.contains("\"event\":\"CodexApproval\""))

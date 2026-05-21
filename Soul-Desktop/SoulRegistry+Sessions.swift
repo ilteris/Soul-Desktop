@@ -22,19 +22,20 @@ extension SoulRegistry {
     /// project at startup, so sidebar badges paint instantly without
     /// triggering the heavier `sessions(forProject:)` parse pass.
     static func sessionCount(forProject key: String) -> Int {
-        let dir = "\(registryPath)/sessions/\(key)"
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return 0 }
         var ids: Set<String> = []
-        for name in entries {
-            if name.hasSuffix(".json") {
-                let stem = String(name.dropLast(5))
-                if UUID(uuidString: stem) != nil {
-                    ids.insert(stem)
-                } else if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
-                    ids.insert(String(tail))
+        for dir in projectSessionDirs(key) {
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            for name in entries {
+                if name.hasSuffix(".json") {
+                    let stem = String(name.dropLast(5))
+                    if UUID(uuidString: stem) != nil {
+                        ids.insert(stem)
+                    } else if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
+                        ids.insert(String(tail))
+                    }
+                } else if UUID(uuidString: name) != nil {
+                    ids.insert(name)
                 }
-            } else if UUID(uuidString: name) != nil {
-                ids.insert(name)
             }
         }
         return ids.count
@@ -96,7 +97,7 @@ extension SoulRegistry {
                     meta.worktreePath = obj["worktree_path"] as? String
                     if let p = obj["ppid"] as? Int { meta.sessionStartPpid = p }
                 }
-                if event == "Title", meta.titleHook == nil {
+                if event == "Title" {
                     meta.titleHook = (obj["text"] as? String) ?? (obj["title"] as? String)
                     meta.hasDesktopSignature = true
                 }
@@ -124,18 +125,31 @@ extension SoulRegistry {
             }
         }
 
-        // 4. Tail metadata: parse last 8KB for the most recent timestamp.
+        // 4. Tail metadata: parse last 8KB for the most recent timestamp and latest title.
         let maxTail = min(data.count, 8 * 1024)
         let tail = data.suffix(maxTail)
         if let tailStr = String(data: tail, encoding: .utf8) {
             let lines = tailStr.split(separator: "\n", omittingEmptySubsequences: true)
+            var tailTitle: String? = nil
             for line in lines.reversed() {
                 guard let ldata = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: ldata) as? [String: Any],
-                      let ts = parseTimestamp(obj["timestamp"] as? String)
+                      let obj = try? JSONSerialization.jsonObject(with: ldata) as? [String: Any]
                 else { continue }
-                meta.lastEventTimestamp = ts
-                break
+
+                if let ts = parseTimestamp(obj["timestamp"] as? String) {
+                    if meta.lastEventTimestamp == nil {
+                        meta.lastEventTimestamp = ts
+                    }
+                }
+
+                let event = (obj["event"] as? String) ?? ""
+                if event == "Title" && tailTitle == nil {
+                    tailTitle = (obj["text"] as? String) ?? (obj["title"] as? String)
+                }
+            }
+            if let tailTitle {
+                meta.titleHook = tailTitle
+                meta.hasDesktopSignature = true
             }
         }
 
@@ -202,46 +216,51 @@ extension SoulRegistry {
     }
 
     static func allSessions(forProject key: String, limit: Int = 100, projectPath: String? = nil) -> [SoulSession] {
-        let dir = "\(registryPath)/sessions/\(key)"
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
 
         struct Shape {
             var finalizeName: String?
             var finalizePath: String?
+            var sessionDir: String?
             var hooksPath: String?
             var jsonMtime: Date?
             var hooksMtime: Date?
         }
         var shapes: [String: Shape] = [:]
-        for name in entries {
-            if name.hasSuffix(".json") {
-                let stem = String(name.dropLast(5))
-                let id: String? = {
-                    if UUID(uuidString: stem) != nil { return stem }
-                    if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
-                        return String(tail)
+        for dir in projectSessionDirs(key) {
+            guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for name in entries {
+                if name.hasSuffix(".json") {
+                    let stem = String(name.dropLast(5))
+                    let id: String? = {
+                        if UUID(uuidString: stem) != nil { return stem }
+                        if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
+                            return String(tail)
+                        }
+                        return nil
+                    }()
+                    guard let id else { continue }
+                    let path = "\(dir)/\(name)"
+                    let m = mtime(path)
+                    var s = shapes[id] ?? Shape()
+                    if s.jsonMtime.map({ m > $0 }) ?? true {
+                        s.finalizeName = name
+                        s.finalizePath = path
+                        s.jsonMtime = m
                     }
-                    return nil
-                }()
-                guard let id else { continue }
-                let path = "\(dir)/\(name)"
-                let m = mtime(path)
-                var s = shapes[id] ?? Shape()
-                if s.jsonMtime.map({ m > $0 }) ?? true {
-                    s.finalizeName = name
-                    s.finalizePath = path
-                    s.jsonMtime = m
+                    shapes[id] = s
+                } else if UUID(uuidString: name) != nil {
+                    let hooks = "\(dir)/\(name)/hooks.jsonl"
+                    guard fm.fileExists(atPath: hooks) else { continue }
+                    let m = mtime(hooks)
+                    var s = shapes[name] ?? Shape()
+                    if s.hooksMtime.map({ m > $0 }) ?? true {
+                        s.sessionDir = "\(dir)/\(name)"
+                        s.hooksPath = hooks
+                        s.hooksMtime = m
+                    }
+                    shapes[name] = s
                 }
-                shapes[id] = s
-            } else if UUID(uuidString: name) != nil {
-                let hooks = "\(dir)/\(name)/hooks.jsonl"
-                guard fm.fileExists(atPath: hooks) else { continue }
-                let m = mtime(hooks)
-                var s = shapes[name] ?? Shape()
-                s.hooksPath = hooks
-                s.hooksMtime = m
-                shapes[name] = s
             }
         }
         if shapes.isEmpty { return [] }
@@ -299,10 +318,25 @@ extension SoulRegistry {
             }
 
             s.isLive = (shape.finalizePath == nil)
-            // Stale: live session with no activity in 1 hour.
+            // Stale: live session with no activity in 1 hour. Computed from
+            // mtime (not the pinned sort timestamp below) so it tracks real
+            // activity even though we freeze the sort key.
             if s.isLive {
                 let lastActive = cand.recency
                 s.isStale = Date().timeIntervalSince(lastActive) > 3600
+            }
+            // SPEC-245-K regression fix: kernel writes hooks.jsonl on every
+            // UserPrompt/AfterAgent, so `cand.recency = max(jsonMtime,
+            // hooksMtime)` bumps mid-conversation and the live session
+            // bubbles to the top of the sidebar on each turn. SidebarView+
+            // Projects.swift:449-455 documents the long-standing rule —
+            // "the sort should not reorder on activity" — but only enforced
+            // it on the synthetic/merge path. Pin the sort key for live
+            // sessions to firstEventTimestamp so typing doesn't shuffle the
+            // list. Finalized sessions keep the finalize timestamp set
+            // earlier from the .json file.
+            if s.isLive, let started = s.startedAt {
+                s.timestamp = started
             }
             if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
                 s.isDirty = true
@@ -312,7 +346,7 @@ extension SoulRegistry {
                 if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache, nativeSessionIDs: nativeSessionIDs) {
                     s.liveProvider = live
                 } else {
-                    let transcriptPath = "\(dir)/\(id)/transcript.jsonl"
+                    let transcriptPath = "\(shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id))/transcript.jsonl"
                     if FileManager.default.fileExists(atPath: transcriptPath) {
                         s.liveProvider = Provider.codex.rawValue
                     }
@@ -338,7 +372,7 @@ extension SoulRegistry {
                     sessionId: id,
                     projectKey: key,
                     projectPath: projectPath,
-                    sessionDir: "\(dir)/\(id)",
+                    sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
                     cache: dirCache,
                     nativeSessionIDs: nativeSessionIDs
                 )
@@ -657,7 +691,7 @@ extension SoulRegistry {
     }
 
     static func firstHookTimestamp(projectKey: String, sessionId: String) -> Date? {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         // SOUL-SOUL_DESKTOP-164: only first line needed.
         guard let lines = headLines(path: path, maxLines: 1), let line = lines.first,
               let data = line.data(using: .utf8),

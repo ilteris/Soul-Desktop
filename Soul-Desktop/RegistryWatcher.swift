@@ -64,7 +64,7 @@ final class RegistryWatcher {
 
     /// Watch the project's sessions/ directory for the sidebar chat list.
     static func watchSessions(forProject key: String, callback: @escaping () -> Void) -> RegistryWatcher? {
-        let path = SoulRegistry.registryPath + "/sessions/\(key)"
+        let path = SoulRegistry.primarySessionsRoot + "/\(key)"
         // Ensure path exists before opening
         if !FileManager.default.fileExists(atPath: path) {
             try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)

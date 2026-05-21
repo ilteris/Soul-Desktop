@@ -82,6 +82,8 @@ struct AppShell: View {
     /// top center of the whole window instead of being clipped inside the
     /// 320pt sidebar column. SidebarView writes here via Binding.
     @State var repairToast: String? = nil
+    @State var emptyStateDroppedAttachments: [String] = []
+    @State var isImageDropTargeted: Bool = false
 
     var contextUsage: ContextUsage? {
         if let replay = replay.controller {

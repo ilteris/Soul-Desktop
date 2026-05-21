@@ -270,8 +270,7 @@ enum HooksReader {
     /// mid-turn), the chunk file survived and we reconstruct the reply
     /// here so Replay still shows it.
     private static func readAgentChunks(projectKey: String, sessionId: String, hooks: [ReplayEvent]) -> [ReplayEvent] {
-        let path = (("~/soul_registry/sessions/\(projectKey)/\(sessionId)/agent_chunks.jsonl" as NSString))
-            .expandingTildeInPath
+        let path = "\(SoulRegistry.sessionDir(projectKey: projectKey, sessionId: sessionId))/agent_chunks.jsonl"
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return [] }
@@ -366,8 +365,7 @@ enum HooksReader {
     // MARK: - hooks.jsonl
 
     private static func readHooks(projectKey: String, sessionId: String) -> [ReplayEvent] {
-        let path = (("~/soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl" as NSString))
-            .expandingTildeInPath
+        let path = SoulRegistry.hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return [] }

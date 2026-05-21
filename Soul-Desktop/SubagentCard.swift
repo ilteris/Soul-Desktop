@@ -28,7 +28,7 @@ struct SubagentCard: View {
     @State private var expanded: Bool = false
 
     private var logPath: String {
-        "\(NSHomeDirectory())/soul_registry/sessions/\(projectKey)/subagents/\(subagentId)/live.log"
+        "\(SoulRegistry.primarySessionsRoot)/\(projectKey)/subagents/\(subagentId)/live.log"
     }
 
     private var specialistColor: Color {

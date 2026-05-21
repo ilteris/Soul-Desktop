@@ -99,7 +99,43 @@ struct SoulSession: Identifiable, Hashable, Codable {
 enum SoulRegistry {
     nonisolated(unsafe) static var homePath: String = NSHomeDirectory()
     nonisolated(unsafe) static var soulPath: String = homePath + "/dotfiles/soul"
+    nonisolated(unsafe) static var soulHomePath: String = ProcessInfo.processInfo.environment["SOUL_HOME"] ?? (homePath + "/.soul")
+    /// Legacy registry root. Kept readable during the SOUL_HOME migration.
     nonisolated(unsafe) static var registryPath: String = homePath + "/soul_registry"
+
+    static var primarySessionsRoot: String { "\(soulHomePath)/sessions" }
+    static var legacySessionsRoot: String { "\(registryPath)/sessions" }
+    static var primaryCacheRoot: String { "\(soulHomePath)/cache" }
+
+    static func sessionRoots() -> [String] {
+        primarySessionsRoot == legacySessionsRoot
+            ? [primarySessionsRoot]
+            : [primarySessionsRoot, legacySessionsRoot]
+    }
+
+    static func projectSessionDirs(_ key: String) -> [String] {
+        sessionRoots().map { "\($0)/\(key)" }
+    }
+
+    static func hooksPath(projectKey: String, sessionId: String) -> String {
+        for root in sessionRoots() {
+            let path = "\(root)/\(projectKey)/\(sessionId)/hooks.jsonl"
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return "\(primarySessionsRoot)/\(projectKey)/\(sessionId)/hooks.jsonl"
+    }
+
+    static func sessionDir(projectKey: String, sessionId: String) -> String {
+        for root in sessionRoots() {
+            let path = "\(root)/\(projectKey)/\(sessionId)"
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return "\(primarySessionsRoot)/\(projectKey)/\(sessionId)"
+    }
+
+    static func writableSessionDir(projectKey: String, sessionId: String) -> String {
+        "\(primarySessionsRoot)/\(projectKey)/\(sessionId)"
+    }
 
     /// Per-project cache for the unified `allSessions` scan. Keyed by project
     /// id; refresh when the sessions/<key> directory mtime advances. Lives at
@@ -149,12 +185,12 @@ enum SoulRegistry {
     }
 
     /// On-disk cache layout:
-    ///   ~/soul_registry/cache/sessions/<projectKey>.json
+    ///   ~/.soul/cache/sessions/<projectKey>.json
     ///   { "stamp": <unix-seconds>, "sessions": [SoulSession...] }
     /// The stamp is the same projectStamp(key:) we use for in-memory
     /// validation, so disk and memory share one freshness contract.
     private static func diskCachePath(forProject key: String) -> String {
-        "\(registryPath)/cache/sessions/\(key).json"
+        "\(primaryCacheRoot)/sessions/\(key).json"
     }
 
     private struct DiskCacheEnvelope: Codable {
@@ -174,7 +210,7 @@ enum SoulRegistry {
     }
 
     private static func writeDiskCache(forProject key: String, sessions: [SoulSession], stamp: Date) {
-        let dir = "\(registryPath)/cache/sessions"
+        let dir = "\(primaryCacheRoot)/sessions"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let env = DiskCacheEnvelope(stamp: stamp.timeIntervalSince1970, sessions: sessions)
         let enc = JSONEncoder()
@@ -193,16 +229,19 @@ enum SoulRegistry {
     /// projects with hundreds of sessions; the dir-mtime fallback still
     /// catches the case where a fresh session dir is created.
     private static func projectStamp(key: String) -> Date {
-        let dir = "\(registryPath)/sessions/\(key)"
-        var newest = mtime(dir)
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
-            return newest
-        }
-        for entry in entries.prefix(64) {
-            guard UUID(uuidString: entry) != nil else { continue }
-            let hooksPath = "\(dir)/\(entry)/hooks.jsonl"
-            let m = mtime(hooksPath)
-            if m > newest { newest = m }
+        var newest = Date.distantPast
+        for dir in projectSessionDirs(key) {
+            let dirMtime = mtime(dir)
+            if dirMtime > newest { newest = dirMtime }
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+                continue
+            }
+            for entry in entries.prefix(64) {
+                guard UUID(uuidString: entry) != nil else { continue }
+                let hooksPath = "\(dir)/\(entry)/hooks.jsonl"
+                let m = mtime(hooksPath)
+                if m > newest { newest = m }
+            }
         }
         return newest
     }
@@ -257,7 +296,7 @@ enum SoulRegistry {
         // main thread on every paint and beachballed the Dev build. Dir
         // mtime is one stat per project, ~24× cheaper, same ordering for
         // the cases this sort actually surfaces (new chat, finalize).
-        mtime("\(registryPath)/sessions/\(p.id)")
+        projectSessionDirs(p.id).map { mtime($0) }.max() ?? .distantPast
     }
 
     static func activeProjects() -> [SoulProject] {
@@ -282,7 +321,7 @@ enum SoulRegistry {
     ///
     /// Must be called from `hookWriteQueue`.
     private static func canonicalProjectForWrite(sid: String, caller: String) -> String {
-        let sessionsRoot = "\(registryPath)/sessions"
+        let sessionsRoot = primarySessionsRoot
         let fm = FileManager.default
         // Cache hit: still validate the dir exists (dedup script may have
         // moved it to ~/.Trash since we cached) — re-resolve on miss.
@@ -290,18 +329,17 @@ enum SoulRegistry {
            fm.fileExists(atPath: "\(sessionsRoot)/\(cached)/\(sid)") {
             return cached
         }
-        guard let projectDirs = try? fm.contentsOfDirectory(atPath: sessionsRoot) else {
-            sidProjectCache[sid] = caller
-            return caller
-        }
         var existing: [String] = []
-        for proj in projectDirs {
-            // The kernel uses `_backfill` / `_backfill_orphans` / `subagents`
-            // as reserved subdirs at the same depth as session dirs. Skip
-            // them so they can't be confused with a "project dir".
-            if proj.hasPrefix("_") || proj == "subagents" { continue }
-            if fm.fileExists(atPath: "\(sessionsRoot)/\(proj)/\(sid)") {
-                existing.append(proj)
+        for root in sessionRoots() {
+            guard let projectDirs = try? fm.contentsOfDirectory(atPath: root) else { continue }
+            for proj in projectDirs {
+                // The kernel uses `_backfill` / `_backfill_orphans` / `subagents`
+                // as reserved subdirs at the same depth as session dirs. Skip
+                // them so they can't be confused with a "project dir".
+                if proj.hasPrefix("_") || proj == "subagents" { continue }
+                if fm.fileExists(atPath: "\(root)/\(proj)/\(sid)") {
+                    existing.append(proj)
+                }
             }
         }
         if existing.isEmpty {
@@ -324,8 +362,8 @@ enum SoulRegistry {
         // soul_dedupe_sessions.py's tiebreak so the resolution is stable
         // before vs after that script runs.
         let canonical = existing.min(by: { a, b in
-            firstEventTimestamp(in: "\(sessionsRoot)/\(a)/\(sid)/hooks.jsonl")
-                < firstEventTimestamp(in: "\(sessionsRoot)/\(b)/\(sid)/hooks.jsonl")
+            firstEventTimestamp(in: hooksPath(projectKey: a, sessionId: sid))
+                < firstEventTimestamp(in: hooksPath(projectKey: b, sessionId: sid))
         }) ?? caller
         sidProjectCache[sid] = canonical
         return canonical
@@ -351,7 +389,7 @@ enum SoulRegistry {
     }()
 
     static func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard let fh = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? fh.close() }
         let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
@@ -377,7 +415,7 @@ enum SoulRegistry {
         line.append(0x0A)
         hookWriteQueue.async {
             let resolved = canonicalProjectForWrite(sid: sessionId, caller: projectKey)
-            let dir = "\(registryPath)/sessions/\(resolved)/\(sessionId)"
+            let dir = writableSessionDir(projectKey: resolved, sessionId: sessionId)
             let fm = FileManager.default
             if !fm.fileExists(atPath: dir) {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -401,7 +439,7 @@ enum SoulRegistry {
         ]
         hookWriteQueue.async {
             let resolved = canonicalProjectForWrite(sid: sessionId, caller: projectKey)
-            let dir = "\(registryPath)/sessions/\(resolved)/\(sessionId)"
+            let dir = writableSessionDir(projectKey: resolved, sessionId: sessionId)
             let fm = FileManager.default
             if !fm.fileExists(atPath: dir) {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -421,13 +459,13 @@ enum SoulRegistry {
 
     static func retireAgentChunks(projectKey: String, sessionId: String) {
         hookWriteQueue.async {
-            let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/agent_chunks.jsonl"
+            let path = "\(sessionDir(projectKey: projectKey, sessionId: sessionId))/agent_chunks.jsonl"
             try? FileManager.default.removeItem(atPath: path)
         }
     }
 
     static func nativeSessionRecord(projectKey: String, sessionId: String) -> (provider: String?, cwd: String?)? {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
@@ -466,7 +504,7 @@ enum SoulRegistry {
         if let existing = findNativeSessionID(projectKey: projectKey, sessionId: sessionId, provider: provider) {
             return .alreadyMapped(existing)
         }
-        let hooksPath = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let hooksPath = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard let ourPrompt = firstUserPromptFullFromHooks(path: hooksPath) else { return .miss }
         let needle = normalizeForMatch(ourPrompt)
         guard needle.count >= 20 else { return .miss }
@@ -629,8 +667,7 @@ enum SoulRegistry {
     }
 
     static func findProvider(projectKey: String, sessionId: String) -> String? {
-        let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
-        let hooksPath = "\(dir)/hooks.jsonl"
+        let hooksPath = hooksPath(projectKey: projectKey, sessionId: sessionId)
         if FileManager.default.fileExists(atPath: hooksPath),
            let blob = try? String(contentsOfFile: hooksPath, encoding: .utf8) {
             for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -664,7 +701,7 @@ enum SoulRegistry {
     }
 
     static func providerTally(projectKey: String, sessionId: String) -> ProviderTally {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else {
@@ -702,15 +739,17 @@ enum SoulRegistry {
     /// finalize JSON or no drift to repair.
     @discardableResult
     static func repairFinalizeSource(projectKey: String, sessionId: String) -> String? {
-        let dir = "\(registryPath)/sessions/\(projectKey)"
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
         var targetPath: String? = nil
-        for name in entries where name.hasSuffix(".json") {
-            let stem = String(name.dropLast(5))
-            if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
-                targetPath = "\(dir)/\(name)"
-                break
+        for dir in projectSessionDirs(projectKey) {
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            for name in entries where name.hasSuffix(".json") {
+                let stem = String(name.dropLast(5))
+                if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
+                    targetPath = "\(dir)/\(name)"
+                    break
+                }
             }
+            if targetPath != nil { break }
         }
         guard let path = targetPath,
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -754,7 +793,7 @@ enum SoulRegistry {
     }
 
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
@@ -802,46 +841,53 @@ enum SoulRegistry {
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
         // SOUL-SOUL_DESKTOP-100: trace each step of the finalize lookup.
         let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
-        let dir = "\(registryPath)/sessions/\(projectKey)"
+        let dirs = projectSessionDirs(projectKey)
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else {
+        var matchedDir: String? = nil
+        var matchedName: String? = nil
+        for dir in dirs {
+            guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for name in entries where name.hasSuffix(".json") {
+                let stem = String(name.dropLast(5))
+                if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
+                    matchedDir = dir
+                    matchedName = name
+                    break
+                }
+            }
+            if matchedName != nil { break }
+        }
+        guard let dir = matchedDir, let name = matchedName else {
             SoulSignposts.event("latestFinalize.no_dir", "\(sidLabel)")
             return nil
         }
-        for name in entries where name.hasSuffix(".json") {
-            let stem = String(name.dropLast(5))
-            if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(dir)/\(name)")),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else {
-                    SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(name)")
-                    continue
-                }
-                let fixedArray = obj["fixed_issues"] as? [String] ?? []
-                let fixedStr: String? = fixedArray.isEmpty ? nil : fixedArray.joined(separator: ", ")
-                let decisions = obj["decisions_events"] as? [Any]
-                SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
-                return FinalizeRecord(
-                    sessionId: sessionId,
-                    summary: obj["summary"] as? String,
-                    intent: obj["intent"] as? String,
-                    rationale: obj["rationale"] as? String,
-                    fixed: fixedStr,
-                    nextStep: obj["next_step"] as? String,
-                    timestamp: parseTimestamp(obj["timestamp"] as? String),
-                    handoffPath: "\(dir)/\(name)",
-                    fixedIssues: fixedArray,
-                    decisionsCount: decisions?.count,
-                    parentId: obj["parent_id"] as? String
-                )
-            }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(dir)/\(name)")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(name)")
+            return nil
         }
-        SoulSignposts.event("latestFinalize.no_match", "\(sidLabel)")
-        return nil
+        let fixedArray = obj["fixed_issues"] as? [String] ?? []
+        let fixedStr: String? = fixedArray.isEmpty ? nil : fixedArray.joined(separator: ", ")
+        let decisions = obj["decisions_events"] as? [Any]
+        SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
+        return FinalizeRecord(
+            sessionId: sessionId,
+            summary: obj["summary"] as? String,
+            intent: obj["intent"] as? String,
+            rationale: obj["rationale"] as? String,
+            fixed: fixedStr,
+            nextStep: obj["next_step"] as? String,
+            timestamp: parseTimestamp(obj["timestamp"] as? String),
+            handoffPath: "\(dir)/\(name)",
+            fixedIssues: fixedArray,
+            decisionsCount: decisions?.count,
+            parentId: obj["parent_id"] as? String
+        )
     }
 
     static func findTitle(projectKey: String, sessionId: String) -> String? {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
@@ -859,7 +905,7 @@ enum SoulRegistry {
     }
 
     static func slashCommandPrompts(projectKey: String, sessionId: String) -> [(text: String, timestamp: Date)] {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return [] }
@@ -881,7 +927,7 @@ enum SoulRegistry {
     }
 
     private static func hooksLineCount(projectKey: String, sessionId: String) -> Int {
-        let path = "\(registryPath)/sessions/\(projectKey)/\(sessionId)/hooks.jsonl"
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return 0 }

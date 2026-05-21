@@ -559,7 +559,7 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
 
     private func startFinalizeWatcher() {
         finalizeWatcher?.stop()
-        let dir = "\(SoulRegistry.registryPath)/sessions/\(project.id)"
+        let dir = "\(SoulRegistry.primarySessionsRoot)/\(project.id)"
         let watcher = FinalizeWatcher(directoryPath: dir) { [weak self] in
             guard let self, let sid = self.sessionId else { return }
             self.injectFinalizeSummaryIfFresh(sessionId: sid)

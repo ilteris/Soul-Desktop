@@ -299,23 +299,24 @@ enum SessionLoadability {
     // MARK: - Codex
 
     /// Codex co-locates its transcript with the kernel ledger:
-    /// `~/soul_registry/sessions/<projectKey>/<sid>/transcript.jsonl`.
+    /// `<SOUL_HOME>/sessions/<projectKey>/<sid>/transcript.jsonl`.
     private static func codexFileExists(sessionId sid: String, projectKey: String) -> Bool {
-        let path = "\(SoulRegistry.registryPath)/sessions/\(projectKey)/\(sid)/transcript.jsonl"
+        let path = "\(SoulRegistry.sessionDir(projectKey: projectKey, sessionId: sid))/transcript.jsonl"
         return FileManager.default.fileExists(atPath: path)
     }
 
     private static func findCodexAnywhere(sessionId sid: String) -> LoadableLocation? {
-        let base = "\(SoulRegistry.registryPath)/sessions"
         let fm = FileManager.default
-        guard let projects = try? fm.contentsOfDirectory(atPath: base) else { return nil }
-        for projectKey in projects {
-            let path = "\(base)/\(projectKey)/\(sid)/transcript.jsonl"
-            if fm.fileExists(atPath: path) {
-                let cwd = LiveSoulRegistryStore.shared.activeProjects()
-                    .first(where: { $0.id == projectKey })?.path ?? ""
-                if cwd.isEmpty { continue }
-                return LoadableLocation(provider: "codex", cwd: cwd, transcriptPath: path)
+        for base in SoulRegistry.sessionRoots() {
+            guard let projects = try? fm.contentsOfDirectory(atPath: base) else { continue }
+            for projectKey in projects {
+                let path = "\(base)/\(projectKey)/\(sid)/transcript.jsonl"
+                if fm.fileExists(atPath: path) {
+                    let cwd = LiveSoulRegistryStore.shared.activeProjects()
+                        .first(where: { $0.id == projectKey })?.path ?? ""
+                    if cwd.isEmpty { continue }
+                    return LoadableLocation(provider: "codex", cwd: cwd, transcriptPath: path)
+                }
             }
         }
         return nil

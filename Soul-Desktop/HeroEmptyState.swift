@@ -17,8 +17,8 @@ struct HeroEmptyState: View {
     var onPickHarness: (Provider) -> Void = { _ in }
     var branchSeedLoading: Bool = false
     @State private var builtInCommands: [SlashCommand] = []
-    @State private var droppedAttachments: [String] = []
-    @State private var isImageDropTargeted: Bool = false
+    @Binding var droppedAttachments: [String]
+    @Binding var isImageDropTargeted: Bool
 
     var body: some View {
         VStack(spacing: 18) {
@@ -56,33 +56,7 @@ struct HeroEmptyState: View {
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // SOUL-SOUL_DESKTOP-147: canvas-wide dashed-border affordance,
-        // mirrors ThreadView.
-        .overlay {
-            RoundedRectangle(cornerRadius: SoulMetric.radiusL)
-                .strokeBorder(
-                    SoulColor.accent,
-                    style: StrokeStyle(lineWidth: 2, dash: [8, 5])
-                )
-                .padding(8)
-                .opacity(isImageDropTargeted ? 1 : 0)
-                .animation(.easeInOut(duration: 0.12), value: isImageDropTargeted)
-                .allowsHitTesting(false)
-        }
-        // SOUL-SOUL_DESKTOP-146: same whole-canvas drop target as ThreadView.
-        .onDrop(
-            of: DropAttachmentHandler.acceptedTypes,
-            isTargeted: $isImageDropTargeted
-        ) { providers in
-            let new = DropAttachmentHandler.process(
-                providers: providers,
-                projectPath: projectPath,
-                existing: droppedAttachments
-            )
-            guard !new.isEmpty else { return false }
-            droppedAttachments.append(contentsOf: new)
-            return true
-        }
+
         .task {
             builtInCommands = SkillsRegistry.builtInCommands()
         }

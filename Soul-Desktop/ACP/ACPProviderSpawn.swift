@@ -81,10 +81,11 @@ private func enrichedEnvironment() -> [String: String] {
         if seen.insert(d).inserted { dirs.append(d) }
     }
     var env: [String: String] = ["PATH": dirs.joined(separator: ":")]
-    // Forward the registry root so spawned agents resolve `~/soul_registry`
-    // (or a custom location) the same way the host process does. Without
-    // this, scripts that read `os.environ["SOUL_REGISTRY"]` fall through to
-    // their own defaults and may diverge from the host's view of state.
+    // Forward Soul runtime roots so spawned agents resolve state the same
+    // way the host process does. SOUL_REGISTRY remains for legacy scripts;
+    // SOUL_HOME is the primary runtime home for new session/cache writes.
+    env["SOUL_HOME"] = SoulRegistry.soulHomePath
+    env["SOUL_REGISTRY"] = SoulRegistry.registryPath
     if let reg = ProcessInfo.processInfo.environment["SOUL_REGISTRY"], !reg.isEmpty {
         env["SOUL_REGISTRY"] = reg
     }

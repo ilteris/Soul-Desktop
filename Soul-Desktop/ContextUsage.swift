@@ -219,20 +219,19 @@ struct ContextUsage {
     }
 
     private static func estimateFromHooks(sessionId: String, max: Int) -> ContextUsage? {
-        let registry = (ProcessInfo.processInfo.environment["SOUL_REGISTRY"]
-            ?? "~/soul_registry") as NSString
-        let base = registry.expandingTildeInPath
-        // Hooks live under <registry>/sessions/<project>/<session>/hooks.jsonl.
+        // Hooks live under <SOUL_HOME>/sessions/<project>/<session>/hooks.jsonl,
+        // with a legacy ~/soul_registry fallback during migration.
         // We don't know the project key here — walk the sessions tree and pick
         // the matching session dir. Cheap because we stop at first hit.
-        let sessionsRoot = "\(base)/sessions"
-        guard let projects = try? FileManager.default.contentsOfDirectory(atPath: sessionsRoot) else {
-            return nil
-        }
-        for projKey in projects {
-            let candidate = "\(sessionsRoot)/\(projKey)/\(sessionId)/hooks.jsonl"
-            if FileManager.default.fileExists(atPath: candidate) {
-                return estimateBytesAtPath(candidate, max: max)
+        for sessionsRoot in SoulRegistry.sessionRoots() {
+            guard let projects = try? FileManager.default.contentsOfDirectory(atPath: sessionsRoot) else {
+                continue
+            }
+            for projKey in projects {
+                let candidate = "\(sessionsRoot)/\(projKey)/\(sessionId)/hooks.jsonl"
+                if FileManager.default.fileExists(atPath: candidate) {
+                    return estimateBytesAtPath(candidate, max: max)
+                }
             }
         }
         return nil
