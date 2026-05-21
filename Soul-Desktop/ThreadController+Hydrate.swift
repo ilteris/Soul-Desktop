@@ -130,8 +130,31 @@ extension ThreadController {
                 pendingResumeOnFirstSend = true
                 return
             }
-            if provider == .claude || provider == .geminiCLI {
-                await loadSession(id: sid)
+            // SOUL-SOUL_DESKTOP-245 follow-up: hooks.jsonl exists but every
+            // event has empty text/content (kernel writer payload-drop bug —
+            // see SOUL-SOUL_DESKTOP-247). HooksReader filters those out so
+            // ledgerItems is empty even though the session had real turns.
+            // Previously this fell through to `await loadSession(id:)` which
+            // is the pre-Phase-B legacy ACP path — that await pinned
+            // isHydrating=true and the canvas stayed on the skeleton
+            // forever. Take the same preamble-staged path the populated-
+            // hooks branch uses; finalize JSON injection still surfaces
+            // the session's Intent/Summary/Next so the canvas isn't
+            // truly empty, and ensureSession on first send mints a fresh
+            // provider session instead of spawning + loading.
+            let hooksPath = "\(NSHomeDirectory())/soul_registry/sessions/\(proj.id)/\(sid)/hooks.jsonl"
+            if FileManager.default.fileExists(atPath: hooksPath) {
+                if let t = result.title, !t.isEmpty { customTitle = t }
+                nativeSessionId = result.nativeId
+                injectFinalizeSummary(sessionId: sid)
+                items.append(.status(id: UUID(), text: "ℹ session ledger present but turn content was dropped at write-time — finalize summary above; new turns start fresh"))
+                preambleStagingTask?.cancel()
+                let stagingSid = sid
+                let stagingItems = items
+                preambleStagingTask = Task { [weak self] in
+                    await self?.stagePreambleForResume(sid: stagingSid, rendered: stagingItems)
+                }
+                pendingResumeOnFirstSend = true
                 return
             }
             if let t = result.title, !t.isEmpty { customTitle = t }
