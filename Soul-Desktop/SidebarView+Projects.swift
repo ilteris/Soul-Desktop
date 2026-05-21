@@ -97,10 +97,15 @@ extension SidebarView {
         if let owner, !isExpanded(owner.id) {
             setExpanded(owner.id, true)
         }
+        // Beachball investigation: dropped the `withAnimation` wrap. Clicking
+        // a session while mid-scroll was stacking the scroll-to-center
+        // animation on top of the in-flight scroll-momentum transition,
+        // showing up in layout traces as MoveTransition.MoveLayout +
+        // nested-VStack recursion 100+ frames deep. The 50ms delay stays —
+        // expanding the owning project (above) needs a runloop tick for the
+        // freshly-revealed row to materialize before scrollTo can find it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(sid, anchor: .center)
-            }
+            proxy.scrollTo(sid, anchor: .center)
         }
     }
 
