@@ -1,50 +1,5 @@
 import SwiftUI
 import AppKit
-import Foundation
-
-/// SPEC-061 §5 envelope payload — minimal subset that SubagentCard cares
-/// about. Provider + model are reliable as of soul-side SOUL-SOUL-044
-/// (2026-05-20). Envelopes from earlier runs may omit both, in which
-/// case `resolve` returns nil and the header subline is hidden.
-struct SubagentEnvelopeMeta {
-    let provider: String
-    let model: String
-
-    private struct EnvelopeJSON: Decodable {
-        let provider: String?
-        let model: String?
-        let specialist: String?
-    }
-
-    /// Find the envelope for this (projectKey, specialist) combo by
-    /// scanning `~/soul_registry/sessions/<project>/del_<specialist>_*.json`
-    /// and picking the most recent. Multi-delegation-per-turn corner case
-    /// (same specialist invoked twice in close succession) picks the
-    /// newer envelope; the older card may stay un-decorated. Worth a
-    /// follow-up if it bites, but the common case is single-delegation.
-    static func resolve(projectKey: String, specialist: String) -> SubagentEnvelopeMeta? {
-        let dir = "\(NSHomeDirectory())/soul_registry/sessions/\(projectKey)"
-        let prefix = "del_\(specialist)_"
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return nil }
-        let matches = entries
-            .filter { $0.hasPrefix(prefix) && $0.hasSuffix(".json") }
-            .sorted(by: >)  // lexicographic = reverse-chronological for ts-suffixed names
-        for name in matches {
-            let path = "\(dir)/\(name)"
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                  let env = try? JSONDecoder().decode(EnvelopeJSON.self, from: data)
-            else { continue }
-            let provider = (env.provider ?? "").trimmingCharacters(in: .whitespaces)
-            guard !provider.isEmpty else { continue }
-            return SubagentEnvelopeMeta(
-                provider: provider,
-                model: (env.model ?? "").trimmingCharacters(in: .whitespaces)
-            )
-        }
-        return nil
-    }
-}
 
 /// Inline card that renders a `delegate_to_specialist` tool call (SOUL-SOUL_DESKTOP-111).
 ///
@@ -71,12 +26,6 @@ struct SubagentCard: View {
 
     @State private var tailer: SubagentLogTailer?
     @State private var expanded: Bool = false
-    /// SOUL-SOUL_DESKTOP-242 / SPEC-061 §5 consumer. Provider + model from
-    /// the envelope JSON, resolved on first render and refreshed when the
-    /// subagent reaches a terminal state (the envelope is typically
-    /// written at completion). Nil until resolved or when the envelope
-    /// doesn't carry the fields (legacy run).
-    @State private var envelopeMeta: SubagentEnvelopeMeta? = nil
 
     private var logPath: String {
         "\(NSHomeDirectory())/soul_registry/sessions/\(projectKey)/subagents/\(subagentId)/live.log"
@@ -149,20 +98,13 @@ struct SubagentCard: View {
         .onAppear {
             // Skip live tailing for historical rows — replay reads from hooks.jsonl,
             // not the live.log (which may not even exist for old sessions).
-            guard !isHistorical else {
-                envelopeMeta = SubagentEnvelopeMeta.resolve(projectKey: projectKey, specialist: specialist)
-                return
-            }
+            guard !isHistorical else { return }
             if tailer == nil {
                 tailer = SubagentLogTailer(path: logPath)
             }
             if !isTerminal {
                 tailer?.start()
             }
-            // Try once on appear — for fast subagents the envelope may
-            // already exist by render time. Else the status-change handler
-            // below picks it up when the run completes.
-            envelopeMeta = SubagentEnvelopeMeta.resolve(projectKey: projectKey, specialist: specialist)
         }
         .onDisappear {
             tailer?.stop()
@@ -170,7 +112,6 @@ struct SubagentCard: View {
         .onChange(of: status) { _, newStatus in
             if newStatus == "completed" || newStatus == "failed" || newStatus == "error" || newStatus == "stopped" {
                 tailer?.stop()
-                envelopeMeta = SubagentEnvelopeMeta.resolve(projectKey: projectKey, specialist: specialist)
             }
         }
     }
@@ -204,17 +145,6 @@ struct SubagentCard: View {
                     .italic()
                     .lineLimit(2)
                     .padding(.leading, 16) // align past the color dot
-            }
-            // SOUL-SOUL_DESKTOP-242 / SPEC-061 §5 consumer: provider + model
-            // surfaced from the envelope JSON. Hidden when neither is
-            // present (legacy envelopes, in-flight rows before envelope
-            // exists). Codex envelopes carry an empty model — we show just
-            // the provider name in that case, no trailing separator.
-            if let meta = envelopeMeta, !meta.provider.isEmpty {
-                Text(meta.model.isEmpty ? meta.provider : "\(meta.provider) · \(meta.model)")
-                    .font(SoulFont.ui(11))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .padding(.leading, 16)
             }
         }
     }
