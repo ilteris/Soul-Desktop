@@ -66,20 +66,34 @@ extension SidebarView {
         // to test membership — building a sorted dict-merged list to answer
         // a `contains` question. Direct scan over the underlying disk rows
         // and active threads is O(M) per project with zero allocations.
-        let owner = projects.first(where: { p in
-            if let rows = sessionsByProject[p.id], rows.contains(where: { $0.id == sid }) {
-                return true
+        //
+        // SOUL-SOUL_DESKTOP-246 follow-up: prefer activeProjectId when set
+        // (same pattern as navigateSession). Without this, a stale cache
+        // entry for the same sid under a different project — or any future
+        // dup state before SOUL-SOUL_DESKTOP-246's kernel write-time
+        // prevention lands — would cause first(where:) to return the wrong
+        // project, expand it, and scroll the sidebar to a row that isn't
+        // the one the user just clicked.
+        let owner: SoulProject? = {
+            if let pid = activeProjectId,
+               let p = projects.first(where: { $0.id == pid }) {
+                return p
             }
-            if activeThreads.contains(where: {
-                $0.project.id == p.id && ($0.sessionId == sid || "thread-\($0.id)" == sid)
-            }) {
-                return true
-            }
-            if let draft = draftSession, draft.project == p.id, draft.id == sid {
-                return true
-            }
-            return false
-        })
+            return projects.first(where: { p in
+                if let rows = sessionsByProject[p.id], rows.contains(where: { $0.id == sid }) {
+                    return true
+                }
+                if activeThreads.contains(where: {
+                    $0.project.id == p.id && ($0.sessionId == sid || "thread-\($0.id)" == sid)
+                }) {
+                    return true
+                }
+                if let draft = draftSession, draft.project == p.id, draft.id == sid {
+                    return true
+                }
+                return false
+            })
+        }()
         if let owner, !isExpanded(owner.id) {
             setExpanded(owner.id, true)
         }
