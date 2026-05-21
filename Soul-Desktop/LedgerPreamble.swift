@@ -13,12 +13,24 @@ import Foundation
 /// Phase A will replace `build(...)` with a summarizer when `byteCount`
 /// exceeds the safe threshold. Today we either inject verbatim (small
 /// session) or skip and start fresh (with a status row explaining why).
+/// SPEC-245-K step 4. Where in the provider's session/new wire format
+/// the preamble lands. Raw values match the kernel's channel strings
+/// (see `~/dotfiles/soul/kernel/preamble/providers.py`).
+enum PreambleChannel: String {
+    /// Claude (claude-agent-acp): pack into `_meta.systemPrompt` on
+    /// session/new. Agent consumes as native system prompt.
+    case claudeSystemMeta = "claude_system_meta"
+    /// Gemini-CLI / Pi / unknown: provider doesn't expose a system
+    /// slot, so we degrade to prefixing the user-channel prompt.
+    case userPromptPrefix = "user_prompt_prefix"
+}
+
 /// SPEC-245-K Phase A step 2. JSON payload returned by
 /// `soul preamble --format json`. Mirrored from
 /// `~/dotfiles/soul/kernel/commands/soul_preamble.py::_emit`.
 struct PreamblePayload: Decodable {
     let preamble: String
-    let channel: String           // Phase A: "user_prompt_prefix" only
+    let channel: String
     let cacheHit: Bool
     let mode: String              // "verbatim" | "summary"
     let charCount: Int
@@ -31,6 +43,10 @@ struct PreamblePayload: Decodable {
         case cacheHit = "cache_hit"
         case charCount = "char_count"
         case turnCount = "turn_count"
+    }
+
+    var resolvedChannel: PreambleChannel {
+        PreambleChannel(rawValue: channel) ?? .userPromptPrefix
     }
 }
 

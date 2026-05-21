@@ -391,7 +391,23 @@ extension ThreadController {
             // session just opened.
             break
         }
-        let nid = try await client.newSession(cwd: project.path)
+        // SPEC-245-K step 4: if hydrate staged a preamble for the
+        // claude_system_meta channel, send it via _meta.systemPrompt on
+        // session/new instead of prefixing it to the first user prompt.
+        // claude-agent-acp consumes _meta.systemPrompt as the session's
+        // system message; other providers ignore unknown _meta keys, so
+        // the kernel only routes claude here today. Clear after consume
+        // so dispatchPending doesn't double-inject.
+        let systemPrompt: String?
+        if pendingPreambleChannel == .claudeSystemMeta,
+           let pre = pendingContextPreamble {
+            systemPrompt = pre
+            pendingContextPreamble = nil
+            logLifecycle("preamble.system_inject", note: "chars=\(pre.count) channel=claude_system_meta")
+        } else {
+            systemPrompt = nil
+        }
+        let nid = try await client.newSession(cwd: project.path, systemPrompt: systemPrompt)
         nativeSessionId = nid
         hasInitialized = true
         try? kernelSid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)

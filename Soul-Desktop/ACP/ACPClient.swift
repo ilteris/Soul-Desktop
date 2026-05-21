@@ -125,9 +125,30 @@ actor ACPClient {
         return try decode(InitializeResponse.self, from: result)
     }
 
-    func newSession(cwd: String, mcpServers: [McpServer] = []) async throws -> String {
-        let req = NewSessionRequest(cwd: cwd, mcpServers: mcpServers)
-        let result = try await call(method: "session/new", params: req)
+    func newSession(
+        cwd: String,
+        mcpServers: [McpServer] = [],
+        systemPrompt: String? = nil
+    ) async throws -> String {
+        // SPEC-245-K step 4: optional systemPrompt rides via _meta to
+        // providers that read it. Claude (claude-agent-acp) consumes
+        // params._meta.systemPrompt as the session's system message;
+        // other providers ignore unknown _meta keys. When nil we send
+        // the legacy two-param shape unchanged.
+        if systemPrompt == nil {
+            let req = NewSessionRequest(cwd: cwd, mcpServers: mcpServers)
+            let result = try await call(method: "session/new", params: req)
+            let resp = try decode(NewSessionResponse.self, from: result)
+            return resp.sessionId
+        }
+        var p: [String: JSONValue] = ["cwd": .string(cwd)]
+        if !mcpServers.isEmpty,
+           let data = try? encoder.encode(mcpServers),
+           let val = try? decoder.decode(JSONValue.self, from: data) {
+            p["mcpServers"] = val
+        }
+        p["_meta"] = .object(["systemPrompt": .string(systemPrompt!)])
+        let result = try await call(method: "session/new", params: p)
         let resp = try decode(NewSessionResponse.self, from: result)
         return resp.sessionId
     }

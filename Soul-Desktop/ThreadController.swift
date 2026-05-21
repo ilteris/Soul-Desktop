@@ -281,6 +281,14 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     /// will add an explicit `awaitHydrate()` gate.
     var pendingContextPreamble: String? = nil
 
+    /// SPEC-245-K step 4: where the staged preamble should be injected.
+    /// `.claudeSystemMeta` → consumed by mintFreshNativeSession via
+    /// `_meta.systemPrompt` on session/new. `.userPromptPrefix` →
+    /// consumed by dispatchPending as a prefix on the first turn.
+    /// Default protects the legacy code path when no kernel hint
+    /// arrived (e.g. fallback to the in-process Swift renderer).
+    var pendingPreambleChannel: PreambleChannel = .userPromptPrefix
+
     /// Running task for ensureSession() to prevent concurrent executions.
     @ObservationIgnored var ensureSessionTask: Task<Void, Error>? = nil
 

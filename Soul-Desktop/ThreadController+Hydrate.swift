@@ -175,11 +175,16 @@ extension ThreadController {
         do {
             let payload = try await SoulCLI.runJSON(
                 ["preamble", "--session", sid, "--project", project.id,
+                 "--provider", provider.rawValue,
                  "--format", "json", "--summarize"],
                 as: PreamblePayload.self
             )
             guard !payload.preamble.isEmpty else { return }
             pendingContextPreamble = payload.preamble
+            // SPEC-245-K step 4: record the kernel-decided channel so
+            // mintFreshNativeSession (system-meta path) or dispatchPending
+            // (user-prefix path) consumes the preamble at the right moment.
+            pendingPreambleChannel = payload.resolvedChannel
             return
         } catch SoulCLIError.nonZeroExit(let code, let stderr) where code == 2 {
             // Exit 2 = ledger exceeded --max-chars and summarizer is not
