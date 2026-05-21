@@ -266,6 +266,82 @@ enum SoulRegistry {
 
 
     private static let hookWriteQueue = DispatchQueue(label: "soul.registry.hook-write", qos: .utility)
+
+    /// SOUL-SOUL_DESKTOP-246 (kernel-side prevention of split-ledger forks).
+    /// Cache: provider sid → canonical project key. Resolved at first write
+    /// for the sid, reused for the controller's lifetime. Accessed only
+    /// from `hookWriteQueue` (serial), so no lock needed.
+    private static var sidProjectCache: [String: String] = [:]
+
+    /// Resolve which project dir a write for `sid` should land in. If the
+    /// sid already lives under a project on disk, route there — even if
+    /// `caller` is a different project. Prevents the split-ledger
+    /// condition where opening the same session from different cwds
+    /// forked the kernel ledger across `<projectA>/<sid>/` and
+    /// `<projectB>/<sid>/`.
+    ///
+    /// Must be called from `hookWriteQueue`.
+    private static func canonicalProjectForWrite(sid: String, caller: String) -> String {
+        let sessionsRoot = "\(registryPath)/sessions"
+        let fm = FileManager.default
+        // Cache hit: still validate the dir exists (dedup script may have
+        // moved it to ~/.Trash since we cached) — re-resolve on miss.
+        if let cached = sidProjectCache[sid],
+           fm.fileExists(atPath: "\(sessionsRoot)/\(cached)/\(sid)") {
+            return cached
+        }
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: sessionsRoot) else {
+            sidProjectCache[sid] = caller
+            return caller
+        }
+        var existing: [String] = []
+        for proj in projectDirs {
+            // The kernel uses `_backfill` / `_backfill_orphans` / `subagents`
+            // as reserved subdirs at the same depth as session dirs. Skip
+            // them so they can't be confused with a "project dir".
+            if proj.hasPrefix("_") || proj == "subagents" { continue }
+            if fm.fileExists(atPath: "\(sessionsRoot)/\(proj)/\(sid)") {
+                existing.append(proj)
+            }
+        }
+        if existing.isEmpty {
+            // Bootstrap: sid doesn't exist anywhere. Caller's choice wins.
+            sidProjectCache[sid] = caller
+            return caller
+        }
+        if existing.count == 1 {
+            let canonical = existing[0]
+            if canonical != caller {
+                // Mismatch logged at debug level only — happens routinely
+                // when the same session is opened from a different cwd.
+                // Not an error, just a routing decision.
+                NSLog("[soul] redirect write for sid=\(sid): caller=\(caller) → canonical=\(canonical)")
+            }
+            sidProjectCache[sid] = canonical
+            return canonical
+        }
+        // Legacy multi-project state: pick oldest first event. Matches
+        // soul_dedupe_sessions.py's tiebreak so the resolution is stable
+        // before vs after that script runs.
+        let canonical = existing.min(by: { a, b in
+            firstEventTimestamp(in: "\(sessionsRoot)/\(a)/\(sid)/hooks.jsonl")
+                < firstEventTimestamp(in: "\(sessionsRoot)/\(b)/\(sid)/hooks.jsonl")
+        }) ?? caller
+        sidProjectCache[sid] = canonical
+        return canonical
+    }
+
+    private static func firstEventTimestamp(in path: String) -> String {
+        guard let blob = try? String(contentsOfFile: path, encoding: .utf8) else { return "" }
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ts = obj["timestamp"] as? String, !ts.isEmpty
+            else { continue }
+            return ts
+        }
+        return ""
+    }
     private static let hookTimestampFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
@@ -300,7 +376,8 @@ enum SoulRegistry {
         var line = data
         line.append(0x0A)
         hookWriteQueue.async {
-            let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
+            let resolved = canonicalProjectForWrite(sid: sessionId, caller: projectKey)
+            let dir = "\(registryPath)/sessions/\(resolved)/\(sessionId)"
             let fm = FileManager.default
             if !fm.fileExists(atPath: dir) {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -323,7 +400,8 @@ enum SoulRegistry {
             "chunk": chunk
         ]
         hookWriteQueue.async {
-            let dir = "\(registryPath)/sessions/\(projectKey)/\(sessionId)"
+            let resolved = canonicalProjectForWrite(sid: sessionId, caller: projectKey)
+            let dir = "\(registryPath)/sessions/\(resolved)/\(sessionId)"
             let fm = FileManager.default
             if !fm.fileExists(atPath: dir) {
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -768,15 +846,16 @@ enum SoulRegistry {
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
         let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        var latest: String? = nil
         for line in lines {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   (obj["event"] as? String) == "Title",
                   let t = (obj["text"] as? String) ?? (obj["title"] as? String)
             else { continue }
-            return t
+            latest = t
         }
-        return nil
+        return latest
     }
 
     static func slashCommandPrompts(projectKey: String, sessionId: String) -> [(text: String, timestamp: Date)] {
