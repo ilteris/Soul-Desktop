@@ -216,9 +216,16 @@ extension SidebarView {
 
     @ViewBuilder
     func chatRow(_ session: SoulSession) -> some View {
+        // Selection compares on (project, sid) — not sid alone. The kernel
+        // permits the same Claude session UUID to appear under multiple
+        // project dirs (e.g. when the user opens the same session while
+        // cwd is different projects). Without the project check, every
+        // sibling row across projects highlights for the active sid.
+        let selected = session.id == activeSessionId
+                    && session.project == activeProjectId
         ChatRow(
             session: session,
-            isSelected: session.id == activeSessionId,
+            isSelected: selected,
             isStarred: starStore.isStarred(session.id, project: session.project),
             onReplay: { onReplaySession(session) },
             isActiveReplay: session.id == activeReplaySessionId,
