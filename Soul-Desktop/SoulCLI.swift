@@ -112,7 +112,12 @@ enum SoulCLI {
         ]
         let current = ProcessInfo.processInfo.environment["PATH"] ?? ""
         var seen = Set<String>()
-        let dirs = (current.split(separator: ":").map(String.init) + extras).filter { seen.insert($0).inserted }
+        // Extras BEFORE inherited PATH so brew tools (python3 3.14, gemini,
+        // soul) win over system shims when both exist. macOS app processes
+        // inherit a minimal PATH (/usr/bin first), which used to resolve
+        // `env python3` to system Python 3.9 and crash any PEP-604 typing
+        // in kernel scripts. See SPEC-245-K hotfix.
+        let dirs = (extras + current.split(separator: ":").map(String.init)).filter { seen.insert($0).inserted }
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = dirs.joined(separator: ":")
