@@ -61,7 +61,16 @@ extension AppShell {
             }
         }
 
-        if !session.canSafelyResume {
+        // Dual-writer hazard: only block when we have positive evidence
+        // someone else owns the writer (`writer == .external`). The original
+        // gate used `!canSafelyResume`, which also tripped for
+        // `writer == .unknown` on a live, recently-touched ledger — and
+        // .unknown is the default for sessions whose Title/SessionStart
+        // hooks didn't land (SOUL-247 payload-drop class), so it slammed
+        // the modal on rows the user legitimately wants to open. For
+        // .unknown we have no real evidence of another writer; trust the
+        // click.
+        if !session.canSafelyResume, session.writer == .external {
             sessions.pendingActiveId = nil
             externalLiveSession = session
             return
@@ -69,13 +78,25 @@ extension AppShell {
 
         var discoveredCwdOverride: String? = nil
         if !session.loadable, session.replayable {
+            // Cross-project transcript discovery: a Claude/Gemini/Pi/Codex
+            // session whose UUID lives under a different cwd than the
+            // project bucket we filed it in. If we find a hit, route the
+            // spawn at that cwd instead of the bucket's project path.
             if let hit = SessionLoadability.discover(sessionId: session.id) {
                 discoveredCwdOverride = hit.cwd
-            } else if session.promptCount == 0 {
-                sessions.pendingActiveId = nil
-                externalLiveSession = session
-                return
             }
+            // SOUL-247 follow-up: do NOT raise the "can't be loaded"
+            // recovery sheet here. The kernel ledger is `replayable`
+            // (hooks.jsonl exists), so hydrateFromDisk will paint whatever
+            // it has — even if the SOUL-247 payload-drop bug zeroed out
+            // promptCount or the substantive flag. The prior promptCount-
+            // and substantive-based gates falsely tripped on sessions
+            // whose Title hook landed but whose UserPrompt content was
+            // dropped (sidebar showed "3 turns" via transcriptTurns
+            // fallback, but the modal still slammed the canvas shut).
+            // The `canSafelyResume` gate above already protects against
+            // live external writers — that's the real dual-writer hazard.
+            // Worst case here is an empty canvas the user can type into.
         }
 
         harness = provider
@@ -242,6 +263,23 @@ extension AppShell {
     func closeThread(_ key: String) {
         sessions.closeThread(key)
         if sessions.activeThreadKey == nil { prompt = "" }
+    }
+
+    /// Tear down the canvas thread when the user archives the session
+    /// currently open. Without this the sidebar row vanishes (archived
+    /// rows hide unless "Show archived" is toggled) but the chat stays
+    /// painted, leaving the user with a thread they can no longer find
+    /// in the sidebar.
+    func archiveSession(_ session: SoulSession) {
+        if let existing = sessions.existingThread(sessionId: session.id) {
+            closeThread(existing.id)
+        } else if let synthetic = sessions.existingThread(syntheticSessionId: session.id) {
+            closeThread(synthetic.id)
+        }
+        if sessions.draftSession?.id == session.id {
+            sessions.draftSession = nil
+            sessions.pendingActiveId = nil
+        }
     }
 
     func startReplay(_ session: SoulSession) {

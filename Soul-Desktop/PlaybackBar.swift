@@ -5,6 +5,10 @@ struct PlaybackBar: View {
     @Bindable var controller: ReplayController
     var onExit: () -> Void
     @State private var showWorkingSet: Bool = false
+    /// Persisted across launches so a user who lives in reading mode doesn't
+    /// re-toggle on every replay open. ReplayView reads the same key via
+    /// @AppStorage.
+    @AppStorage("soul.replay.readingMode") private var readingMode: Bool = true
 
     private var progress: Double {
         guard controller.total > 0 else { return 0 }
@@ -56,8 +60,14 @@ struct PlaybackBar: View {
                 .foregroundStyle(statusColor)
                 .frame(width: 56, alignment: .leading)
 
-            ProgressBar(progress: progress)
-                .frame(height: 6)
+            readingModeTrigger
+
+            Scrubber(
+                progress: progress,
+                total: controller.total,
+                onSeek: { idx in controller.seek(to: idx) }
+            )
+            .frame(height: 14)
 
             Text("\(controller.index)/\(controller.total)")
                 .font(SoulFont.code(11))
@@ -102,6 +112,39 @@ struct PlaybackBar: View {
         }
     }
 
+    /// Reading-mode toggle. Strips tool calls, plans, status, errors, and
+    /// agent-thought rows so the replay reads like a long-form transcript
+    /// (user prompts + assistant prose + finalize quad). Useful for skimming
+    /// "what did I decide here" on an old session; the full plumbing is one
+    /// click away.
+    private var readingModeTrigger: some View {
+        Button {
+            readingMode.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: readingMode ? "book.fill" : "book")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(readingMode ? .white : SoulColor.accent)
+                Text(readingMode ? "Reading on" : "Reading")
+                    .font(SoulFont.ui(11, weight: .semibold))
+                    .foregroundStyle(readingMode ? .white : SoulColor.accent)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                readingMode ? SoulColor.accent : SoulColor.accentMuted,
+                in: Capsule()
+            )
+            .overlay(
+                Capsule().stroke(SoulColor.accent.opacity(readingMode ? 0 : 0.6), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.soulChip)
+        .help(readingMode
+              ? "Reading mode — tool calls hidden. Click for full transcript."
+              : "Reading mode — show only prompts, replies, and finalize.")
+    }
+
     private var workingSetTrigger: some View {
         Button {
             showWorkingSet.toggle()
@@ -137,7 +180,7 @@ private struct SpeedSlider: View {
     let speed: Double
     var onChange: (Double) -> Void
 
-    // We treat the slider value as log2(speed): -2 (0.25×) ... 2 (4×).
+    // We treat the slider value as log2(speed): -2 (0.25×) ... 3 (8×).
     private var sliderBinding: Binding<Double> {
         Binding(
             get: { log2(speed) },
@@ -161,7 +204,7 @@ private struct SpeedSlider: View {
                 .onTapGesture { onChange(1.0) }
                 .help("Click to reset to 1×")
 
-            Slider(value: sliderBinding, in: -2.0...2.0)
+            Slider(value: sliderBinding, in: -2.0...3.0)
                 .controlSize(.mini)
                 .tint(SoulColor.accent)
                 .frame(width: 110)
@@ -181,5 +224,59 @@ private struct ProgressBar: View {
                     .frame(width: max(0, min(geo.size.width, geo.size.width * progress)))
             }
         }
+    }
+}
+
+/// Interactive scrubber: click anywhere to seek, drag to scrub. The hit
+/// region is the full 14pt height so the bar is comfortably grabbable even
+/// though the visible track is only 6pt tall. Shows a playhead disc at the
+/// current position that grows slightly while dragging.
+private struct Scrubber: View {
+    let progress: Double
+    let total: Int
+    var onSeek: (Int) -> Void
+
+    @State private var isDragging: Bool = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let clamped = max(0, min(1, progress))
+            let knobX = width * clamped
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(SoulColor.surface)
+                    .frame(height: 6)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                Capsule()
+                    .fill(SoulColor.accent)
+                    .frame(width: max(0, knobX), height: 6)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                Circle()
+                    .fill(SoulColor.accent)
+                    .frame(width: isDragging ? 12 : 10, height: isDragging ? 12 : 10)
+                    .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+                    .offset(x: knobX - (isDragging ? 6 : 5))
+                    .animation(.easeOut(duration: 0.1), value: isDragging)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isDragging = true
+                        applySeek(at: value.location.x, width: width)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
+        }
+    }
+
+    private func applySeek(at x: CGFloat, width: CGFloat) {
+        guard total > 0, width > 0 else { return }
+        let fraction = max(0, min(1, x / width))
+        let target = Int((fraction * Double(total)).rounded())
+        onSeek(target)
     }
 }

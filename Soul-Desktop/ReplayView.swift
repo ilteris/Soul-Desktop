@@ -7,17 +7,22 @@ struct ReplayView: View {
     var onExit: () -> Void
 
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
+    /// Reading-mode toggle (persisted). When true, ReplayView.chapters
+    /// strips tool calls / plans / status / errors / agent thoughts so the
+    /// replay reads as a long-form transcript. PlaybackBar owns the toggle
+    /// UI; this view just consumes the same @AppStorage key.
+    @AppStorage("soul.replay.readingMode") private var readingMode: Bool = true
     /// Explicit user overrides for chapter expansion. Absent entries fall back
     /// to "only the latest chapter is open" — so as new prompts land, prior
     /// chapters auto-collapse without trapping any chapter the user opened.
     @State private var explicitExpansion: [Int: Bool] = [:]
-    /// Tracks whether the bottom sentinel is on-screen. Replay only follows the
-    /// stream when the user is parked at the bottom; if they scrolled up to
-    /// read, new items land off-screen without yanking their position.
-    @State private var atBottom: Bool = true
+    /// Replay auto-follow gate. A user scroll upward detaches playback from
+    /// bottom-follow; reaching bottom again re-arms it.
+    @State private var scrollFollow = ScrollFollowState()
+    @State private var isAutoScrolling: Bool = false
 
     private var chapters: [ReplayChapter] {
-        ReplayView.chapters(from: controller.visible)
+        ReplayView.chapters(from: controller.visible, readingMode: readingMode)
     }
 
     var body: some View {
@@ -26,7 +31,7 @@ struct ReplayView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: readingMode ? 0 : 14) {
                         Color.clear.frame(height: 8)
                         if controller.isLoading {
                             loadingState
@@ -40,8 +45,6 @@ struct ReplayView: View {
                         Color.clear
                             .frame(height: 60)
                             .id("__bottom__")
-                            .onAppear { atBottom = true }
-                            .onDisappear { atBottom = false }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity)
@@ -53,17 +56,62 @@ struct ReplayView: View {
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
-                .onChange(of: controller.visible.count) { _, _ in
-                    guard atBottom else { return }
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo("__bottom__", anchor: .bottom)
+                .onScrollGeometryChange(for: ScrollFollowGeometry.self) { geometry in
+                    let viewportBottom = geometry.contentOffset.y + geometry.containerSize.height
+                    let contentBottom = geometry.contentSize.height
+                    return ScrollFollowGeometry(
+                        offsetY: geometry.contentOffset.y,
+                        atBottom: viewportBottom >= contentBottom - 8
+                    )
+                } action: { oldValue, newValue in
+                    if newValue.atBottom {
+                        scrollFollow.userDetachedFromBottom = false
+                    } else if newValue.offsetY < oldValue.offsetY - 1 {
+                        scrollFollow.userDetachedFromBottom = true
                     }
+                }
+                .onScrollPhaseChange { _, newPhase, context in
+                    let viewportBottom = context.geometry.contentOffset.y + context.geometry.containerSize.height
+                    let contentBottom = context.geometry.contentSize.height
+                    guard !isAutoScrolling else { return }
+                    switch newPhase {
+                    case .tracking, .interacting, .decelerating:
+                        if viewportBottom < contentBottom - 8 {
+                            scrollFollow.userDetachedFromBottom = true
+                        }
+                    case .idle, .animating:
+                        break
+                    }
+                }
+                .onChange(of: controller.visible.count) { _, _ in
+                    guard !scrollFollow.userDetachedFromBottom else { return }
+                    autoScroll(to: "__bottom__", proxy: proxy)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { controller.start() }
         .onDisappear { controller.stop() }
+    }
+
+    private func autoScroll(to id: AnyHashable, proxy: ScrollViewProxy) {
+        scrollFollow.autoScrollGeneration += 1
+        let generation = scrollFollow.autoScrollGeneration
+        isAutoScrolling = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            guard generation == scrollFollow.autoScrollGeneration else { return }
+            guard !scrollFollow.userDetachedFromBottom else {
+                isAutoScrolling = false
+                return
+            }
+            withAnimation(.smooth(duration: 0.18)) {
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                guard generation == scrollFollow.autoScrollGeneration else { return }
+                isAutoScrolling = false
+            }
+        }
     }
 
     private var loadingState: some View {
@@ -95,14 +143,46 @@ struct ReplayView: View {
     @ViewBuilder
     private func chapterView(_ chapter: ReplayChapter, isLatest: Bool) -> some View {
         let expanded = isExpanded(chapter.id, isLatest: isLatest)
-        VStack(alignment: .leading, spacing: 14) {
+        let isFirst = chapter.id == 0
+        VStack(alignment: .leading, spacing: readingMode ? 18 : 14) {
+            if readingMode, !isFirst, chapter.header != nil {
+                // Chapter break: thin hairline rule before each new user
+                // prompt so a long read-through scans as discrete chapters
+                // instead of one continuous wall of text. The rule sits in
+                // the gutter (no inset) so it reads as a structural seam
+                // rather than a UI element.
+                Rectangle()
+                    .fill(SoulColor.border.opacity(0.35))
+                    .frame(height: 1)
+                    .padding(.top, 12)
+            }
             if let header = chapter.header {
-                ChapterHeader(
-                    header: header,
-                    bodyCount: chapter.body.count,
-                    expanded: expanded,
-                    onToggle: { toggle(chapter.id) }
-                )
+                if readingMode {
+                    // Reading mode: render the user prompt through the same
+                    // UserMessageRow as ThreadView. We deliberately pass
+                    // `isHistorical: false` so the bubble keeps its full
+                    // `bgElevated` fill + visible stroke — at 0.7 opacity
+                    // the historical bubble fades into the background and
+                    // the right-aligned prompt reads as a title instead of
+                    // a chat bubble. The "we are in the history" cue is
+                    // carried by the agent prose below, which IS historical-
+                    // muted; the bright user bubble acts as a clear "I said
+                    // this" anchor at the top of each chapter — same metaphor
+                    // as Apple Messages' history view.
+                    ThreadItemRow(
+                        projectPath: controller.project.path,
+                        item: header,
+                        isHistorical: false
+                    )
+                    .id(header.id)
+                } else {
+                    ChapterHeader(
+                        header: header,
+                        bodyCount: chapter.body.count,
+                        expanded: expanded,
+                        onToggle: { toggle(chapter.id) }
+                    )
+                }
             } else if !chapter.body.isEmpty {
                 // Pre-first-prompt prelude — no toggle, just render.
                 EmptyView()
@@ -110,14 +190,22 @@ struct ReplayView: View {
 
             if expanded || chapter.header == nil {
                 ForEach(chapter.body, id: \.id) { item in
-                    ThreadItemRow(projectPath: controller.project.path, item: item, isHistorical: false)
-                        .id(item.id)
+                    ThreadItemRow(
+                        projectPath: controller.project.path,
+                        item: item,
+                        isHistorical: readingMode
+                    )
+                    .id(item.id)
                 }
             }
         }
+        .padding(.bottom, readingMode ? 16 : 0)
     }
 
     private func isExpanded(_ chapterId: Int, isLatest: Bool) -> Bool {
+        // Reading mode always renders the full chapter — the accordion
+        // metaphor only exists for the chat-shaped replay.
+        if readingMode { return true }
         if let v = explicitExpansion[chapterId] { return v }
         return isLatest
     }
@@ -127,13 +215,21 @@ struct ReplayView: View {
         explicitExpansion[chapterId] = !current
     }
 
-    static func chapters(from items: [ThreadItem]) -> [ReplayChapter] {
+    static func chapters(from items: [ThreadItem], readingMode: Bool = false) -> [ReplayChapter] {
         var result: [ReplayChapter] = []
         var headerItem: ThreadItem? = nil
         var body: [ThreadItem] = []
 
         func flush() {
             if headerItem != nil || !body.isEmpty {
+                // Reading mode: drop chapters whose body filtered to nothing.
+                // They render as orphan prompt headings with no reply, which
+                // is just noise. Chapters with content under a different
+                // prompt heading still flow naturally.
+                if readingMode, headerItem != nil, body.isEmpty {
+                    headerItem = nil
+                    return
+                }
                 result.append(ReplayChapter(id: result.count, header: headerItem, body: body))
             }
         }
@@ -143,12 +239,28 @@ struct ReplayView: View {
                 flush()
                 headerItem = item
                 body = []
-            } else {
+            } else if !readingMode || isReadable(item) {
                 body.append(item)
             }
         }
         flush()
         return result
+    }
+
+    /// Items that survive reading-mode filtering. Keep the narrative spine
+    /// (assistant prose, branch summaries, finalize quad); drop the plumbing
+    /// (tool calls, plans, transient status, errors, agent thoughts).
+    private static func isReadable(_ item: ThreadItem) -> Bool {
+        switch item {
+        case .agentMessage, .branchSummary, .finalize:
+            return true
+        case .userMessage:
+            // userMessage never reaches here (handled as a chapter header
+            // upstream), but include for switch exhaustiveness.
+            return true
+        case .agentThought, .toolCall, .toolCallGroup, .plan, .status, .error:
+            return false
+        }
     }
 }
 

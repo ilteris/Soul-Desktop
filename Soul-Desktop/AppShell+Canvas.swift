@@ -215,6 +215,7 @@ extension AppShell {
                 onReplaySession: startReplay,
                 onNewChat: { target in newChat(targetProjectID: target) },
                 onNewProject: openNewProjectWizard,
+                onArchive: { session in archiveSession(session) },
                 onBranch: { session, target in handleBranch(session: session, target: target) },
                 onOpenSettings: { showSettings = true },
                 onToggleSidebar: toggleSidebar,

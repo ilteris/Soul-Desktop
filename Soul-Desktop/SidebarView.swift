@@ -7,6 +7,11 @@ struct SidebarView: View {
     var onReplaySession: (SoulSession) -> Void = { _ in }
     var onNewChat: (_ targetProjectID: String?) -> Void = { _ in }
     var onNewProject: () -> Void = {}
+    /// Fires after archiveStore.archive completes. AppShell uses this to
+    /// tear down the active thread when the user archives the session
+    /// currently open in the canvas — otherwise the row disappears from
+    /// the sidebar but the chat stays painted in the center pane.
+    var onArchive: (SoulSession) -> Void = { _ in }
     /// Cross-provider branch: AppShell looks up the active ThreadController
     /// for the session (or hydrates from kernel ledger), then composes a
     /// branch-seed via background LLM and pre-fills the composer.

@@ -295,6 +295,7 @@ extension SidebarView {
             } else {
                 Button("Archive") {
                     archiveStore.archive(session.id, project: session.project)
+                    onArchive(session)
                 }
             }
             if repairableProvider(for: session) != nil {
@@ -307,8 +308,8 @@ extension SidebarView {
     }
 
     /// Move every on-disk artifact for a session to ~/.Trash:
-    ///   - kernel ledger:  ~/soul_registry/sessions/<proj>/<sid>/
-    ///   - finalize JSON:  ~/soul_registry/sessions/<proj>/*<sid>.json
+    ///   - kernel ledger:  <SOUL_HOME>/sessions/<proj>/<sid>/, plus legacy registry copies
+    ///   - finalize JSON:  <SOUL_HOME>/sessions/<proj>/*<sid>.json, plus legacy registry copies
     ///   - Claude file:    ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
     ///   - Gemini chat:    ~/.gemini/tmp/<basename>(-N)/chats/*<first8>*
     ///   - Codex transcript sibling lives inside the ledger dir, swept above
@@ -320,12 +321,14 @@ extension SidebarView {
         var paths: [String] = []
 
         // Kernel ledger dir.
-        let kernelDir = NSHomeDirectory() + "/soul_registry/sessions/\(session.project)/\(session.id)"
-        if fm.fileExists(atPath: kernelDir) { paths.append(kernelDir) }
+        for root in SoulRegistry.sessionRoots() {
+            let kernelDir = "\(root)/\(session.project)/\(session.id)"
+            if fm.fileExists(atPath: kernelDir) { paths.append(kernelDir) }
+        }
 
         // Finalize JSON siblings (timestamp-prefixed and bare).
-        let projDir = NSHomeDirectory() + "/soul_registry/sessions/\(session.project)"
-        if let entries = try? fm.contentsOfDirectory(atPath: projDir) {
+        for projDir in SoulRegistry.projectSessionDirs(session.project) {
+            guard let entries = try? fm.contentsOfDirectory(atPath: projDir) else { continue }
             for name in entries where name.hasSuffix(".json") {
                 let stem = String(name.dropLast(5))
                 if stem == session.id || stem.hasSuffix("_\(session.id)") {

@@ -38,6 +38,20 @@ struct ThreadView: View {
     /// `controller` only at `.onDisappear`.
     @State private var anchor = ScrollAnchor()
 
+    /// Latched reader-mode gate for streaming auto-follow. A real upward scroll
+    /// detaches from bottom-follow immediately; only reaching the bottom again
+    /// clears it. This is more reliable than sampling "am I at bottom?" during
+    /// a row append, because SwiftUI/AppKit may still report the pre-layout
+    /// bottom while streamed content is growing.
+    @State private var scrollFollow = ScrollFollowState()
+
+    /// True while an auto-scroll animation is in flight. The ScrollView's
+    /// indicators are pinned hidden during this window so the scrollbar
+    /// doesn't flash on every streamed chunk — auto-scroll is system-driven,
+    /// the user didn't ask to see it. Auto-flips off after the animation
+    /// duration completes.
+    @State private var isAutoScrolling: Bool = false
+
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
     /// panel opens/closes (canvas shrinks/grows, rows re-wrap, absolute pixel
@@ -193,9 +207,38 @@ struct ThreadView: View {
                 // — natural macOS feel). Horizontal elasticity killed via the
                 // AppKit configurator since the canvas never scrolls X.
                 .scrollBounceBehavior(.always, axes: .vertical)
+                .scrollIndicators(isAutoScrolling ? .hidden : .automatic)
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
+                .onScrollGeometryChange(for: ScrollFollowGeometry.self) { geometry in
+                    let viewportBottom = geometry.contentOffset.y + geometry.containerSize.height
+                    let contentBottom = geometry.contentSize.height
+                    return ScrollFollowGeometry(
+                        offsetY: geometry.contentOffset.y,
+                        atBottom: viewportBottom >= contentBottom - 8
+                    )
+                } action: { oldValue, newValue in
+                    if newValue.atBottom {
+                        scrollFollow.userDetachedFromBottom = false
+                    } else if newValue.offsetY < oldValue.offsetY - 1 {
+                        scrollFollow.userDetachedFromBottom = true
+                    }
+                }
+                .onScrollPhaseChange { _, newPhase, context in
+                    let viewportBottom = context.geometry.contentOffset.y + context.geometry.containerSize.height
+                    let contentBottom = context.geometry.contentSize.height
+                    guard controller.isWorking else { return }
+                    guard !isAutoScrolling else { return }
+                    switch newPhase {
+                    case .tracking, .interacting, .decelerating:
+                        if viewportBottom < contentBottom - 8 {
+                            scrollFollow.userDetachedFromBottom = true
+                        }
+                    case .idle, .animating:
+                        break
+                    }
+                }
                 .onAppear {
                     // Restore the saved anchor when switching back to this
                     // thread. Suppress row `.onAppear` anchor writes during
@@ -234,6 +277,7 @@ struct ThreadView: View {
                     // because the item's own height anchors the calculation.
                     guard !nowHydrating else { return }
                     anchor.atBottom = true
+                    scrollFollow.userDetachedFromBottom = false
                     recentlyHydrated = true
                     // Resolve target id once: prefer the very last visible
                     // row (queued or main). Fall back to __bottom__ only if
@@ -262,10 +306,15 @@ struct ThreadView: View {
                     }
                 }
                 .onChange(of: controller.items.count) { _, _ in
-                    // Follow the stream while a turn is active — the user
-                    // just sent, they want to see the response land. Outside
-                    // of a working turn, only follow if they were already at
-                    // the bottom.
+                    // Only follow until the user explicitly scrolls upward.
+                    // The send-start snap (onChange of isWorking below) gets
+                    // them there; the streaming response keeps painting at
+                    // the bottom while they stay parked there. The moment
+                    // scroll geometry reports upward motion away from the
+                    // bottom, we stop forcing them back. Previously we ORed
+                    // in `controller.isWorking`, which hijacked the scroll
+                    // for the entire streamed turn even if they were trying
+                    // to read earlier content.
                     //
                     // SOUL-SOUL_DESKTOP-233: skip during the post-hydrate
                     // window. The hydrate handler is running a two-pass
@@ -273,19 +322,20 @@ struct ThreadView: View {
                     // middle because the LazyVStack hasn't materialized the
                     // bottom rows yet, and the two calls would fight.
                     guard !recentlyHydrated else { return }
-                    guard anchor.atBottom || controller.isWorking else { return }
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo("__bottom__", anchor: .bottom)
-                    }
+                    guard !scrollFollow.userDetachedFromBottom else { return }
+                    autoScroll(to: "__bottom__", proxy: proxy)
                 }
                 .onChange(of: controller.isWorking) { _, newValue in
-                    // Transitioning into a working turn: snap to bottom even
-                    // if the count didn't change (e.g., the first user row
-                    // already landed before this view observed the change).
+                    // Transitioning into a working turn: snap to bottom only
+                    // if the user is parked there. Previously this snapped
+                    // unconditionally on every false→true transition (e.g.,
+                    // a tool call mid-turn could re-toggle isWorking and
+                    // yank a reading user back). The send-start case still
+                    // works because typing a new prompt naturally leaves
+                    // the user at the bottom.
                     guard newValue else { return }
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo("__bottom__", anchor: .bottom)
-                    }
+                    guard !scrollFollow.userDetachedFromBottom else { return }
+                    autoScroll(to: "__bottom__", proxy: proxy)
                 }
                 // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
                 // changes (right side panel opens / closes / resizes).
@@ -357,6 +407,31 @@ struct ThreadView: View {
         .onChange(of: controller.renameRequestNonce) { _, _ in
             renameDraft = controller.customTitle ?? controller.displayTitle
             renaming = true
+        }
+    }
+
+    /// Coalesce bottom-follow requests into a short frame window. Streaming
+    /// can append rows faster than a 150 ms animation can finish; animating
+    /// every append stacks scrollTo calls and feels sticky. This keeps the
+    /// latest request only, then performs one gentle correction after SwiftUI
+    /// has had a chance to lay out the new row height.
+    private func autoScroll(to id: AnyHashable, proxy: ScrollViewProxy) {
+        scrollFollow.autoScrollGeneration += 1
+        let generation = scrollFollow.autoScrollGeneration
+        isAutoScrolling = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            guard generation == scrollFollow.autoScrollGeneration else { return }
+            guard !scrollFollow.userDetachedFromBottom else {
+                isAutoScrolling = false
+                return
+            }
+            withAnimation(.smooth(duration: 0.18)) {
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                guard generation == scrollFollow.autoScrollGeneration else { return }
+                isAutoScrolling = false
+            }
         }
     }
 
@@ -466,6 +541,16 @@ final class ScrollAnchor {
     var visibleIds: Set<UUID> = []
     var itemId: UUID? = nil
     var atBottom: Bool = true
+}
+
+final class ScrollFollowState {
+    var userDetachedFromBottom: Bool = false
+    var autoScrollGeneration: Int = 0
+}
+
+struct ScrollFollowGeometry: Equatable {
+    let offsetY: CGFloat
+    let atBottom: Bool
 }
 
 struct ThreadItemRow: View {

@@ -136,7 +136,7 @@ final class ReplayController {
     }
 
     func setSpeed(_ s: Double) {
-        speed = max(0.25, min(4.0, s))
+        speed = max(0.25, min(8.0, s))
     }
 
     private func run() async {

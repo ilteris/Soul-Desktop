@@ -9,6 +9,13 @@ private enum DiffRow {
 struct DiffView: View {
     let details: ToolCallDetails
 
+    // Default render cap. Eagerly laying out 450-row diffs inside a top-level
+    // textSelection scope beachballs the main thread (single giant NSTextView
+    // snapshot + ~4 Text subviews per row). Cap at 120; user opts in to the
+    // full render with the "show all" toggle below.
+    private static let defaultRowCap = 120
+    @State private var showAll: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             switch details.kind {
@@ -55,9 +62,29 @@ struct DiffView: View {
     private func diffRows(old: String, new: String, startLine: Int) -> some View {
         let rows = Self.computeRows(old: old, new: new, startLine: startLine)
         let gutter = Self.gutterWidth(for: rows)
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+        let cap = Self.defaultRowCap
+        let capped = !showAll && rows.count > cap
+        let visible = capped ? Array(rows.prefix(cap)) : rows
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(visible.enumerated()), id: \.offset) { _, row in
                 diffRowView(row, gutterWidth: gutter)
+            }
+            if capped {
+                Button {
+                    showAll = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10))
+                        Text("Show all \(rows.count) lines (\(rows.count - cap) hidden)")
+                            .font(SoulFont.code(11))
+                    }
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
