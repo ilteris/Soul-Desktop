@@ -405,13 +405,24 @@ extension ThreadController {
             // on the literal tool name from rawTitle / payload["name"]. The
             // toolCallId doubles as the subagent dir name (kernel contract).
             let toolName = payload["name"]?.stringValue ?? rawTitle
-            if toolName == "delegate_to_specialist" || rawKind == "delegate_to_specialist" {
+            let normalizedToolName = toolName
+                .replacingOccurrences(of: "mcp_soul-os_", with: "")
+                .replacingOccurrences(of: "mcp_soul_os_", with: "")
+            let directSpecialist = SpecialistPalette.isKnownSpecialist(normalizedToolName) ? normalizedToolName : nil
+            let isDelegateTool = normalizedToolName == "delegate_to_specialist"
+                || normalizedToolName.hasSuffix("_delegate_to_specialist")
+                || normalizedToolName.contains("delegate_to_specialist")
+                || rawKind == "delegate_to_specialist"
+            if isDelegateTool || directSpecialist != nil {
                 let specialist = rawInput?["specialist"]?.stringValue
                     ?? payload["specialist"]?.stringValue
+                    ?? directSpecialist
                     ?? "specialist"
                 let objective = rawInput?["task"]?.stringValue
                     ?? rawInput?["objective"]?.stringValue
+                    ?? rawInput?["query"]?.stringValue
                     ?? payload["task"]?.stringValue
+                    ?? payload["query"]?.stringValue
                     ?? ""
                 // Server-resolved color from agent frontmatter — parsed as a hex
                 // string ("#RRGGBB" or "RRGGBB") from the tool metadata. Optional;

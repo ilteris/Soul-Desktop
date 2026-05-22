@@ -88,6 +88,14 @@ extension ThreadController {
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
             let quietFor = Int(now.timeIntervalSince(lastSeen))
+            if isSubagentToolCall(toolId: toolId) {
+                if signpostThreshold > 0,
+                   quietFor >= signpostThreshold,
+                   !toolCallSignposted.contains(toolId) {
+                    emitSubagentSignpost(toolId: toolId, quietFor: quietFor)
+                }
+                continue
+            }
             if quietFor >= toolTimeout {
                 expired.append(toolId)
                 continue
@@ -107,6 +115,24 @@ extension ThreadController {
         for toolId in expired {
             await fireToolCallTimeout(toolId: toolId, threshold: toolTimeout)
         }
+    }
+
+    /// Soul specialist calls can legitimately run past the generic
+    /// per-tool-call timeout without emitting ACP updates while the
+    /// delegated agent is reasoning. Classify both canonical
+    /// `delegate_to_specialist` cards and Gemini's direct specialist tools
+    /// (for example `registry_guardian`) as subagent-like, then let the
+    /// parent turn-level watchdog remain the outer safety net.
+    private func isSubagentToolCall(toolId: String) -> Bool {
+        guard let uuid = seenToolCallIds[toolId],
+              let idx = items.firstIndex(where: { $0.id == uuid }),
+              case .toolCall(_, let kind, let title, _, _, let details) = items[idx]
+        else { return false }
+        if details?.isSubagent == true { return true }
+        if kind == "delegate_to_specialist" || kind.contains("delegate_to_specialist") {
+            return true
+        }
+        return SpecialistPalette.isKnownSpecialist(kind) || SpecialistPalette.isKnownSpecialist(title)
     }
 
     /// SOUL-SOUL_DESKTOP-110: emit a one-time "tool still working" status row
@@ -138,6 +164,36 @@ extension ThreadController {
                 "tool_call_id": toolId,
                 "quiet_seconds": quietFor,
                 "threshold": threshold,
+            ]
+        )
+    }
+
+    func emitSubagentSignpost(toolId: String, quietFor: Int) {
+        toolCallSignposted.insert(toolId)
+        var label = "subagent"
+        if let uuid = seenToolCallIds[toolId],
+           let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .toolCall(_, let k, let t, _, _, let details) = items[idx] {
+            if case .subagent(let specialist, _, _, _, _) = details?.kind {
+                label = specialist
+            } else if SpecialistPalette.isKnownSpecialist(k) {
+                label = k
+            } else if SpecialistPalette.isKnownSpecialist(t) {
+                label = t
+            }
+        }
+        items.append(.status(
+            id: UUID(),
+            text: "⏳ \(label) still running after \(quietFor)s — specialist delegation can exceed the generic tool timeout"
+        ))
+        ledger.appendHook(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            event: [
+                "event": "SubagentLongRunning",
+                "provider": provider.rawValue,
+                "tool_call_id": toolId,
+                "quiet_seconds": quietFor,
             ]
         )
     }

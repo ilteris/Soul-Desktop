@@ -33,6 +33,11 @@ struct ToolCallDetails: Hashable {
             if case .output = self { return true }
             return false
         }
+
+        var isSubagent: Bool {
+            if case .subagent = self { return true }
+            return false
+        }
     }
     var kind: Kind
     /// First line of the edit in the source file when known (from ACP's
@@ -44,6 +49,8 @@ struct ToolCallDetails: Hashable {
     /// Lets the row render `+N -M` instead of additions-only. nil when the
     /// path is unknown or the file didn't exist (fresh write).
     var previousLineCount: Int? = nil
+
+    var isSubagent: Bool { kind.isSubagent }
 }
 
 indirect enum ThreadItem: Identifiable, Hashable {

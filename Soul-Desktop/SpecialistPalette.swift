@@ -21,6 +21,10 @@ enum SpecialistPalette {
         "creative_technologist":  0xFF2D55, // pink
     ]
 
+    static func isKnownSpecialist(_ name: String) -> Bool {
+        knownColors.keys.contains(name.lowercased())
+    }
+
     /// Resolve a color for a specialist. Server-provided hex always wins. Falls back to
     /// the built-in palette, then to a deterministic hash-derived hue for unknown names.
     static func color(for specialist: String, serverHex: UInt32? = nil) -> Color {
