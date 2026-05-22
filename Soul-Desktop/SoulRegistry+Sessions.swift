@@ -331,15 +331,17 @@ extension SoulRegistry {
             }
             // Sidebar rows should be stable: once a session exists, appending
             // prompts, assistant chunks, titles, summaries, or finalize rows
-            // must not move it around. Use creation/start time for every row
-            // that has a ledger, and keep last activity in `lastActivityAt`
-            // for stale/dirty/display state.
-            if let started = s.startedAt {
-                s.timestamp = started
-            } else if let dir = shape.sessionDir, let created = creationTime(dir) {
-                s.timestamp = created
-            } else if let hooks = shape.hooksPath, let created = creationTime(hooks) {
-                s.timestamp = created
+            // must not move it around. Live rows use ledger creation/start time;
+            // finalized rows keep the summary timestamp, because opening old
+            // summaries can mint a new hooks.jsonl and that must not re-sort them.
+            if s.isLive {
+                if let started = s.startedAt {
+                    s.timestamp = started
+                } else if let dir = shape.sessionDir, let created = creationTime(dir) {
+                    s.timestamp = created
+                } else if let hooks = shape.hooksPath, let created = creationTime(hooks) {
+                    s.timestamp = created
+                }
             }
             if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
                 s.isDirty = true
