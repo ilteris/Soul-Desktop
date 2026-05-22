@@ -133,6 +133,7 @@
 				A2B2B6892FB0145A004C6EEC /* Sources */,
 				A2B2B68A2FB0145A004C6EEC /* Frameworks */,
 				A2B2B68B2FB0145A004C6EEC /* Resources */,
+				C0D3C0DE0000000000000005 /* Copy Bundled Gemini CLI */,
 			);
 			buildRules = (
 			);
@@ -270,6 +271,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		C0D3C0DE0000000000000005 /* Copy Bundled Gemini CLI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Vendor/GeminiCLI",
+			);
+			name = "Copy Bundled Gemini CLI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GeminiCLI",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nSRC=\"${SRCROOT}/Vendor/GeminiCLI\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GeminiCLI\"\nrm -rf \"$DST\"\nif [ -d \"$SRC\" ]; then\n  mkdir -p \"$(dirname \"$DST\")\"\n  ditto \"$SRC\" \"$DST\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A2B2B6892FB0145A004C6EEC /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -346,7 +371,7 @@
 				DEVELOPMENT_TEAM = TLES4YRYFC;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -410,7 +435,7 @@
 				DEVELOPMENT_TEAM = TLES4YRYFC;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -608,7 +633,7 @@
 				DEVELOPMENT_TEAM = TLES4YRYFC;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;

@@ -16,6 +16,9 @@ struct ACPProviderSpawn {
         let env = enrichedEnvironment()
         switch provider {
         case .geminiCLI:
+            if let bundled = bundledGeminiSpawn(env: env) {
+                return bundled
+            }
             // SOUL_GEMINI_LOCAL=1 (or a path) swaps the global gemini install
             // for a local checkout under ~/Code/gemini-cli — used while
             // iterating on patches to gemini-cli itself (e.g. nested-subagent
@@ -63,6 +66,21 @@ struct ACPProviderSpawn {
             )
         }
     }
+}
+
+/// Resolve the Gemini CLI runtime bundled inside the app. The bundle is
+/// produced by `scripts/vendor_gemini_cli.sh` from the pinned gemini-cli
+/// checkout and copied into Contents/Resources at build time.
+private func bundledGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
+    guard let resources = Bundle.main.resourceURL else { return nil }
+    let entry = resources
+        .appendingPathComponent("GeminiCLI")
+        .appendingPathComponent("bundle")
+        .appendingPathComponent("gemini.js")
+        .path
+    guard FileManager.default.fileExists(atPath: entry) else { return nil }
+    guard let node = which("node") else { return nil }
+    return .init(executablePath: node, arguments: [entry, "--acp"], environment: env)
 }
 
 /// Resolve a local gemini-cli spawn when the user has opted in via
