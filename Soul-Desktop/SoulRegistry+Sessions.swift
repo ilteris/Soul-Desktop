@@ -184,6 +184,18 @@ extension SoulRegistry {
         return n
     }
 
+    private static func isSidebarControlTitle(_ raw: String?) -> Bool {
+        guard let title = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
+            return false
+        }
+        let upper = title.uppercased()
+        if upper.hasPrefix("ACT AS @") { return true }
+        if upper.hasPrefix("ACT AS ") { return true }
+        if title.hasPrefix("<prior_session_context>") { return true }
+        if title.hasPrefix("</prior_session_context>") { return true }
+        return false
+    }
+
     /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
     /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
     private final class GeminiDirCache {
@@ -422,13 +434,14 @@ extension SoulRegistry {
             }
 
             let hasFinalize = (shape.finalizePath != nil)
-            let hasTitle = (s.intent?.isEmpty == false) || (s.summary?.isEmpty == false)
+            let title = s.intent ?? s.summary
+            let hasTitle = title?.isEmpty == false
             let hasConversation = s.promptCount > 0 || s.transcriptTurns > 0 || s.eventCount >= 4
-            // A finalize JSON alone is administrative memory. Keep it in
-            // the registry for agents/audits, but do not surface it as a
-            // user sidebar row unless we can see actual conversational
-            // content in hooks or provider transcripts.
-            s.substantive = hasConversation || (!hasFinalize && hasTitle)
+            let isControlOnly = isSidebarControlTitle(title)
+            // Finalize-only records and orchestration/control prompts are
+            // administrative memory. Keep them in the registry for agents
+            // and audits, but do not surface them as user chat rows.
+            s.substantive = !isControlOnly && (hasConversation || (!hasFinalize && hasTitle))
 
             if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
                 s.substantive = false
