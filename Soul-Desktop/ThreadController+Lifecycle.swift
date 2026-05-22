@@ -376,6 +376,8 @@ extension ThreadController {
             "nativeId": nid,
             "cwd": project.path,
         ])
+        // SOUL-IDENTITY-SPLIT: same watcher init as the fresh-session path.
+        ensureTranscriptWatcher()
     }
 
     /// Recovery helper: the saved native UUID was rejected by the agent
@@ -438,6 +440,9 @@ extension ThreadController {
             "provider": provider.rawValue,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ])
+        // SOUL-IDENTITY-SPLIT: start watching the encoded Claude dir for
+        // post-/compact transcript rotations. No-op for non-Claude.
+        ensureTranscriptWatcher()
     }
 
     private func spawnAndInitialize(skipNewSession: Bool, resumeSessionId: String? = nil) async throws {
@@ -472,18 +477,30 @@ extension ThreadController {
         // and split the ledger across two ~/soul_registry/sessions/<key>/
         // buckets for the same session UUID. See SOUL-PROJECT-KEY-CONTRACT-001.
         env["SOUL_PROJECT"] = project.id
-        // SOUL-FINALIZE-PARITY-001: forward the desktop-resolved kernel sid so
-        // `soul finalize` (and any other kernel CLI the agent shells out to)
-        // writes under the same sid the desktop holds. Without this, the
-        // agent's env has GEMINI_SESSION_ID / SOUL_THREAD_ID unset and
-        // mint_session_uuid() returns a fresh uuid that latestFinalize()
-        // never matches → FinalizeCard never renders.
+        // SOUL-FINALIZE-PARITY-001 + SOUL-SPLIT-LEDGER-001: forward the
+        // desktop-resolved kernel sid so `soul finalize` AND every kernel
+        // hook the agent fires (middleware_runner.py, tracer.py) writes
+        // under the same sid Soul-Desktop already holds. Two bugs sharing
+        // one fix slot:
+        //   1. Finalize sid mismatch: without SOUL_SESSION_ID the kernel's
+        //      mint_session_uuid() fallback returns a fresh uuid that
+        //      latestFinalize() never matches → FinalizeCard never renders.
+        //   2. Split-ledger (the gemini-cli case): kernel middleware writes
+        //      hooks.jsonl under input_data["session_id"] = gemini's
+        //      native ISO_UUIDv7 id, while Soul-Desktop writes under the
+        //      kernel UUID. Two sibling dirs for the same turn. With
+        //      SOUL_SESSION_ID present at spawn, middleware_runner.py
+        //      rewrites input_data["session_id"] before the persist hop,
+        //      so both writers land in the same kernel-UUID dir.
         //
-        // For resumed sessions `sessionId` is set by assignSessionId() before
-        // spawn. For fresh sessions the kernel sid is whatever the ACP agent
-        // mints in newSession(), which happens after spawn — so we can't pre-
-        // populate. The composer-side /finalize expansion picks up the sid
-        // at type-time as the fallback for that case.
+        // Resumed sessions have `sessionId` from assignSessionId(). Fresh
+        // sessions previously got it post-spawn (after session/new), too
+        // late for the first hook fire. Pre-mint here so the env var is
+        // populated at spawn time; line 342 ("if sessionId == nil ...")
+        // will be a no-op when we pre-mint.
+        if sessionId == nil {
+            sessionId = UUID().uuidString.lowercased()
+        }
         if let sid = sessionId {
             env["SOUL_SESSION_ID"] = sid
         }
