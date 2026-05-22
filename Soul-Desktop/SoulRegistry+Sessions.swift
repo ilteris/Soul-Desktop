@@ -63,6 +63,11 @@ extension SoulRegistry {
         var sessionStartPpid: Int? = nil
         /// Map of provider -> native UUID from NativeSessionID events.
         var nativeSessionIDs: [String: String] = [:]
+        /// Visibility stamped by machine-generated helper sessions.
+        /// `machine` means keep the ledger for agents/audits, but suppress
+        /// it from the human sidebar.
+        var sessionVisibility: String? = nil
+        var sessionKind: String? = nil
     }
 
     private static func readHooksMetadata(path: String) -> HooksMetadata {
@@ -121,6 +126,12 @@ extension SoulRegistry {
                     if meta.firstEventTimestamp == nil {
                         meta.firstEventTimestamp = ts
                     }
+                }
+                if meta.sessionVisibility == nil, let visibility = obj["session_visibility"] as? String {
+                    meta.sessionVisibility = visibility
+                }
+                if meta.sessionKind == nil, let kind = obj["session_kind"] as? String {
+                    meta.sessionKind = kind
                 }
             }
         }
@@ -203,8 +214,10 @@ extension SoulRegistry {
         promptCount: Int,
         transcriptTurns: Int,
         eventCount: Int,
-        sessionStartPpid: Int?
+        sessionStartPpid: Int?,
+        sessionVisibility: String?
     ) -> Bool {
+        if sessionVisibility == "machine" { return false }
         if isSidebarControlTitle(title) { return false }
 
         // Launchd-started rows with no prompts are daemon residue, not chats.
@@ -339,12 +352,14 @@ extension SoulRegistry {
 
             var sessionStartPpid: Int? = nil
             var nativeSessionIDs: [String: String] = [:]
+            var sessionVisibility: String? = nil
             if let hooks = shape.hooksPath {
                 let meta = readHooksMetadata(path: hooks)
                 s.eventCount = meta.eventCount
                 s.promptCount = meta.promptCount
                 sessionStartPpid = meta.sessionStartPpid
                 nativeSessionIDs = meta.nativeSessionIDs
+                sessionVisibility = meta.sessionVisibility
                 if s.worktreePath == nil { s.worktreePath = meta.worktreePath }
                 if let t = meta.titleHook, !t.isEmpty {
                     s.intent = t
@@ -467,7 +482,8 @@ extension SoulRegistry {
                 promptCount: s.promptCount,
                 transcriptTurns: s.transcriptTurns,
                 eventCount: s.eventCount,
-                sessionStartPpid: sessionStartPpid
+                sessionStartPpid: sessionStartPpid,
+                sessionVisibility: sessionVisibility
             )
 
             out.append(s)

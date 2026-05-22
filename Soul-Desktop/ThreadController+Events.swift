@@ -105,6 +105,10 @@ extension ThreadController {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: executable)
             p.arguments = ["-p", prompt]
+            var env = ProcessInfo.processInfo.environment
+            env["SOUL_SESSION_VISIBILITY"] = "machine"
+            env["SOUL_SESSION_KIND"] = "title_generation"
+            p.environment = env
             let out = Pipe(); let err = Pipe()
             p.standardOutput = out
             p.standardError = err
