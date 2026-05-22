@@ -133,7 +133,7 @@ struct ToolCallGroupRow: View {
             return (diff.insertions.count, diff.removals.count)
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
-        case .output, .subagent:
+        case .output, .subagent, .claudeAgent:
             return (0, 0)
         }
     }
@@ -189,8 +189,8 @@ struct ToolCallGroupRow: View {
                     combined += content.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
                 case .output(let text):
                     combined += "--- \(filename) output ---\n\(text)\n"
-                case .subagent:
-                    // Subagent rows aren't part of file-diff aggregation.
+                case .subagent, .claudeAgent:
+                    // Agent rows aren't part of file-diff aggregation.
                     continue
                 }
                 combined += "\n"
@@ -200,6 +200,5 @@ struct ToolCallGroupRow: View {
         NSPasteboard.general.setString(combined.trimmingCharacters(in: .whitespacesAndNewlines), forType: .string)
     }
 }
-
 
 

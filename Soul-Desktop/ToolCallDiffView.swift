@@ -39,8 +39,8 @@ struct DiffView: View {
                 )
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            case .subagent:
-                // Subagent calls render via SubagentCard at the ThreadItemRow
+            case .subagent, .claudeAgent:
+                // Agent calls render via dedicated cards at the ThreadItemRow
                 // level — they don't reach DiffView. Defensive empty case to
                 // keep the switch exhaustive.
                 EmptyView()

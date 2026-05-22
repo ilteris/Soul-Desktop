@@ -28,6 +28,21 @@ struct ToolCallDetails: Hashable {
         /// `colorHex` is the kernel-resolved badge color (nil → palette fallback);
         /// `findingPath` is set when the agent script writes its final JSON.
         case subagent(specialist: String, objective: String, subagentId: String, colorHex: UInt32?, findingPath: String?)
+        /// Claude Code's `Agent` tool (a.k.a. `Task`) — distinct from Soul's
+        /// `delegate_to_specialist`. Carries the subagent type pulled from the
+        /// tool-call `subagent_type` param plus a parsed result trailer
+        /// (`agentId: …` + `<usage>…</usage>`) so the card can show the
+        /// specialist name and token/duration stats instead of leaking the
+        /// raw trailer into the bubble text.
+        case claudeAgent(
+            subagentType: String,
+            description: String,
+            agentId: String?,
+            body: String,
+            totalTokens: Int?,
+            toolUses: Int?,
+            durationMs: Int?
+        )
 
         var isOutput: Bool {
             if case .output = self { return true }
@@ -36,6 +51,11 @@ struct ToolCallDetails: Hashable {
 
         var isSubagent: Bool {
             if case .subagent = self { return true }
+            return false
+        }
+
+        var isClaudeAgent: Bool {
+            if case .claudeAgent = self { return true }
             return false
         }
     }
@@ -679,6 +699,54 @@ final class ThreadController {
     /// lands. Lets the diff chip show `+N -M` for Writes against existing
     /// files. Keyed by toolCallId. Sentinel `0` means "file did not exist."
     var toolCallPreviousLineCount: [String: Int] = [:]
+    /// Maps a subagent's inner-tool toolCallId to its outer (parent)
+    /// Task/subagent toolCallId. Populated from `_meta.claudeCode.parentToolUseId`
+    /// (claude-agent-acp) and `_meta.parentToolCallId` (Soul fork of gemini-cli,
+    /// branch `soul/nested-subagent-acp`). The view layer reads this side map
+    /// to render the inner tool rows nested under their parent subagent row
+    /// instead of at top level.
+    var subagentParentByChildId: [String: String] = [:]
+    /// Inverse of `subagentParentByChildId`: parent toolCallId → ordered list
+    /// of child toolCallIds (arrival order). View enumerates this to draw the
+    /// nested timeline; append-once semantics so a tool_call_update for the
+    /// same child doesn't duplicate the entry.
+    var subagentChildrenByParentId: [String: [String]] = [:]
+
+    /// Set of ThreadItem UUIDs that should be suppressed from top-level
+    /// rendering because they're attached to a parent subagent row. Resolved
+    /// from `subagentChildrenByParentId` via `seenToolCallIds`. Computed
+    /// lazily per access — cheap enough at typical thread sizes (a handful of
+    /// subagents per session).
+    var nestedSubagentChildItemIds: Set<UUID> {
+        var ids: Set<UUID> = []
+        for children in subagentChildrenByParentId.values {
+            for childToolId in children {
+                if let uuid = seenToolCallIds[childToolId] {
+                    ids.insert(uuid)
+                }
+            }
+        }
+        return ids
+    }
+
+    /// Resolves the child ThreadItems nested under a given subagent's
+    /// toolCallId, preserving arrival order. Items not yet seen in
+    /// `seenToolCallIds` (e.g. orphans that arrived before the parent) are
+    /// skipped; they'll appear once their tool_call notification lands.
+    func nestedSubagentChildren(parentToolCallId: String) -> [ThreadItem] {
+        guard let childIds = subagentChildrenByParentId[parentToolCallId] else {
+            return []
+        }
+        var result: [ThreadItem] = []
+        result.reserveCapacity(childIds.count)
+        for childToolId in childIds {
+            guard let uuid = seenToolCallIds[childToolId] else { continue }
+            if let item = items.first(where: { $0.id == uuid }) {
+                result.append(item)
+            }
+        }
+        return result
+    }
     @ObservationIgnored private var itemsVersion: Int = 0
     @ObservationIgnored private var groupedItemsCache: (version: Int, value: [ThreadItem])?
     @ObservationIgnored private var statsCache: (version: Int, tools: Int, chapters: Int)?

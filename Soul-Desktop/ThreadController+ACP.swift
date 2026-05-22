@@ -300,6 +300,11 @@ extension ThreadController {
             return "output|\(text.count)"
         case .subagent:
             return "subagent"
+        case .claudeAgent(_, _, _, let body, _, _, _):
+            // Body grows monotonically during a tool_call_update stream;
+            // length is a good enough fingerprint for content dedup without
+            // hashing the whole reply.
+            return "claudeAgent|\(body.count)"
         }
     }
 
@@ -308,6 +313,33 @@ extension ThreadController {
         var n = s.components(separatedBy: "\n").count
         if s.hasSuffix("\n") { n -= 1 }
         return max(n, 1)
+    }
+
+    /// Decode the parent-tool-call linkage off an ACP `tool_call` /
+    /// `tool_call_update` payload. Returns nil for top-level (non-subagent)
+    /// calls. Two namespaces are recognized:
+    ///
+    /// * `_meta.claudeCode.parentToolUseId` — claude-agent-acp's native form
+    ///   (the wrapper at acp-agent.js:2236 stamps this on every nested
+    ///   notification when the SDK message carries a non-null
+    ///   `parent_tool_use_id`).
+    /// * `_meta.parentToolCallId` — the Soul fork of gemini-cli mirrors the
+    ///   pattern with a flat key (branch `soul/nested-subagent-acp`,
+    ///   `packages/cli/src/acp/acpSession.ts`).
+    ///
+    /// Accepting both shapes lets the same nesting logic work regardless of
+    /// which provider emitted the notification.
+    static func parentToolUseId(_ payload: JSONValue) -> String? {
+        guard let meta = payload["_meta"] else { return nil }
+        if let claudeId = meta["claudeCode"]?["parentToolUseId"]?.stringValue,
+           !claudeId.isEmpty {
+            return claudeId
+        }
+        if let flatId = meta["parentToolCallId"]?.stringValue,
+           !flatId.isEmpty {
+            return flatId
+        }
+        return nil
     }
 
     private func insertToolCall(_ payload: JSONValue, isUpdate: Bool) {
@@ -321,6 +353,15 @@ extension ThreadController {
             }
             return UUID().uuidString
         }()
+        // Record parent linkage before any other processing so even calls
+        // that get short-circuited (replay, dedup) still get their nesting
+        // metadata captured. Append-once on the parent's children list.
+        if let parentId = Self.parentToolUseId(payload) {
+            if subagentParentByChildId[toolId] == nil {
+                subagentParentByChildId[toolId] = parentId
+                subagentChildrenByParentId[parentId, default: []].append(toolId)
+            }
+        }
         let rawKind = payload["kind"]?.stringValue ?? "tool"
         let rawTitle = payload["title"]?.stringValue ?? ""
         // Normalize provider kind quirks: Pi sends kind="other"+title="bash"
@@ -408,11 +449,64 @@ extension ThreadController {
             let normalizedToolName = toolName
                 .replacingOccurrences(of: "mcp_soul-os_", with: "")
                 .replacingOccurrences(of: "mcp_soul_os_", with: "")
-            let directSpecialist = SpecialistPalette.isKnownSpecialist(normalizedToolName) ? normalizedToolName : nil
+            let directSpecialist: String? = { () -> String? in
+                if SpecialistPalette.isKnownSpecialist(normalizedToolName) {
+                    return SpecialistPalette.normalizedSpecialistName(normalizedToolName)
+                }
+                if SpecialistPalette.isKnownSpecialist(rawTitle) {
+                    return SpecialistPalette.normalizedSpecialistName(rawTitle)
+                }
+                return nil
+            }()
             let isDelegateTool = normalizedToolName == "delegate_to_specialist"
                 || normalizedToolName.hasSuffix("_delegate_to_specialist")
                 || normalizedToolName.contains("delegate_to_specialist")
                 || rawKind == "delegate_to_specialist"
+            // Claude Code's `Agent` tool (the SDK's old `Task` tool — both
+            // shapes have been observed in the wild). Distinct from Soul's
+            // `delegate_to_specialist`: no live.log, no kernel subagent dir.
+            // The ACP wrapper concatenates the result body with an `agentId:
+            // <id>` trailer and a `<usage>…</usage>` block; we parse both
+            // back into structured fields so the card header can show the
+            // specialist name and the footer can render token/duration stats
+            // instead of those trailers leaking into the bubble text.
+            let hasSubagentTypeInput = (rawInput?["subagent_type"]?.stringValue != nil)
+                || (rawInput?["agentType"]?.stringValue != nil)
+            let isClaudeAgentTool = !isDelegateTool && directSpecialist == nil && (
+                normalizedToolName == "Agent"
+                || normalizedToolName == "Task"
+                || hasSubagentTypeInput
+            )
+            if isClaudeAgentTool {
+                let subagentType = rawInput?["subagent_type"]?.stringValue
+                    ?? rawInput?["agentType"]?.stringValue
+                    ?? payload["agentType"]?.stringValue
+                    ?? "subagent"
+                let descriptionText: String = {
+                    if let d = rawInput?["description"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                        return d
+                    }
+                    if let p = rawInput?["prompt"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+                        let firstLine = p.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? p
+                        return String(firstLine.prefix(160))
+                    }
+                    return ""
+                }()
+                let rawBody = extractContentText(from: payload) ?? ""
+                let parsed = ClaudeAgentResultParser.parse(rawBody)
+                return ToolCallDetails(
+                    kind: .claudeAgent(
+                        subagentType: subagentType,
+                        description: descriptionText,
+                        agentId: parsed.agentId,
+                        body: parsed.body,
+                        totalTokens: parsed.totalTokens,
+                        toolUses: parsed.toolUses,
+                        durationMs: parsed.durationMs
+                    ),
+                    startLine: nil
+                )
+            }
             if isDelegateTool || directSpecialist != nil {
                 let specialist = rawInput?["specialist"]?.stringValue
                     ?? payload["specialist"]?.stringValue

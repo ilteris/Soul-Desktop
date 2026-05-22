@@ -19,10 +19,35 @@ enum SpecialistPalette {
         "systems_architect":      0x5856D6, // indigo
         "registry_guardian":      0xAF52DE, // purple
         "creative_technologist":  0xFF2D55, // pink
+        "adversarial_judge":      0xFF9500, // orange
+        "cloud_architect":        0x34C759, // green
+        "monorepo_architect":     0x5AC8FA, // cyan
+        "narrative_taxonomist":   0xBF5AF2, // violet
+        "product_shaper":         0xFF375F, // red
+        "terrain_mapper":         0x64D2FF, // light blue
+        "visual_auditor":         0xFFCC00, // yellow
     ]
 
     static func isKnownSpecialist(_ name: String) -> Bool {
-        knownColors.keys.contains(name.lowercased())
+        knownColors.keys.contains(normalizedSpecialistName(name))
+    }
+
+    /// Gemini direct-delegation tool rows arrive as titles like
+    /// `Delegating to agent 'adversarial_judge'` rather than as Soul's
+    /// canonical `delegate_to_specialist` tool name. Normalize both the raw
+    /// specialist name and that title shape before checking the built-in roster.
+    static func normalizedSpecialistName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "`\""))
+        let lower = trimmed.lowercased()
+        let marker = "delegating to agent '"
+        if let range = lower.range(of: marker) {
+            let tail = lower[range.upperBound...]
+            if let end = tail.firstIndex(of: "'") {
+                return String(tail[..<end])
+            }
+        }
+        return lower
     }
 
     /// Resolve a color for a specialist. Server-provided hex always wins. Falls back to

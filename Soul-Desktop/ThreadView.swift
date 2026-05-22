@@ -89,7 +89,13 @@ struct ThreadView: View {
     @ViewBuilder
     private var transcriptList: some View {
         let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
-        let mainItems = split.main
+        // Suppress rows that are nested under a subagent — those are rendered
+        // inline under the parent's row via `nestedChildren`. Computed once
+        // per body re-eval to avoid the O(N) lookup per enumerate iteration.
+        let suppressedIds = controller.nestedSubagentChildItemIds
+        let mainItems = suppressedIds.isEmpty
+            ? split.main
+            : split.main.filter { !suppressedIds.contains($0.id) }
         let queuedItems = split.queued
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
@@ -100,7 +106,8 @@ struct ThreadView: View {
                     item: item,
                     isHistorical: controller.historicalIDs.contains(item.id),
                     isQueued: false,
-                    showAgentFooter: isLastInAgentRun(at: i, items: mainItems)
+                    showAgentFooter: isLastInAgentRun(at: i, items: mainItems),
+                    nestedChildren: nestedChildren(for: item)
                 )
                 .padding(.top, leadingGap(at: i, items: mainItems))
                 .id(item.id)
@@ -641,6 +648,18 @@ struct ThreadView: View {
         return true
     }
 
+    /// Children-to-inline-render for a parent row. Empty unless the row is a
+    /// `.toolCall(.subagent)` AND the controller has recorded nested
+    /// subagent activity under that subagent's toolCallId.
+    private func nestedChildren(for item: ThreadItem) -> [ThreadItem] {
+        guard case .toolCall(_, _, _, _, _, let details) = item,
+              let kind = details?.kind,
+              case .subagent(_, _, let subagentId, _, _) = kind else {
+            return []
+        }
+        return controller.nestedSubagentChildren(parentToolCallId: subagentId)
+    }
+
     private func splitGroupedItems(_ items: [ThreadItem], queuedIds: Set<UUID>) -> (main: [ThreadItem], queued: [ThreadItem]) {
         guard !queuedIds.isEmpty else { return (items, []) }
         var main: [ThreadItem] = []
@@ -705,6 +724,13 @@ struct ThreadItemRow: View {
     /// copy/feedback/fork/timestamp footer to cut the noisy action-button
     /// strip between every short narration line in multi-step turns.
     var showAgentFooter: Bool = true
+    /// Nested subagent inner-tool rows (resolved via the controller's
+    /// `nestedSubagentChildren(parentToolCallId:)` helper). Only populated
+    /// when this row is itself a `.toolCall(.subagent)`; rendered indented
+    /// below the SubagentCard so the user sees what the subagent is doing in
+    /// real time. See `_meta.claudeCode.parentToolUseId` (Claude) /
+    /// `_meta.parentToolCallId` (gemini-cli local fork).
+    var nestedChildren: [ThreadItem] = []
 
     var body: some View {
         // SOUL-SOUL_DESKTOP-099: per-item scroll-perf telemetry.
@@ -736,17 +762,59 @@ struct ThreadItemRow: View {
             // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls route to
             // the dedicated SubagentCard instead of the generic ToolCallRow.
             // Match on the structured details kind populated by insertToolCall.
-            if case .subagent(let specialist, let objective, let subagentId, let colorHex, let findingPath) = details?.kind {
-                SubagentCard(
-                    specialist: specialist,
-                    objective: objective,
+            if case .claudeAgent(let subagentType, let descriptionText, let agentId, let bodyText, let totalTokens, let toolUses, let durationMs) = details?.kind {
+                ClaudeAgentCard(
+                    subagentType: subagentType,
+                    description: descriptionText,
                     status: status,
-                    subagentId: subagentId,
-                    projectKey: projectKey ?? "",
-                    colorHex: colorHex,
-                    findingPath: findingPath,
+                    agentId: agentId,
+                    replyBody: bodyText,
+                    totalTokens: totalTokens,
+                    toolUses: toolUses,
+                    durationMs: durationMs,
                     isHistorical: isHistorical
                 )
+            } else if case .subagent(let specialist, let objective, let subagentId, let colorHex, let findingPath) = details?.kind {
+                VStack(alignment: .leading, spacing: 6) {
+                    SubagentCard(
+                        specialist: specialist,
+                        objective: objective,
+                        status: status,
+                        subagentId: subagentId,
+                        projectKey: projectKey ?? "",
+                        colorHex: colorHex,
+                        findingPath: findingPath,
+                        isHistorical: isHistorical
+                    )
+                    // Inner-tool calls and thoughts emitted from inside the
+                    // subagent — surfaced via _meta.parentToolUseId /
+                    // _meta.parentToolCallId in the ACP stream. Indent + a
+                    // muted vertical rule so the nesting reads as a child
+                    // timeline rather than a sibling block.
+                    if !nestedChildren.isEmpty {
+                        HStack(alignment: .top, spacing: 0) {
+                            Rectangle()
+                                .fill(SoulColor.fgSubtle.opacity(0.25))
+                                .frame(width: 2)
+                                .padding(.leading, 8)
+                                .padding(.trailing, 10)
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(nestedChildren, id: \.id) { child in
+                                    ThreadItemRow(
+                                        projectPath: projectPath,
+                                        projectKey: projectKey,
+                                        item: child,
+                                        isHistorical: isHistorical,
+                                        isQueued: false,
+                                        isGrouped: true,
+                                        showAgentFooter: false
+                                    )
+                                }
+                            }
+                        }
+                        .padding(.leading, 4)
+                    }
+                }
             } else {
                 ToolCallRow(kind: kind, title: title, status: status, location: loc, details: details, projectPath: projectPath, isGrouped: isGrouped)
             }

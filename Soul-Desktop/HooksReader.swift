@@ -182,7 +182,7 @@ private func toolCallFingerprint(kind: String, title: String, loc: String?, deta
         body = "write|\(transcriptLineCount(content))"
     case .output(let text):
         body = "output|\(text.count)"
-    case .subagent:
+    case .subagent, .claudeAgent:
         body = "subagent"
     }
     return "\(kind)|\(title)|\(loc ?? "")|\(body)"

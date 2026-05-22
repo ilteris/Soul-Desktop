@@ -16,6 +16,14 @@ struct ACPProviderSpawn {
         let env = enrichedEnvironment()
         switch provider {
         case .geminiCLI:
+            // SOUL_GEMINI_LOCAL=1 (or a path) swaps the global gemini install
+            // for a local checkout under ~/Code/gemini-cli — used while
+            // iterating on patches to gemini-cli itself (e.g. nested-subagent
+            // ACP notifications). Defaults to the standard `gemini` binary on
+            // PATH when the env var is unset or empty.
+            if let local = localGeminiSpawn(env: env) {
+                return local
+            }
             guard let path = which("gemini") else { return nil }
             // No `--resume` flag: gemini-cli fully supports ACP `session/load`
             // (verified via `agentCapabilities.loadSession: true` in its
@@ -55,6 +63,30 @@ struct ACPProviderSpawn {
             )
         }
     }
+}
+
+/// Resolve a local gemini-cli spawn when the user has opted in via
+/// `SOUL_GEMINI_LOCAL`. Accepted values:
+///   "1" / "true"  → use the default ~/Code/gemini-cli/packages/cli/dist/index.js
+///   "<abs path>"  → use that path verbatim as the JS entry point
+/// Returns nil when the env var is unset, empty, "0", or points at a file that
+/// doesn't exist (caller falls back to the global `gemini` binary).
+private func localGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
+    guard let raw = ProcessInfo.processInfo.environment["SOUL_GEMINI_LOCAL"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty, raw != "0" else {
+        return nil
+    }
+    let home = NSHomeDirectory()
+    let entry: String
+    if raw == "1" || raw.lowercased() == "true" {
+        entry = "\(home)/Code/gemini-cli/packages/cli/dist/index.js"
+    } else {
+        entry = (raw as NSString).expandingTildeInPath
+    }
+    guard FileManager.default.fileExists(atPath: entry) else { return nil }
+    guard let node = which("node") else { return nil }
+    return .init(executablePath: node, arguments: [entry, "--acp"], environment: env)
 }
 
 private func enrichedEnvironment() -> [String: String] {
