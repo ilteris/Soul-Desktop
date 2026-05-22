@@ -548,6 +548,14 @@ extension ThreadController {
         }
         let id = UUID()
         let finalizeTs = rec.timestamp ?? Date()
+        if items.contains(where: { item in
+            guard case .finalize(_, _, _, _, _, _, let existingTs) = item else { return false }
+            return abs(existingTs.timeIntervalSince(finalizeTs)) < 1
+        }) {
+            lastFinalizeInjectedAt = finalizeTs
+            SoulSignposts.event("injectFinalizeSummary.duplicate", "\(provLabel)")
+            return
+        }
         let card = ThreadItem.finalize(
             id: id,
             intent: rec.intent,

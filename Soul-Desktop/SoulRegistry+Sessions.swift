@@ -277,7 +277,13 @@ extension SoulRegistry {
             let id = cand.id
             let shape = cand.shape
             var s = SoulSession(id: id, project: key, timestamp: cand.recency)
-            s.lastActivityAt = cand.recency
+            // For finalized rows, file activity is not necessarily chat
+            // activity: opening a row can regenerate preamble/cache files
+            // inside the session dir. Start from the finalize JSON mtime
+            // and only move lastActivityAt forward with parsed event
+            // timestamps below. Live rows still use the freshest file mtime
+            // as a cheap activity fallback.
+            s.lastActivityAt = shape.finalizePath == nil ? cand.recency : shape.jsonMtime
 
             if let path = shape.finalizePath,
                let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
