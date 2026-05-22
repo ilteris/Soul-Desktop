@@ -378,14 +378,6 @@ extension SoulRegistry {
                 }
             }
 
-            let hasFinalize = (shape.finalizePath != nil)
-            let hasPrompt = (s.intent?.isEmpty == false)
-            s.substantive = hasFinalize || s.eventCount >= 4 || hasPrompt
-
-            if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
-                s.substantive = false
-            }
-
             if let path = projectPath {
                 s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
             } else {
@@ -427,6 +419,19 @@ extension SoulRegistry {
                     )
                     if s.summary == nil { s.summary = s.intent }
                 }
+            }
+
+            let hasFinalize = (shape.finalizePath != nil)
+            let hasTitle = (s.intent?.isEmpty == false) || (s.summary?.isEmpty == false)
+            let hasConversation = s.promptCount > 0 || s.transcriptTurns > 0 || s.eventCount >= 4
+            // A finalize JSON alone is administrative memory. Keep it in
+            // the registry for agents/audits, but do not surface it as a
+            // user sidebar row unless we can see actual conversational
+            // content in hooks or provider transcripts.
+            s.substantive = hasConversation || (!hasFinalize && hasTitle)
+
+            if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
+                s.substantive = false
             }
 
             out.append(s)
