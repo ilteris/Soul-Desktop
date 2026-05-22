@@ -55,6 +55,17 @@ struct GeneralPane: View {
                 .frame(width: 160)
             }
 
+            SectionHeader("Power")
+            VStack(spacing: 0) {
+                ToggleRow(
+                    title: "Keep this Mac awake",
+                    description: "Prevent idle sleep while Soul Desktop is open, so mobile streams and local sessions stay reachable.",
+                    value: $preventSleep
+                )
+            }
+            .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(SoulColor.border.opacity(0.4), lineWidth: 1))
+
             SectionHeader("Permissions")
             VStack(spacing: 0) {
                 ToggleRow(
@@ -112,12 +123,6 @@ struct GeneralPane: View {
                     actionLabel: "Off",
                     actionButton: "Set",
                     disabled: true
-                )
-                Divider().padding(.leading, 14)
-                ToggleRow(
-                    title: "Keep this Mac awake",
-                    description: "Prevent idle sleep while Soul Desktop is open, so mobile streams and local sessions stay reachable.",
-                    value: $preventSleep
                 )
                 Divider().padding(.leading, 14)
                 ToggleRow(
