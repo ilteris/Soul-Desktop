@@ -61,7 +61,8 @@ struct ReplayView: View {
                     let contentBottom = geometry.contentSize.height
                     return ScrollFollowGeometry(
                         offsetY: geometry.contentOffset.y,
-                        atBottom: viewportBottom >= contentBottom - 8
+                        atBottom: viewportBottom >= contentBottom - 8,
+                        contentHeight: contentBottom
                     )
                 } action: { oldValue, newValue in
                     if newValue.atBottom {

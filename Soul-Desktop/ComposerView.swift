@@ -277,15 +277,11 @@ struct ComposerView: View {
                         // gradient-swept Text aligned to the same inset
                         // when the prompt is empty.
                         if prompt.isEmpty && activeCommand == nil {
-                            ShimmerText(
-                                text: "Ask Soul anything. @ to use plugins or mention files",
-                                font: SoulType.composer,
-                                base: SoulColor.fgSubtle.opacity(0.7),
-                                highlight: SoulColor.accent,
-                                period: 2.6
-                            )
-                            .padding(.top, 12)
-                            .allowsHitTesting(false)
+                            Text("Ask Soul anything. @ to use plugins or mention files")
+                                .font(SoulType.composer)
+                                .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
+                                .padding(.top, 12)
+                                .allowsHitTesting(false)
                         }
                     ComposerTextField(
                         text: $prompt,

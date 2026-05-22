@@ -54,6 +54,14 @@ extension SidebarView {
             for (key, rows) in primed where sessionsByProject[key] == nil {
                 sessionsByProject[key] = rows
             }
+            // Recompute sessionCounts using the same filter pipeline the
+            // list uses. Without this the persisted badge stays at the raw
+            // on-disk count (which can include 40+ crash-residue dirs) and
+            // every cold launch shows the inflated number until the user
+            // expands the project — at which point filteredChatCount kicks
+            // in and the badge collapses. Persisting the filtered count
+            // means the next launch shows the right number immediately.
+            recomputePersistedSessionCounts()
         }
         // Refresh any project the user already had expanded from a prior
         // launch so freshly-changed sessions get re-rendered (cache may
@@ -136,6 +144,7 @@ extension SidebarView {
             // elsewhere when its row count is known to be zero.
             if !fullRows.isEmpty {
                 self.sessionsByProject[projectId] = fullRows
+                recomputePersistedSessionCounts()
             }
         }
     }
@@ -187,6 +196,31 @@ extension SidebarView {
                 return out
             }
             self.sessionsByProject[key] = merged
+            recomputePersistedSessionCounts()
+        }
+    }
+
+    /// Re-derive `sessionCounts` from currently-loaded `sessionsByProject`
+    /// using the same filter pipeline the rendered list applies, then
+    /// persist to UserDefaults. The cold-launch badge then shows the
+    /// filtered (== "what you actually see in the list") count instead of
+    /// the raw on-disk count, fixing the "badge says 45, list shows 1"
+    /// gap that recurred on every relaunch.
+    ///
+    /// Projects that don't have `sessionsByProject` populated yet keep
+    /// their existing entry (either the raw initial-discovery count or the
+    /// previously-persisted filtered count) so we never blank a badge.
+    func recomputePersistedSessionCounts() {
+        var updated = sessionCounts
+        for project in projects {
+            guard let _ = sessionsByProject[project.id] else { continue }
+            if let filtered = filteredChatCount(for: project) {
+                updated[project.id] = filtered
+            }
+        }
+        if updated != sessionCounts {
+            sessionCounts = updated
+            Self.writeSessionCountsCache(updated)
         }
     }
 

@@ -82,6 +82,12 @@ struct SidebarView: View {
     /// "Show N more" on a project with a deeper history.
     @State var sessionListExpanded: Set<String> = []
     let sessionPageSize: Int = 20
+    /// True when the sidebar's ScrollView is at rest. `scrollToActiveSession`
+    /// reads this to decide whether to animate the scroll-to-row (clean,
+    /// idle case) or snap (mid-momentum case where stacking an animation
+    /// on top of an in-flight scroll caused a SwiftUI layout-recursion
+    /// beachball — see comment in SidebarView+Projects).
+    @State var sidebarScrollIdle: Bool = true
     @State var pendingDelete: DeleteConfirmation? = nil
     @State var pendingProjectEdit: ProjectEditRequest? = nil
     @State var pendingProjectDelete: ProjectDeleteRequest? = nil

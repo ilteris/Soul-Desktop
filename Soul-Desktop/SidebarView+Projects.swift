@@ -45,6 +45,14 @@ extension SidebarView {
                 sv.verticalScrollElasticity = .none
                 sv.horizontalScrollElasticity = .none
             })
+            .onScrollPhaseChange { _, newPhase, _ in
+                // Sidebar scroll-phase gate. We only animate the
+                // scroll-to-active-row when the sidebar is at rest;
+                // stacking an animation on top of momentum (.decelerating)
+                // triggered the SwiftUI MoveTransition.MoveLayout recursion
+                // documented in scrollToActiveSession's comment.
+                sidebarScrollIdle = (newPhase == .idle)
+            }
             .onChange(of: activeSessionId) { _, newId in
                 scrollToActiveSession(proxy: proxy, sessionId: newId)
             }
@@ -97,15 +105,26 @@ extension SidebarView {
         if let owner, !isExpanded(owner.id) {
             setExpanded(owner.id, true)
         }
-        // Beachball investigation: dropped the `withAnimation` wrap. Clicking
-        // a session while mid-scroll was stacking the scroll-to-center
-        // animation on top of the in-flight scroll-momentum transition,
-        // showing up in layout traces as MoveTransition.MoveLayout +
-        // nested-VStack recursion 100+ frames deep. The 50ms delay stays —
-        // expanding the owning project (above) needs a runloop tick for the
-        // freshly-revealed row to materialize before scrollTo can find it.
+        // Animate the scroll-to-row when the sidebar is at rest. The prior
+        // unconditional `withAnimation` stacked on top of in-flight
+        // momentum (.decelerating) and triggered a SwiftUI
+        // MoveTransition.MoveLayout + nested-VStack recursion 100+ frames
+        // deep — full beachball. `sidebarScrollIdle` is fed from
+        // .onScrollPhaseChange on the parent ScrollView; when false we
+        // snap (which mid-momentum is what the user perceived as natural
+        // anyway, since they're actively scrolling). The 50ms delay stays
+        // — expanding the owning project (above) needs a runloop tick for
+        // the freshly-revealed row to materialize before scrollTo can find
+        // it.
+        let animate = sidebarScrollIdle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            proxy.scrollTo(sid, anchor: .center)
+            if animate {
+                withAnimation(.easeOut(duration: 0.22)) {
+                    proxy.scrollTo(sid, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(sid, anchor: .center)
+            }
         }
     }
 

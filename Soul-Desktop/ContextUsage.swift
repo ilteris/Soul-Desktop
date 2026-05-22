@@ -17,6 +17,24 @@ struct ContextUsage {
     let tokens: Int
     let max: Int
     let isEstimate: Bool
+    /// Optional per-source breakdown surfaced in the chip's tooltip so the
+    /// user can sanity-check the number. nil ⇒ no extra detail available
+    /// (typically estimated sources). All values in raw token units.
+    let breakdown: Breakdown?
+
+    struct Breakdown {
+        /// Provider-reported model id (e.g. "claude-opus-4-7", "gemini-2.5-pro").
+        let model: String?
+        /// Fresh prompt tokens — text the model has to read this turn.
+        let input: Int?
+        /// Cache-creation tokens (Claude only).
+        let cacheCreate: Int?
+        /// Cache-read tokens — pulled from the provider's prompt cache.
+        /// Counts against the window even though it's cheap to fetch.
+        let cacheRead: Int?
+        /// Source description shown in the tooltip header.
+        let source: String
+    }
 
     var fraction: Double {
         guard max > 0 else { return 0 }
@@ -30,6 +48,33 @@ struct ContextUsage {
         return "\(prefix)\(tokens)"
     }
 
+    /// Multi-line tooltip body. Pinned at the top: source + model. Below:
+    /// a breakdown when the source produced one. Used by ContextUsageChip
+    /// instead of the previous one-liner so "is the number correct?" is
+    /// answerable from a hover.
+    var tooltipText: String {
+        var lines: [String] = []
+        let formatted = ContextUsage.formatTokens(tokens)
+        let maxFormatted = ContextUsage.formatTokens(max)
+        lines.append("\(formatted) / \(maxFormatted) (\(Int(fraction * 100))%)")
+        if let b = breakdown {
+            lines.append(b.source)
+            if let model = b.model { lines.append("model: \(model)") }
+            if let input = b.input { lines.append("  input: \(ContextUsage.formatTokens(input))") }
+            if let cc = b.cacheCreate, cc > 0 { lines.append("  cache-create: \(ContextUsage.formatTokens(cc))") }
+            if let cr = b.cacheRead, cr > 0 { lines.append("  cache-read: \(ContextUsage.formatTokens(cr))") }
+        } else if isEstimate {
+            lines.append("Estimated from transcript bytes — provider doesn't expose precise usage.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func formatTokens(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
+        if n >= 1_000     { return String(format: "%.1fk", Double(n) / 1_000) }
+        return "\(n)"
+    }
+
     /// Dispatch on provider. Falls back to nil only if no transcript file
     /// can be located — providers we know how to estimate always return a
     /// value, even if coarse.
@@ -39,21 +84,52 @@ struct ContextUsage {
     /// opens (and for Claude, parses line-by-line) a session-sized JSONL
     /// file on the main thread. A 2-second memo coalesces redundant reads;
     /// the token-count chip doesn't need sub-2s freshness.
-    static func compute(provider: Provider, sessionId: String, cwd: String) -> ContextUsage? {
+    ///
+    /// SOUL-IDENTITY-SPLIT: `sessionId` here is the *kernel* UUID. The
+    /// on-disk Claude/Gemini transcript filename can differ — either
+    /// because the session was repaired/branched and the provider keeps
+    /// its own id, or because Claude rotated the transcript on /compact.
+    /// Resolution uses the same hooks.jsonl-indexed lookup that
+    /// SessionLoadability already relies on (`findProviderTranscriptID`
+    /// → `findNativeSessionID` → bare sid).
+    static func compute(provider: Provider, sessionId: String, cwd: String, projectKey: String) -> ContextUsage? {
+        // SOUL-IDENTITY-SPLIT perf fix: key the memo off the inputs
+        // (provider+cwd+kernel sid) — NOT off the resolved transcript id.
+        // resolveTranscriptId walks hooks.jsonl, which is multi-MB on
+        // active sessions; doing that before the cache lookup beachballs
+        // the main thread on every body re-eval.
         let key = "\(provider.rawValue)|\(cwd)|\(sessionId)"
         let now = Date()
         if let cached = memo[key], now.timeIntervalSince(cached.date) < memoTTL {
             return cached.value
         }
+        let transcriptId = resolveTranscriptId(
+            kernelSid: sessionId, provider: provider, projectKey: projectKey
+        )
         let result: ContextUsage?
         switch provider {
-        case .claude:    result = computeClaude(sessionId: sessionId, cwd: cwd)
-        case .geminiCLI: result = computeGemini(sessionId: sessionId, cwd: cwd)
-        case .pi:        result = computePi(sessionId: sessionId, cwd: cwd)
+        case .claude:    result = computeClaude(sessionId: transcriptId, cwd: cwd)
+        case .geminiCLI: result = computeGemini(sessionId: transcriptId, cwd: cwd)
+        case .pi:        result = computePi(sessionId: transcriptId, cwd: cwd)
         case .codex:     result = nil  // Phase 1 stub: token usage not wired yet
         }
         memo[key] = (now, result)
         return result
+    }
+
+    /// kernelSid → on-disk transcript id, using the same priority order
+    /// the rest of the codebase has converged on:
+    ///   1. ProviderTranscriptID event (newest; captures /compact rotation)
+    ///   2. NativeSessionID event (initial divergence at session/new)
+    ///   3. The kernel sid itself (identity-mapped sessions)
+    private static func resolveTranscriptId(kernelSid: String, provider: Provider, projectKey: String) -> String {
+        if let tx = SoulRegistry.findProviderTranscriptID(projectKey: projectKey, sessionId: kernelSid, provider: provider.rawValue) {
+            return tx
+        }
+        if let native = SoulRegistry.findNativeSessionID(projectKey: projectKey, sessionId: kernelSid, provider: provider.rawValue) {
+            return native
+        }
+        return kernelSid
     }
 
     private static var memo: [String: (date: Date, value: ContextUsage?)] = [:]
@@ -87,7 +163,7 @@ struct ContextUsage {
                 continue
             }
         }
-        return ContextUsage(tokens: bytes / 4, max: max, isEstimate: true)
+        return ContextUsage(tokens: bytes / 4, max: max, isEstimate: true, breakdown: nil)
     }
 
     // MARK: - Claude (precise)
@@ -126,7 +202,14 @@ struct ContextUsage {
         return ContextUsage(
             tokens: u.input + u.cacheCreate + u.cacheRead,
             max: claudeBudget(for: lastModel),
-            isEstimate: false
+            isEstimate: false,
+            breakdown: Breakdown(
+                model: lastModel,
+                input: u.input,
+                cacheCreate: u.cacheCreate,
+                cacheRead: u.cacheRead,
+                source: "From last-turn `usage` in Claude transcript JSONL."
+            )
         )
     }
 
@@ -150,25 +233,50 @@ struct ContextUsage {
         // cached,thoughts,tool,total}`. The "what's in the model's context
         // right now" signal is the most recent entry's `tokens.total` — same
         // pattern as Claude's last-assistant-entry usage block.
+        //
+        // -N collision walk: gemini-cli files chats under
+        // `~/.gemini/tmp/<basename>/chats/` — but when two projects share
+        // a cwd basename, the second one gets `<basename>-1`, `<basename>-2`
+        // siblings. Without walking these, the resolver silently misses
+        // and the chip falls back to the coarse hooks byte-estimate. Any
+        // /compress auto-fire built on top of that would trigger on the
+        // wrong signal. Walk all <basename>* siblings and merge their
+        // chats/ contents, then pick the newest match across the union.
         let basename = (cwd as NSString).lastPathComponent
-        let chatsDir = ("~/.gemini/tmp/\(basename)/chats" as NSString).expandingTildeInPath
+        let tmpDir = ("~/.gemini/tmp" as NSString).expandingTildeInPath
+        let siblings: [String]
+        if let all = try? FileManager.default.contentsOfDirectory(atPath: tmpDir) {
+            siblings = all.filter { entry in
+                entry == basename || entry.hasPrefix("\(basename)-")
+            }
+        } else {
+            siblings = [basename]
+        }
         let needle = String(sessionId.prefix(8))
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: chatsDir) else {
+        // (chatsDir, chatFile) pairs across every sibling.
+        var candidates: [(String, String)] = []
+        for sib in siblings {
+            let chatsDir = "\(tmpDir)/\(sib)/chats"
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: chatsDir) else { continue }
+            for entry in entries where entry.contains(needle) {
+                candidates.append((chatsDir, entry))
+            }
+        }
+        guard !candidates.isEmpty else {
             return estimateFromHooks(sessionId: sessionId, max: max)
         }
-        let matches = entries.filter { $0.contains(needle) }
-        let resolved = matches.max(by: { a, b in
-            let aPath = "\(chatsDir)/\(a)"
-            let bPath = "\(chatsDir)/\(b)"
-            let aTime = (try? FileManager.default.attributesOfItem(atPath: aPath)[.modificationDate] as? Date) ?? .distantPast
-            let bTime = (try? FileManager.default.attributesOfItem(atPath: bPath)[.modificationDate] as? Date) ?? .distantPast
+        let resolved = candidates.max(by: { lhs, rhs in
+            let aTime = (try? FileManager.default.attributesOfItem(atPath: "\(lhs.0)/\(lhs.1)")[.modificationDate] as? Date) ?? .distantPast
+            let bTime = (try? FileManager.default.attributesOfItem(atPath: "\(rhs.0)/\(rhs.1)")[.modificationDate] as? Date) ?? .distantPast
             return aTime < bTime
         })
-        guard let match = resolved,
-              let blob = try? String(contentsOfFile: "\(chatsDir)/\(match)", encoding: .utf8)
+        guard let pick = resolved,
+              let blob = try? String(contentsOfFile: "\(pick.0)/\(pick.1)", encoding: .utf8)
         else {
             return estimateFromHooks(sessionId: sessionId, max: max)
         }
+        let chatsDir = pick.0
+        let match = pick.1
 
         var lastTotal: Int? = nil
         for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -188,7 +296,16 @@ struct ContextUsage {
         }
 
         if let t = lastTotal {
-            return ContextUsage(tokens: t, max: max, isEstimate: false)
+            return ContextUsage(
+                tokens: t, max: max, isEstimate: false,
+                breakdown: Breakdown(
+                    model: "gemini",
+                    input: t,
+                    cacheCreate: nil,
+                    cacheRead: nil,
+                    source: "From last-turn `tokens.total` in gemini-cli chat JSONL."
+                )
+            )
         }
         // No tokens field anywhere — fall through to the coarse byte estimate.
         return estimateBytesAtPath("\(chatsDir)/\(match)", max: max)
@@ -215,7 +332,7 @@ struct ContextUsage {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               let size = attrs[.size] as? Int, size > 0
         else { return nil }
-        return ContextUsage(tokens: size / 4, max: max, isEstimate: true)
+        return ContextUsage(tokens: size / 4, max: max, isEstimate: true, breakdown: nil)
     }
 
     private static func estimateFromHooks(sessionId: String, max: Int) -> ContextUsage? {

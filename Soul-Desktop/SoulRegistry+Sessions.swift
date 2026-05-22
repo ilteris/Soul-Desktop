@@ -341,6 +341,20 @@ extension SoulRegistry {
             if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
                 s.isDirty = true
             }
+            // SOUL-IDENTITY-SPLIT: the finalize transaction itself appends
+            // a SESSION_SUMMARY event to hooks.jsonl AFTER writing the
+            // finalize JSON — sometimes seconds, sometimes tens of
+            // seconds later depending on writer flush timing. The
+            // mtime-delta check above can't tell that apart from "user
+            // kept working post-finalize." Treat any hooks-after-json
+            // gap within 60s as part of the same finalize transaction
+            // and clear the badge. Real post-finalize activity (a new
+            // prompt + reply) takes far longer than 60s to land, so the
+            // legitimate "unread since finalize" signal still works.
+            if s.isDirty, let h = shape.hooksMtime, let j = shape.jsonMtime,
+               shape.finalizePath != nil, h.timeIntervalSince(j) < 60 {
+                s.isDirty = false
+            }
             s.replayable = (shape.hooksPath != nil)
             if s.source == nil {
                 if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache, nativeSessionIDs: nativeSessionIDs) {
@@ -367,16 +381,27 @@ extension SoulRegistry {
                 s.loadable = false
             }
 
-            if s.promptCount == 0 {
-                s.transcriptTurns = countTranscriptTurns(
-                    sessionId: id,
-                    projectKey: key,
-                    projectPath: projectPath,
-                    sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
-                    cache: dirCache,
-                    nativeSessionIDs: nativeSessionIDs
-                )
+            // Always compute the provider-transcript turn count. Previously
+            // gated on `promptCount == 0` as a perf optimization, but the
+            // kernel hooks ledger frequently under-counts (terminal-origin
+            // sessions, SOUL-247 payload-drop, hooks-disabled providers) —
+            // a partial promptCount of 5 would freeze the sidebar at
+            // "5 turns" forever on a session that actually had 90+ turns
+            // in the provider transcript. metaLine picks max(promptCount,
+            // transcriptTurns), which is robust to either source being
+            // partial. Per-project scan is gated through cachedSessions
+            // (projectStamp mtime), so this cost is paid once per project
+            // dir change, not per sidebar body render.
+            s.transcriptTurns = countTranscriptTurns(
+                sessionId: id,
+                projectKey: key,
+                projectPath: projectPath,
+                sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
+                cache: dirCache,
+                nativeSessionIDs: nativeSessionIDs
+            )
 
+            if s.promptCount == 0 {
                 // Title fallback for terminal-origin sessions. If the kernel
                 // ledger has no UserPrompt events, s.intent will be nil (no
                 // Title hook). reach into the native transcript to sniff the
@@ -535,6 +560,45 @@ extension SoulRegistry {
         return nil
     }
 
+    /// Process-lifetime memoization of `countTranscriptTurns` results,
+    /// keyed by transcript file path. Each entry stores the file mtime at
+    /// scan time; lookups stat() the file (microseconds) and return the
+    /// cached count if mtime is unchanged, bypassing the mmap + byte-scan
+    /// (milliseconds) entirely. The big payoff is during streaming, when
+    /// the project's `projectStamp` advances on every hook write and forces
+    /// `sessions(forProject:)` to re-run for the whole project — but only
+    /// the actively-streaming session's transcript file actually changed,
+    /// so every other session's count is a stat() hit.
+    private struct TranscriptCountCache {
+        var mtime: Date
+        var count: Int
+    }
+    nonisolated(unsafe) private static var transcriptCountCache: [String: TranscriptCountCache] = [:]
+    private static let transcriptCountCacheLock = NSLock()
+
+    /// Returns the cached count for `path` iff the file's mtime matches the
+    /// cache entry. Stats the file once; cheap.
+    private static func cachedTranscriptCount(forPath path: String) -> Int? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mt = attrs[.modificationDate] as? Date else {
+            return nil
+        }
+        transcriptCountCacheLock.lock()
+        defer { transcriptCountCacheLock.unlock() }
+        guard let hit = transcriptCountCache[path], hit.mtime == mt else { return nil }
+        return hit.count
+    }
+
+    private static func recordTranscriptCount(_ count: Int, forPath path: String) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mt = attrs[.modificationDate] as? Date else {
+            return
+        }
+        transcriptCountCacheLock.lock()
+        transcriptCountCache[path] = TranscriptCountCache(mtime: mt, count: count)
+        transcriptCountCacheLock.unlock()
+    }
+
     private static func countTranscriptTurns(
         sessionId sid: String,
         projectKey key: String,
@@ -551,35 +615,56 @@ extension SoulRegistry {
             let claudeId = nativeSessionIDs["claude"] ?? sid
             let claudePath = "\(homePath)/.claude/projects/\(encoded)/\(claudeId).jsonl"
             if fm.fileExists(atPath: claudePath) {
-                // SOUL-222: Claude logs every tool roundtrip as
-                // {"type":"user", ...} with a "tool_use_id" pointing at
-                // the prior tool_use block. A raw "type":"user" count
-                // therefore inflates turn count by every tool the agent
-                // ran. Subtract tool_use_id occurrences as a fast
-                // heuristic — matches what ClaudeTranscriptReader
-                // produces post-click, so the sidebar count stays stable
-                // before and after the user opens the session.
-                let userRecords = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
-                let toolResults = countNeedle(Data("\"tool_use_id\"".utf8), inFileAt: claudePath)
-                let n = max(0, userRecords - toolResults)
-                if n > 0 { return n }
+                if let hit = cachedTranscriptCount(forPath: claudePath) {
+                    if hit > 0 { return hit }
+                } else {
+                    // SOUL-222: Claude logs every tool roundtrip as
+                    // {"type":"user", ...} with a "tool_use_id" pointing at
+                    // the prior tool_use block. A raw "type":"user" count
+                    // therefore inflates turn count by every tool the agent
+                    // ran. Subtract tool_use_id occurrences as a fast
+                    // heuristic — matches what ClaudeTranscriptReader
+                    // produces post-click, so the sidebar count stays stable
+                    // before and after the user opens the session.
+                    let userRecords = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
+                    let toolResults = countNeedle(Data("\"tool_use_id\"".utf8), inFileAt: claudePath)
+                    let n = max(0, userRecords - toolResults)
+                    recordTranscriptCount(n, forPath: claudePath)
+                    if n > 0 { return n }
+                }
             }
 
             let geminiId = nativeSessionIDs["geminiCLI"] ?? sid
             let shortId = String(geminiId.prefix(8))
             if let hit = cache.firstEightIndex[shortId] {
                 let path = "\(hit.chatsDir)/\(hit.fileName)"
-                let n = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: path)
-                if n > 0 { return n }
+                if let cached = cachedTranscriptCount(forPath: path) {
+                    if cached > 0 { return cached }
+                } else {
+                    let n = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: path)
+                    recordTranscriptCount(n, forPath: path)
+                    if n > 0 { return n }
+                }
             }
         }
 
         let codexPath = "\(sessionDir)/transcript.jsonl"
         if fm.fileExists(atPath: codexPath) {
-            let byType = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: codexPath)
-            if byType > 0 { return byType }
-            let byRole = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: codexPath)
-            if byRole > 0 { return byRole }
+            if let cached = cachedTranscriptCount(forPath: codexPath) {
+                if cached > 0 { return cached }
+            } else {
+                let byType = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: codexPath)
+                if byType > 0 {
+                    recordTranscriptCount(byType, forPath: codexPath)
+                    return byType
+                }
+                let byRole = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: codexPath)
+                if byRole > 0 {
+                    recordTranscriptCount(byRole, forPath: codexPath)
+                    return byRole
+                }
+                recordTranscriptCount(0, forPath: codexPath)
+            }
         }
 
         return 0

@@ -22,10 +22,25 @@ final class SoulAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate 
     private var toolbarObserver: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.installToolbar()
-            self?.startToolbarSwapWatcher()
-        }
+        // SOUL-249 spike: SwiftUI .toolbar ownership re-attempt. Disabled
+        // the NSToolbar install so SwiftUI's BarAppearanceBridge owns the
+        // window.toolbar. If toggle-driven relayout crashes, restore the
+        // installToolbar + startToolbarSwapWatcher calls below.
+        //
+        // DispatchQueue.main.async { [weak self] in
+        //     self?.installToolbar()
+        //     self?.startToolbarSwapWatcher()
+        // }
+    }
+
+    /// SOUL-WRITER-DRAIN: drain the hook-write queue before the process
+    /// dies. Without this, in-flight ledger writes (UserPrompt /
+    /// AfterAgent / AfterTool from a recent turn) can be lost when the
+    /// app quits before the async queue drains. Pair with per-turn
+    /// `SoulRegistry.flushHooks()` in `dispatchPending`'s defer for full
+    /// coverage of both quit paths (clean quit + mid-turn quit).
+    func applicationWillTerminate(_ notification: Notification) {
+        SoulRegistry.flushHooks()
     }
 
     private func startToolbarSwapWatcher() {
@@ -89,7 +104,7 @@ final class SoulAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate 
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Sidebar"
             item.paletteLabel = "Sidebar"
-            item.toolTip = "Toggle sidebar (⌘\\)"
+            item.toolTip = "Toggle sidebar (⌘B)"
             item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle sidebar")
             item.isBordered = false
             item.target = self

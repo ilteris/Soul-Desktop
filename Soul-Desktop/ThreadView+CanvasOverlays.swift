@@ -208,12 +208,9 @@ struct WorkingIndicator: View {
                                 .font(SoulFont.ui(13, weight: .medium))
                                 .foregroundStyle(Color.orange)
                         } else {
-                            ShimmerText(
-                                text: "Agent working…",
-                                font: SoulFont.ui(13, weight: .medium),
-                                base: SoulColor.accent.opacity(0.60),
-                                highlight: SoulColor.accent
-                            )
+                            Text("Agent working…")
+                                .font(SoulFont.ui(13, weight: .medium))
+                                .foregroundStyle(SoulColor.accent)
                         }
                         if let started = controller.turnStartedAt {
                             let elapsed = max(0, Int(ctx.date.timeIntervalSince(started)))

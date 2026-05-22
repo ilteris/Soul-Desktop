@@ -96,6 +96,12 @@ struct AgentMessageRow: View, Equatable {
     let text: String
     let timestamp: Date
     var isHistorical: Bool = false
+    /// True while the agent is still emitting chunks for this message.
+    /// Used to suppress the CollapsibleBubbleBody truncation during
+    /// streaming — otherwise a reply that crosses the collapse threshold
+    /// mid-stream suddenly shrinks to its preview window, leaving the
+    /// viewport above the new content and rendering as blank canvas.
+    var isStreaming: Bool = false
     /// Only the final agent message in a consecutive run shows the footer
     /// (copy / feedback / fork / timestamp). Without this, multi-step turns
     /// where the agent narrates 5-10 short paragraphs render a noisy
@@ -113,6 +119,7 @@ struct AgentMessageRow: View, Equatable {
         lhs.text == rhs.text
             && lhs.timestamp == rhs.timestamp
             && lhs.isHistorical == rhs.isHistorical
+            && lhs.isStreaming == rhs.isStreaming
             && lhs.showFooter == rhs.showFooter
     }
 
@@ -127,26 +134,32 @@ struct AgentMessageRow: View, Equatable {
             // re-evals when stored input is unchanged — items.count growth
             // during streaming no longer re-runs the markdown parse +
             // linkify regex on every other visible row.
-            MarkdownView(
+            // Agent replies: render in full for the typical case; only
+            // collapse when the reply is abnormally large (>400 lines) so
+            // the rendered text layer can't exceed Metal's texture limit.
+            // While streaming, set collapseAbove to Int.max so partial
+            // bodies never collapse mid-stream — the abrupt shrink would
+            // strand the user's viewport above the new (shorter) content
+            // and paint the canvas blank. Collapse triggers on the final
+            // chunk when `isStreaming` flips false.
+            CollapsibleBubbleBody(
                 text: split.visible,
-                headerColor: isHistorical ? mutedFg : SoulColor.fg,
-                bodyColor: isHistorical ? mutedFg : SoulColor.fg,
-                codeColor: isHistorical ? mutedFg : SoulColor.fg
+                isHistorical: isHistorical,
+                mutedFg: mutedFg,
+                previewLineCount: 200,
+                collapseAbove: isStreaming ? Int.max : 400,
+                revealChunk: 100
             )
-                .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-
-            if let trace = split.trace {
-                SoulTraceChip(trace: trace)
-                    .padding(.top, 4)
-            }
 
             // Footer renders for live AND historical messages. Earlier
             // versions hid the buttons on historical bubbles, which left
             // every reply lacking copy/feedback after a session reload —
             // you couldn't act on prior content. Historical rows just get
             // slightly more muted styling via the parent `mutedFg`.
+            // Footer sits above the trace chip so action buttons stay
+            // adjacent to the message they act on.
             if showFooter {
             HStack(spacing: 4) {
                 FooterButton(systemName: "doc.on.doc", help: "Copy as Markdown") {
@@ -181,6 +194,11 @@ struct AgentMessageRow: View, Equatable {
             }
             .opacity(isHovering ? 1 : 0.55)
             .animation(.easeInOut(duration: 0.12), value: isHovering)
+            }
+
+            if let trace = split.trace {
+                SoulTraceChip(trace: trace)
+                    .padding(.top, 4)
             }
         }
         .onHover { isHovering = $0 }
@@ -344,13 +362,11 @@ struct UserMessageRow: View {
                     SlashCommandChip(command: cmd, args: firstLine, isHistorical: isHistorical)
 
                     if !remaining.isEmpty {
-                        MarkdownView(
+                        CollapsibleBubbleBody(
                             text: remaining,
-                            headerColor: isHistorical ? mutedFg : SoulColor.fg,
-                            bodyColor: isHistorical ? mutedFg : SoulColor.fg,
-                            codeColor: isHistorical ? mutedFg : SoulColor.fg
+                            isHistorical: isHistorical,
+                            mutedFg: mutedFg
                         )
-                        .equatable() // SOUL-SOUL_DESKTOP-162
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -368,13 +384,11 @@ struct UserMessageRow: View {
                     }
                 }
             } else {
-                MarkdownView(
+                CollapsibleBubbleBody(
                     text: text,
-                    headerColor: isHistorical ? mutedFg : SoulColor.fg,
-                    bodyColor: isHistorical ? mutedFg : SoulColor.fg,
-                    codeColor: isHistorical ? mutedFg : SoulColor.fg
+                    isHistorical: isHistorical,
+                    mutedFg: mutedFg
                 )
-                .equatable() // SOUL-SOUL_DESKTOP-162
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(bubbleFill, in: RoundedRectangle(cornerRadius: 10))
@@ -389,6 +403,100 @@ struct UserMessageRow: View {
                         )
                 )
                 .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+/// SOUL-249: cap user-prompt bubbles at 5 visible lines and reveal more
+/// in 50-line chunks. Pasting a multi-thousand-line block into the composer
+/// used to render the whole text as a single MarkdownView; the resulting
+/// CALayer (~20k+ points tall for ~1k lines) exceeded Metal's texture limit
+/// and macOS silently dropped the draw, leaving the canvas blank.
+/// Progressive disclosure: a single click can't ever push the bubble past
+/// the safe height — the user has to keep clicking, and at any point the
+/// rendered text layer stays well under the 8k-pt safety margin until
+/// they've expanded enough to need it.
+struct CollapsibleBubbleBody: View {
+    let text: String
+    let isHistorical: Bool
+    let mutedFg: Color
+    /// Initial visible-line cap. User prompts collapse aggressively (5);
+    /// agent replies only collapse when abnormally large (200) so normal
+    /// reading flow isn't interrupted.
+    var previewLineCount: Int = 5
+    /// Threshold above which we even bother to collapse. Agent replies
+    /// pass a high value here so a typical 80-line answer renders in full.
+    var collapseAbove: Int = 5
+    /// Lines revealed per "Show more" click. Bounded so a single click
+    /// never produces a CALayer past Metal's ~16k-px texture limit.
+    var revealChunk: Int = 50
+
+    @State private var revealedLineCount: Int? = nil
+
+    private var lines: [Substring] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+    }
+
+    private var isLong: Bool {
+        lines.count > collapseAbove
+    }
+
+    private var effectiveRevealed: Int {
+        revealedLineCount ?? previewLineCount
+    }
+
+    private var visibleText: String {
+        if !isLong || effectiveRevealed >= lines.count { return text }
+        return lines.prefix(effectiveRevealed).joined(separator: "\n")
+    }
+
+    private var remainingLines: Int {
+        max(0, lines.count - effectiveRevealed)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            MarkdownView(
+                text: visibleText,
+                headerColor: isHistorical ? mutedFg : SoulColor.fg,
+                bodyColor: isHistorical ? mutedFg : SoulColor.fg,
+                codeColor: isHistorical ? mutedFg : SoulColor.fg
+            )
+            .equatable()
+
+            if isLong {
+                HStack(spacing: 8) {
+                    if remainingLines > 0 {
+                        let chunk = min(revealChunk, remainingLines)
+                        Button {
+                            revealedLineCount = min(lines.count, effectiveRevealed + revealChunk)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9))
+                                Text("Show \(chunk) more (\(remainingLines) remaining)")
+                                    .font(SoulFont.ui(11, weight: .medium))
+                            }
+                            .foregroundStyle(SoulColor.fgMuted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if effectiveRevealed > previewLineCount {
+                        Button {
+                            revealedLineCount = previewLineCount
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.up")
+                                    .font(.system(size: 9))
+                                Text("Collapse")
+                                    .font(SoulFont.ui(11, weight: .medium))
+                            }
+                            .foregroundStyle(SoulColor.fgMuted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
     }

@@ -59,10 +59,7 @@ struct CanvasToolbar: View {
             // brand-new chat that's still on the hero/empty state), so we
             // don't show an orphan rename button.
             if let thread, thread.sessionId != nil, !replayActive {
-                Divider()
-                    .frame(height: 16)
-                    .padding(.horizontal, 8)
-                ThreadTitleCluster(controller: thread, onSmokeTest: onSmokeTest, onBranch: onBranch, onReload: onReload)
+                ThreadTitleCluster(controller: thread)
             }
 
             Spacer()
@@ -79,7 +76,14 @@ struct CanvasToolbar: View {
                     SessionStatsChip(controller: thread)
                         .padding(.trailing, 6)
                     AgentLogChip(controller: thread)
-                        .padding(.trailing, 10)
+                        .padding(.trailing, 6)
+                    ThreadOverflowMenu(
+                        controller: thread,
+                        onSmokeTest: onSmokeTest,
+                        onBranch: onBranch,
+                        onReload: onReload
+                    )
+                    .padding(.trailing, 10)
                 }
             }
 
@@ -106,7 +110,6 @@ struct CanvasToolbar: View {
         }
         // SOUL-208: sidebar toggle moved to the native titlebar (.toolbar
         // on AppShell), so the 60pt overlay-reservation gap is gone.
-        // Symmetric padding looks right under the unified titlebar.
         .padding(.leading, 14)
         .padding(.trailing, 14)
         .padding(.top, 10)
@@ -117,30 +120,13 @@ struct CanvasToolbar: View {
 }
 
 /// SOUL-SOUL_DESKTOP-047: title cluster that lives inline in the toolbar.
-/// Replaces the per-thread `ThreadHeader` row that used to sit between the
-/// toolbar and the canvas. Layout: pencil (rename) · title text · ⋯ menu.
-/// High-frequency action (rename) is inline; copy/coming-soon actions
-/// retreat into the overflow menu.
-private struct ThreadTitleCluster: View {
+/// Layout: title text · pencil (rename). Overflow menu lifted out to its
+/// own trailing chip so the leading edge stays clean.
+struct ThreadTitleCluster: View {
     @Bindable var controller: ThreadController
-    var onSmokeTest: () -> Void = {}
-    var onBranch: (Provider) -> Void = { _ in }
-    var onReload: () -> Void = {}
-    @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: { controller.requestRename() }) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: SoulMetric.icon, weight: .regular))
-                    .foregroundStyle(SoulColor.fgMuted)
-            }
-            .buttonStyle(.soulHover)
-            .help("Rename chat")
-
-            // Suppress the title text while it still reads "New chat" — the
-            // adjacent New chat pill already says it, and the redundancy is
-            // distracting until the title sniffer lands a real title.
             if controller.displayTitle != "New chat" {
                 Text(controller.displayTitle)
                     .font(SoulFont.ui(13, weight: .regular))
@@ -156,46 +142,65 @@ private struct ThreadTitleCluster: View {
                     .frame(maxWidth: 320, alignment: .leading)
             }
 
-            Menu {
-                Button("Rename chat") { controller.requestRename() }
-                Button("Reload session") { onReload() }
-                Divider()
-                Button("Copy session ID") { controller.copySessionIdToPasteboard() }
-                Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
-                Divider()
-                // SOUL-SOUL_DESKTOP-163: Branch to <provider>. Operates on
-                // the currently-displayed chat (the controller bound to this
-                // cluster) so there's no chance of branching the wrong row.
-                // Hides the current provider from the list so the user can't
-                // pick a no-op.
-                Section("Branch to") {
-                    ForEach(Provider.allCases.filter { $0 != controller.provider }, id: \.self) { p in
-                        Button(p.label) { onBranch(p) }
-                    }
-                }
-                Divider()
-                Section("Debug") {
-                    Toggle("Show smoke-test button", isOn: $showSmoke)
-                    Button("Run smoke test now", action: onSmokeTest)
-                }
-                Divider()
-                Section("Coming soon") {
-                    Button("Fork into new worktree") {}.disabled(true)
-                    Button("Open side chat") {}.disabled(true)
-                    Button("Open in new window") {}.disabled(true)
-                    Button("Copy deeplink") {}.disabled(true)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
+            Button(action: { controller.requestRename() }) {
+                Image(systemName: "square.and.pencil")
                     .font(.system(size: SoulMetric.icon, weight: .regular))
                     .foregroundStyle(SoulColor.fgMuted)
-                    .frame(minWidth: 24, minHeight: 24)
-                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(.soulHover)
+            .help("Rename chat")
         }
+    }
+}
+
+/// Trailing overflow chip — rename / reload / copy / branch / debug.
+/// Capsule-styled to match SessionStatsChip / AgentLogChip; uses a vertical
+/// ellipsis glyph so it reads as a distinct affordance, not a duplicate of
+/// the menu indicator inside HarnessPicker.
+struct ThreadOverflowMenu: View {
+    @Bindable var controller: ThreadController
+    var onSmokeTest: () -> Void = {}
+    var onBranch: (Provider) -> Void = { _ in }
+    var onReload: () -> Void = {}
+    @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
+
+    var body: some View {
+        Menu {
+            Button("Rename chat") { controller.requestRename() }
+            Button("Reload session") { onReload() }
+            Divider()
+            Button("Copy session ID") { controller.copySessionIdToPasteboard() }
+            Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
+            Divider()
+            Section("Branch to") {
+                ForEach(Provider.allCases.filter { $0 != controller.provider }, id: \.self) { p in
+                    Button(p.label) { onBranch(p) }
+                }
+            }
+            Divider()
+            Section("Debug") {
+                Toggle("Show smoke-test button", isOn: $showSmoke)
+                Button("Run smoke test now", action: onSmokeTest)
+            }
+            Divider()
+            Section("Coming soon") {
+                Button("Fork into new worktree") {}.disabled(true)
+                Button("Open side chat") {}.disabled(true)
+                Button("Open in new window") {}.disabled(true)
+                Button("Copy deeplink") {}.disabled(true)
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: SoulMetric.icon, weight: .regular))
+                .foregroundStyle(SoulColor.fgMuted)
+                .rotationEffect(.degrees(90))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More actions")
     }
 }
 
@@ -259,7 +264,7 @@ private struct ToolbarIcon: View {
 /// Always-on log surface tied to the active thread's agent log. Tap to open
 /// the same popover the stall badge uses — useful when you want to peek at
 /// what the agent is doing without waiting 30s for the stall threshold.
-private struct AgentLogChip: View {
+struct AgentLogChip: View {
     @Bindable var controller: ThreadController
     @State private var showing = false
 
@@ -276,9 +281,8 @@ private struct AgentLogChip: View {
                     .font(SoulFont.code(11))
                     .foregroundStyle(controller.agentLogCount == 0 ? SoulColor.fgSubtle : SoulColor.fg)
             }
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(SoulColor.surface, in: Capsule())
         }
         .buttonStyle(.soulChip)
         .help("Agent log (\(controller.agentLogCount) lines)")
@@ -288,7 +292,7 @@ private struct AgentLogChip: View {
     }
 }
 
-private struct ContextUsageChip: View {
+struct ContextUsageChip: View {
     let usage: ContextUsage
 
     private var tone: Color {
@@ -321,33 +325,28 @@ private struct ContextUsageChip: View {
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(SoulColor.surface, in: Capsule())
-        .help(usage.isEstimate
-              ? "≈\(usage.tokens) tokens (estimated from transcript bytes — provider doesn't expose precise usage)"
-              : "\(usage.tokens) tokens (precise — last-turn prompt size from the Claude transcript)")
+        .help(usage.tooltipText)
     }
 }
 
 /// Compact chip showing how "fat" the active thread has gotten: tool calls so
-/// far, user-prompt chapters, and elapsed wall-clock since the thread was
-/// instantiated. Elapsed time refreshes once per second via TimelineView so
-/// we never schedule our own Timer / re-render the whole toolbar.
-private struct SessionStatsChip: View {
+/// far and user-prompt chapters. Static — no TimelineView, no per-second
+/// re-render. Counts only mutate when ThreadController observes a new
+/// tool / chapter, so the chip refreshes on the SwiftUI graph naturally.
+struct SessionStatsChip: View {
     @Bindable var controller: ThreadController
 
     private var toolCount: Int { controller.toolCount }
     private var chapterCount: Int { controller.chapterCount }
 
-    private func elapsedLabel(now: Date) -> String {
-        // Cap at lastActivityAt so idle wall-clock time doesn't inflate
-        // the chip. When the user reopens a 17h-old session and just
-        // looks at it for 5 minutes, the chip should read "15h 47m"
-        // (the actual conversation duration), not "17h 30m" (now -
-        // first hook). Matches the sidebar row's duration metric.
-        let endpoint = min(now, controller.lastActivityAt)
-        let seconds = Int(max(0, endpoint.timeIntervalSince(controller.startedAt)))
+    /// Conversation duration = last activity − first activity. Static —
+    /// not now() − startedAt, so the chip doesn't drift while the window
+    /// is idle. Recomputes only when ThreadController appends a new hook
+    /// that bumps `lastActivityAt`.
+    private var elapsedLabel: String {
+        let seconds = Int(max(0, controller.lastActivityAt.timeIntervalSince(controller.startedAt)))
         if seconds < 60 { return "\(seconds)s" }
         let m = seconds / 60
         if m < 60 { return "\(m)m" }
@@ -357,51 +356,50 @@ private struct SessionStatsChip: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
-            HStack(spacing: 6) {
-                Image(systemName: "wrench.adjustable")
-                    .font(.system(size: SoulMetric.iconHint))
-                    .foregroundStyle(SoulColor.fgMuted)
-                Text("\(toolCount)")
-                    .font(SoulFont.code(11))
-                    .foregroundStyle(SoulColor.fg)
-                    .lineLimit(1).fixedSize()
-                Text("tools")
-                    .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .padding(.trailing, 4)
+        HStack(spacing: 6) {
+            Image(systemName: "wrench.adjustable")
+                .font(.system(size: SoulMetric.iconHint))
+                .foregroundStyle(SoulColor.fgMuted)
+            Text("\(toolCount)")
+                .font(SoulFont.code(11))
+                .foregroundStyle(SoulColor.fg)
+                .lineLimit(1).fixedSize()
+            Text("tools")
+                .font(SoulFont.ui(10))
+                .foregroundStyle(SoulColor.fgSubtle)
+                .padding(.trailing, 4)
 
-                Text("·")
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .lineLimit(1).fixedSize()
+            Text("·")
+                .foregroundStyle(SoulColor.fgSubtle)
+                .lineLimit(1).fixedSize()
 
-                Image(systemName: "text.bubble")
-                    .font(.system(size: SoulMetric.iconHint))
-                    .foregroundStyle(SoulColor.fgMuted)
-                Text("\(chapterCount)")
-                    .font(SoulFont.code(11))
-                    .foregroundStyle(SoulColor.fg)
-                    .lineLimit(1).fixedSize()
-                Text("turns")
-                    .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                Text("·")
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .lineLimit(1).fixedSize()
-                Image(systemName: "clock")
-                    .font(.system(size: SoulMetric.iconHint))
-                    .foregroundStyle(SoulColor.fgMuted)
-                Text(elapsedLabel(now: ctx.date))
-                    .font(SoulFont.code(11))
-                    .foregroundStyle(SoulColor.fg)
-                    .lineLimit(1).fixedSize()
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(SoulColor.surface, in: Capsule())
-            .help("\(toolCount) tool calls · \(chapterCount) prompts · running \(elapsedLabel(now: ctx.date))")
+            Image(systemName: "text.bubble")
+                .font(.system(size: SoulMetric.iconHint))
+                .foregroundStyle(SoulColor.fgMuted)
+            Text("\(chapterCount)")
+                .font(SoulFont.code(11))
+                .foregroundStyle(SoulColor.fg)
+                .lineLimit(1).fixedSize()
+            Text("turns")
+                .font(SoulFont.ui(10))
+                .foregroundStyle(SoulColor.fgSubtle)
+
+            Text("·")
+                .foregroundStyle(SoulColor.fgSubtle)
+                .lineLimit(1).fixedSize()
+
+            Image(systemName: "clock")
+                .font(.system(size: SoulMetric.iconHint))
+                .foregroundStyle(SoulColor.fgMuted)
+            Text(elapsedLabel)
+                .font(SoulFont.code(11))
+                .foregroundStyle(SoulColor.fg)
+                .lineLimit(1).fixedSize()
         }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .help("\(toolCount) tool calls · \(chapterCount) prompts · \(elapsedLabel) span")
     }
 }
 

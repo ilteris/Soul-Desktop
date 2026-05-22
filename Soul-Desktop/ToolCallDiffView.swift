@@ -11,10 +11,13 @@ struct DiffView: View {
 
     // Default render cap. Eagerly laying out 450-row diffs inside a top-level
     // textSelection scope beachballs the main thread (single giant NSTextView
-    // snapshot + ~4 Text subviews per row). Cap at 120; user opts in to the
-    // full render with the "show all" toggle below.
+    // snapshot + ~4 Text subviews per row). Cap at 120; user reveals more
+    // in 100-row chunks so a single click can never produce a CALayer past
+    // Metal's ~16k-px texture limit. Previously a one-shot "Show all" could
+    // blow past that limit on a 12k-line diff, silently dropping the draw.
     private static let defaultRowCap = 120
-    @State private var showAll: Bool = false
+    private static let revealChunk = 100
+    @State private var revealedRowCount: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -26,11 +29,16 @@ struct DiffView: View {
                 // left column shows blank for each row.
                 diffRows(old: "", new: content, startLine: details.startLine ?? 1)
             case .output(let text):
-                Text(text)
-                    .font(SoulFont.code(12))
-                    .foregroundStyle(SoulColor.fg)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                CollapsibleBubbleBody(
+                    text: text,
+                    isHistorical: false,
+                    mutedFg: SoulColor.fg,
+                    previewLineCount: 80,
+                    collapseAbove: 200,
+                    revealChunk: 100
+                )
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             case .subagent:
                 // Subagent calls render via SubagentCard at the ThreadItemRow
                 // level — they don't reach DiffView. Defensive empty case to
@@ -62,21 +70,40 @@ struct DiffView: View {
     private func diffRows(old: String, new: String, startLine: Int) -> some View {
         let rows = Self.computeRows(old: old, new: new, startLine: startLine)
         let gutter = Self.gutterWidth(for: rows)
-        let cap = Self.defaultRowCap
-        let capped = !showAll && rows.count > cap
-        let visible = capped ? Array(rows.prefix(cap)) : rows
+        let cap = revealedRowCount ?? Self.defaultRowCap
+        let isCapped = rows.count > cap
+        let visible = isCapped ? Array(rows.prefix(cap)) : rows
+        let remaining = max(0, rows.count - cap)
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(visible.enumerated()), id: \.offset) { _, row in
                 diffRowView(row, gutterWidth: gutter)
             }
-            if capped {
+            if isCapped {
+                let chunk = min(Self.revealChunk, remaining)
                 Button {
-                    showAll = true
+                    revealedRowCount = min(rows.count, cap + Self.revealChunk)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10))
-                        Text("Show all \(rows.count) lines (\(rows.count - cap) hidden)")
+                        Text("Show \(chunk) more lines (\(remaining) remaining)")
+                            .font(SoulFont.code(11))
+                    }
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+            if (revealedRowCount ?? Self.defaultRowCap) > Self.defaultRowCap {
+                Button {
+                    revealedRowCount = Self.defaultRowCap
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10))
+                        Text("Collapse")
                             .font(SoulFont.code(11))
                     }
                     .foregroundStyle(SoulColor.fgSubtle)

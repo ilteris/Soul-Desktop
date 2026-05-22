@@ -144,4 +144,17 @@ func drainQueuedPromptAfterTurn() {
         }
     }
 
+    /// Drop a queued prompt before it dispatches. Removes both the
+    /// QueuedPrompt entry (so the next steer/turn won't ship it) and the
+    /// matching userMessage bubble from `items` (so the row vanishes from
+    /// the canvas). No-op if the prompt has already shipped.
+    func removeQueuedPrompt(itemId: UUID) {
+        guard queuedPrompts.contains(where: { $0.itemId == itemId }) else { return }
+        queuedPrompts.removeAll { $0.itemId == itemId }
+        items.removeAll {
+            if case .userMessage(let id, _, _) = $0 { return id == itemId }
+            return false
+        }
+    }
+
 }

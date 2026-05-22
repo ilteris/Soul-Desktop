@@ -191,7 +191,23 @@ extension ThreadController {
         // user's first prompt in dispatchPending. This replaces the old
         // session/load resume path that re-fed the entire transcript to
         // the agent and overflowed the context window on long sessions.
-        await stagePreambleForResume(sid: sid, rendered: items)
+        //
+        // SOUL-245 hotfix (followup): detach the preamble staging so
+        // `hydrateFromDisk`'s defer fires immediately after items are
+        // populated. The `soul preamble --summarize` kernel CLI can take
+        // 30-60s on heavy sessions (92 turns / 200+ tool calls); awaiting
+        // it inline pinned `isHydrating = true` for that entire window and
+        // left the canvas stuck on the skeleton overlay. The fallback
+        // paths above already detach via `preambleStagingTask`; this
+        // mirrors that. ensureSession awaits the same task before reading
+        // pendingContextPreamble, so the resume preamble still lands on
+        // the first user send.
+        preambleStagingTask?.cancel()
+        let stagingSid = sid
+        let stagingItems = items
+        preambleStagingTask = Task { [weak self] in
+            await self?.stagePreambleForResume(sid: stagingSid, rendered: stagingItems)
+        }
         pendingResumeOnFirstSend = true
     }
 
@@ -438,8 +454,15 @@ extension ThreadController {
     /// transcript file so the user at least sees the conversation they clicked on.
     /// New turns will go through session/new — no replay into the agent.
     func renderHistoryIfAvailable(sid: String) {
-        guard provider == .claude,
-              let history = ClaudeTranscriptReader.transcript(forSession: sid, cwd: project.path),
+        guard provider == .claude else { return }
+        // SOUL-IDENTITY-SPLIT: resolve to the live transcript id. Without
+        // this, post-/compact sessions would replay the frozen pre-compact
+        // file because the kernel sid never moves but Claude rotates the
+        // on-disk filename.
+        let transcriptId = SoulRegistry.findProviderTranscriptID(projectKey: project.id, sessionId: sid, provider: "claude")
+            ?? SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: "claude")
+            ?? sid
+        guard let history = ClaudeTranscriptReader.transcript(forSession: transcriptId, cwd: project.path),
               !history.isEmpty
         else { return }
 
@@ -484,17 +507,15 @@ extension ThreadController {
             SoulSignposts.event("injectFinalizeSummaryIfFresh.stale", "\(provLabel)")
             return
         }
-        lastFinalizeInjectedAt = rec.timestamp ?? Date()
-        items.append(.finalize(
-            id: UUID(),
-            intent: rec.intent,
-            summary: rec.summary,
-            rationale: rec.rationale,
-            fixed: rec.fixed,
-            nextStep: rec.nextStep,
-            timestamp: rec.timestamp ?? Date()
-        ))
-        SoulSignposts.event("injectFinalizeSummaryIfFresh.appended", "\(provLabel)")
+        // SOUL-IDENTITY-SPLIT: delegate to the chronological-insert
+        // helper instead of `items.append`. When re-finalize happens
+        // mid-session, the new card must land AFTER the chip + tool
+        // calls + agent reply that produced it — not floating around
+        // wherever `items.endIndex` happens to be. `injectFinalizeSummary`
+        // owns the insert-at-correct-position logic and updates
+        // `lastFinalizeInjectedAt` itself.
+        injectFinalizeSummary(sessionId: sid)
+        SoulSignposts.event("injectFinalizeSummaryIfFresh.delegated", "\(provLabel)")
     }
 
     /// Insert a `.finalize` card into the canvas at its chronological

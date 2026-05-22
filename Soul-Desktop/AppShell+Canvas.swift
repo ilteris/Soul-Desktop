@@ -7,12 +7,16 @@ extension AppShell {
         Button(action: toggleSidebar) {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(showSidebar ? SoulColor.accent : SoulColor.fgMuted)
+                .foregroundStyle(showSidebar ? SoulColor.accent : SoulColor.fg.opacity(0.75))
+                .frame(width: 32, height: 22)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(SoulColor.fg.opacity(0.08), lineWidth: 0.5))
+                .contentShape(Capsule())
         }
-        .buttonStyle(SoulHoverButtonStyle(isActive: showSidebar))
-        .help("Toggle sidebar (⌘\\)")
-        .padding(.leading, 32)
-        .padding(.top, 10)
+        .buttonStyle(.plain)
+        .help("Toggle sidebar (⌘B)")
+        .padding(.leading, 78)
+        .padding(.top, 8)
         .opacity(replay.isActive ? 0.35 : 1)
     }
 
@@ -70,26 +74,9 @@ extension AppShell {
 
     var mainCanvas: some View {
         VStack(spacing: 0) {
-            CanvasToolbar(
-                harness: harness,
-                onPickHarness: onPickHarness,
-                onSmokeTest: { showSmoke = true },
-                onNewChat: { newChat() },
-                onBranch: { provider in
-                    if let source = thread { branchFrom(source, to: provider) }
-                },
-                onReload: { reloadActiveSession() },
-                onToggleSidebar: toggleSidebar,
-                onToggleTerminal: toggleTerminal,
-                onToggleReview: toggleReview,
-                threadActive: thread != nil || replay.isActive,
-                sidebarActive: showSidebar,
-                terminalActive: showTerminal,
-                reviewActive: rightPane.reviewVisible,
-                replayActive: replay.isActive,
-                contextUsage: contextUsage,
-                thread: thread
-            )
+            // SOUL-249: CanvasToolbar removed — items now live in the native
+            // window .toolbar { } block on AppShell. If the native toolbar
+            // is reverted, restore the CanvasToolbar(...) call here.
             ZStack {
                 SoulColor.bg.ignoresSafeArea()
                 if let replay = replay.controller {
@@ -176,6 +163,7 @@ extension AppShell {
                     onToggleTerminal: toggleTerminal,
                     isImageDropTargeted: $isImageDropTargeted
                 )
+                .environment(\.autoCompactController, autoCompact)
                 .opacity(isActive ? 1 : 0)
                 .allowsHitTesting(isActive)
                 .accessibilityHidden(!isActive)

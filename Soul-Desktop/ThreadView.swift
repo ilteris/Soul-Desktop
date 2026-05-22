@@ -51,6 +51,11 @@ struct ThreadView: View {
     /// the user didn't ask to see it. Auto-flips off after the animation
     /// duration completes.
     @State private var isAutoScrolling: Bool = false
+    /// True while the user's finger / trackpad is actively driving the
+    /// scroll (any phase other than .idle). Sticky-follow consults this
+    /// so streaming-content-grew snaps can't fight a manual scroll —
+    /// the user's gesture always wins.
+    @State private var userInteracting: Bool = false
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
@@ -63,6 +68,19 @@ struct ThreadView: View {
     /// chip strip. Bound into ComposerView so the chips render and submit
     /// behavior stays unchanged.
     @Binding var isImageDropTargeted: Bool
+
+    /// AppShell-owned auto-compact watcher. Threaded in via environment
+    /// (see AutoCompactController.swift) so we don't widen ThreadView's
+    /// initializer further. `nil` ⇒ no banner ever paints (default).
+    @Environment(\.autoCompactController) private var autoCompactCtrl
+
+    /// String surfaced by the watcher while a compact is in flight.
+    /// Cleared automatically by AutoCompactController's 8-second timer
+    /// and explicitly on every `isWorking → false` transition (the
+    /// agent's next reply lands ⇒ compact ran).
+    private var autoCompactBanner: String? {
+        autoCompactCtrl?.banner
+    }
 
     // Extracted to keep `body` under the Swift type-checker's budget.
     // The LazyVStack ForEach + per-row anchor closures was the heaviest
@@ -140,6 +158,25 @@ struct ThreadView: View {
     @ViewBuilder
     private var composerSection: some View {
         VStack(spacing: 8) {
+            // Auto-compact "Compacting…" banner. The AppShell-owned
+            // AutoCompactController publishes a banner string while a
+            // /compact (or /compress) is in flight; nil ⇒ nothing to
+            // show. Slim affordance — pure status, not an action.
+            if let banner = autoCompactBanner {
+                HStack(spacing: 6) {
+                    Image(systemName: "rectangle.compress.vertical")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(SoulColor.accent)
+                    Text(banner)
+                        .font(SoulFont.ui(11, weight: .medium))
+                        .foregroundStyle(SoulColor.accent)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(SoulColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .transition(.opacity)
+            }
             ComposerView(
                 prompt: $prompt,
                 projectName: controller.project.name,
@@ -208,35 +245,108 @@ struct ThreadView: View {
                 // AppKit configurator since the canvas never scrolls X.
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(isAutoScrolling ? .hidden : .automatic)
+                .overlay(alignment: .bottom) {
+                    if scrollFollow.userDetachedFromBottom {
+                        Button {
+                            scrollFollow.userDetachedFromBottom = false
+                            autoScroll(to: "__bottom__", proxy: proxy)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(SoulColor.fg)
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(SoulColor.border.opacity(0.5), lineWidth: 0.5)
+                                )
+                                .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 3)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 14)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
+                        .help("Jump to bottom")
+                    }
+                }
+                .animation(.easeOut(duration: 0.16), value: scrollFollow.userDetachedFromBottom)
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
                 .onScrollGeometryChange(for: ScrollFollowGeometry.self) { geometry in
                     let viewportBottom = geometry.contentOffset.y + geometry.containerSize.height
                     let contentBottom = geometry.contentSize.height
+                    // Generous threshold: layout settling, the 44pt
+                    // trailing sentinel, and composer overlap mean the
+                    // "visible bottom of the conversation" is ~150pt
+                    // shy of contentSize.height. Treating the bottom
+                    // 200pt as "at the bottom" matches user perception
+                    // — when they've manually scrolled to where they
+                    // can see the last message, the flag clears.
                     return ScrollFollowGeometry(
                         offsetY: geometry.contentOffset.y,
-                        atBottom: viewportBottom >= contentBottom - 8
+                        atBottom: viewportBottom >= contentBottom - 200,
+                        contentHeight: contentBottom
                     )
                 } action: { oldValue, newValue in
+                    // 1. Reaching the bottom (any path) clears detach.
                     if newValue.atBottom {
                         scrollFollow.userDetachedFromBottom = false
-                    } else if newValue.offsetY < oldValue.offsetY - 1 {
+                    }
+                    // 2. Any decrease in offsetY = user scrolled up. This
+                    //    is the ONLY legitimate detach signal — content
+                    //    growth never decreases offset, so we don't
+                    //    accidentally detach the user during streaming.
+                    //    No threshold: trackpad delivers sub-pixel ticks
+                    //    that aggregate to large scrolls; any negative
+                    //    delta counts.
+                    else if newValue.offsetY < oldValue.offsetY {
                         scrollFollow.userDetachedFromBottom = true
+                    }
+                    // 3. Sticky-follow during streaming. Content growth
+                    //    pushes contentHeight up while offsetY stays put.
+                    //    Re-pin to bottom as long as the user hasn't
+                    //    explicitly scrolled away.
+                    if newValue.contentHeight > oldValue.contentHeight,
+                       !scrollFollow.userDetachedFromBottom,
+                       !isAutoScrolling,
+                       !userInteracting {
+                        proxy.scrollTo("__bottom__", anchor: .bottom)
                     }
                 }
                 .onScrollPhaseChange { _, newPhase, context in
                     let viewportBottom = context.geometry.contentOffset.y + context.geometry.containerSize.height
                     let contentBottom = context.geometry.contentSize.height
-                    guard controller.isWorking else { return }
+                    // Track interaction state so sticky-follow can yield
+                    // to manual scroll. Set BEFORE the isAutoScrolling
+                    // guard so the flag is correct even when we skip
+                    // the rest of the body.
+                    switch newPhase {
+                    case .tracking, .interacting, .decelerating:
+                        userInteracting = true
+                    case .idle, .animating:
+                        userInteracting = false
+                    }
                     guard !isAutoScrolling else { return }
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
-                        if viewportBottom < contentBottom - 8 {
+                        // Drop the isWorking gate: detaching from the
+                        // bottom is a user-intent signal regardless of
+                        // whether the agent happens to be streaming.
+                        // Without this, scrolling up while idle never
+                        // sets the detach flag and the jump button
+                        // doesn't reappear.
+                        if viewportBottom < contentBottom - 200 {
                             scrollFollow.userDetachedFromBottom = true
                         }
                     case .idle, .animating:
-                        break
+                        // Clear the flag once scrolling settles at the
+                        // bottom. The geometry-change handler does this
+                        // too, but if the final frame's offset == content
+                        // size the matching geometry tick may not fire,
+                        // leaving the button stranded visible.
+                        if viewportBottom >= contentBottom - 200 {
+                            scrollFollow.userDetachedFromBottom = false
+                        }
                     }
                 }
                 .onAppear {
@@ -326,15 +436,26 @@ struct ThreadView: View {
                     autoScroll(to: "__bottom__", proxy: proxy)
                 }
                 .onChange(of: controller.isWorking) { _, newValue in
-                    // Transitioning into a working turn: snap to bottom only
-                    // if the user is parked there. Previously this snapped
-                    // unconditionally on every false→true transition (e.g.,
-                    // a tool call mid-turn could re-toggle isWorking and
-                    // yank a reading user back). The send-start case still
-                    // works because typing a new prompt naturally leaves
-                    // the user at the bottom.
+                    // Transitioning into a working turn: snap to bottom.
+                    // This is an explicit user action (Send or Steer), so
+                    // we force the snap regardless of detachment — if the
+                    // user scrolled up to re-read history, then typed a
+                    // new prompt and pressed Enter, they want to see what
+                    // they just sent, not stay parked mid-history.
                     guard newValue else { return }
-                    guard !scrollFollow.userDetachedFromBottom else { return }
+                    scrollFollow.userDetachedFromBottom = false
+                    autoScroll(to: "__bottom__", proxy: proxy)
+                }
+                .onChange(of: controller.steerPending) { _, newValue in
+                    // Steer is an explicit user action — they clicked the
+                    // button to advance the queue. Force-scroll to bottom
+                    // regardless of detachment / stale-anchor state. Without
+                    // this, the width-change re-pin (canvasWidth handler
+                    // below) can race the items[] reorder triggered by
+                    // cancelActiveProviderTurn + status-row insert, landing
+                    // the scroll at a stale anchor mid-content.
+                    guard newValue else { return }
+                    scrollFollow.userDetachedFromBottom = false
                     autoScroll(to: "__bottom__", proxy: proxy)
                 }
                 // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
@@ -428,7 +549,17 @@ struct ThreadView: View {
             withAnimation(.smooth(duration: 0.18)) {
                 proxy.scrollTo(id, anchor: .bottom)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            // Second-pass correction. The first scrollTo can land short
+            // because LazyVStack hasn't finished sizing the freshly-
+            // appended row by then, leaving the user's just-sent prompt
+            // half-clipped at the bottom. A no-animation scrollTo once
+            // the row's true height is known snaps it into place.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+                guard generation == scrollFollow.autoScrollGeneration else { return }
+                guard !scrollFollow.userDetachedFromBottom else { return }
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 guard generation == scrollFollow.autoScrollGeneration else { return }
                 isAutoScrolling = false
             }
@@ -551,6 +682,11 @@ final class ScrollFollowState {
 struct ScrollFollowGeometry: Equatable {
     let offsetY: CGFloat
     let atBottom: Bool
+    /// Total content height. Tracked so the action handler can detect
+    /// content growth during streaming (agent text appended to an
+    /// existing AgentMessageRow doesn't change `items.count`, but it
+    /// does grow `contentSize.height`).
+    let contentHeight: CGFloat
 }
 
 struct ThreadItemRow: View {
@@ -589,10 +725,10 @@ struct ThreadItemRow: View {
                 fixed: nil,
                 nextStep: "\(targetProvider.label) received this summary as context and is continuing from here."
             )
-        case .agentMessage(_, let text, _, let ts):
+        case .agentMessage(_, let text, let complete, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
             // MarkdownView rebuild when the row's inputs haven't changed.
-            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, showFooter: showAgentFooter)
+            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isStreaming: !complete, showFooter: showAgentFooter)
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)

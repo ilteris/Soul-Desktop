@@ -401,6 +401,24 @@ enum SoulRegistry {
         return blob.contains(needle)
     }
 
+    /// Synchronously drain the async `hookWriteQueue` so every pending
+    /// hook write has hit disk before this call returns. Cheap: enqueues
+    /// a sync barrier the queue will hit only after every prior
+    /// `appendHook(...)` block has run to completion.
+    ///
+    /// SOUL-WRITER-DRAIN: addresses a drain-on-terminate drop. Every
+    /// `appendHook` enqueues onto a utility-QoS DispatchQueue; on process
+    /// exit (force-quit, pkill, mac sleep then close, etc.) the queue
+    /// can be torn down with pending writes never reaching disk. The
+    /// signature was missing UserPrompt + AfterTool + AfterAgent events
+    /// for `/finalize` turns while the bash subprocess's SESSION_SUMMARY
+    /// (a synchronous external write) landed correctly. Call this at
+    /// turn boundaries and on app termination to make sure nothing in
+    /// flight gets lost.
+    static func flushHooks() {
+        hookWriteQueue.sync { /* barrier: returns only after all queued blocks completed */ }
+    }
+
     static func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
         let capturedAt = Date()
         var payload = event
@@ -792,6 +810,31 @@ enum SoulRegistry {
         return canonicalSource
     }
 
+    /// Latest `ProviderTranscriptID` event for a session, if any. Written
+    /// by `ProviderTranscriptWatcher` when it detects Claude rotating its
+    /// on-disk transcript filename on `/compact`. Returns the most
+    /// recent value matching `provider` (or any provider if omitted).
+    ///
+    /// SOUL-IDENTITY-SPLIT: this lookup has priority over `NativeSessionID`
+    /// because rotations happen mid-conversation — the native id from
+    /// session/new is no longer the right filename to read.
+    static func findProviderTranscriptID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return nil }
+        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
+        for line in lines.reversed() {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (obj["event"] as? String) == "ProviderTranscriptID",
+                  provider == nil || (obj["provider"] as? String) == provider
+            else { continue }
+            return obj["transcript_id"] as? String
+        }
+        return nil
+    }
+
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
         let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
@@ -843,24 +886,35 @@ enum SoulRegistry {
         let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
         let dirs = projectSessionDirs(projectKey)
         let fm = FileManager.default
-        var matchedDir: String? = nil
-        var matchedName: String? = nil
+        // SOUL-IDENTITY-SPLIT: when a session has been finalized multiple
+        // times, the kernel writes a timestamped sibling like
+        // `<ISO>_<sid>.json` per finalize. The previous loop broke on the
+        // FIRST match in directory-enumeration order — alphabetical on
+        // macOS — which meant older finalize JSONs sorted first and
+        // shadowed newer ones. Re-finalizing then never updated the
+        // FinalizeCard because `latestFinalize` kept returning the May
+        // 14 file even after a May 21 one landed. Collect every match
+        // and sort by name DESC: timestamp prefixes sort lex-correctly,
+        // and bare `<sid>.json` sorts after timestamped siblings (no
+        // leading digit prefix) so it only wins when nothing else
+        // matches.
+        var candidates: [(dir: String, name: String)] = []
         for dir in dirs {
             guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
             for name in entries where name.hasSuffix(".json") {
                 let stem = String(name.dropLast(5))
                 if stem == sessionId || stem.hasSuffix("_\(sessionId)") {
-                    matchedDir = dir
-                    matchedName = name
-                    break
+                    candidates.append((dir, name))
                 }
             }
-            if matchedName != nil { break }
         }
-        guard let dir = matchedDir, let name = matchedName else {
+        candidates.sort { $0.name > $1.name }
+        guard let pick = candidates.first else {
             SoulSignposts.event("latestFinalize.no_dir", "\(sidLabel)")
             return nil
         }
+        let dir = pick.dir
+        let name = pick.name
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(dir)/\(name)")),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {

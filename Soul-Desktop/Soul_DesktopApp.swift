@@ -69,6 +69,9 @@ struct Soul_DesktopApp: App {
                 shortcutButton(.olderSession)
                 shortcutButton(.newerSession)
             }
+            CommandMenu("Session") {
+                shortcutButton(.forceCompact)
+            }
         }
 
         Window("Typography Lab", id: "typography-lab") {

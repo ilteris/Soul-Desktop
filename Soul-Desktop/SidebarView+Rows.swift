@@ -155,20 +155,18 @@ if isActiveReplay {
     /// shouldn't look more substantial than a 30-minute 20-turn deep dive.
     private func metaLine(_ session: SoulSession) -> String {
         let ago = relative(session.timestamp)
-        let n = session.promptCount
+        // Pick the larger of the two counts. Either source can be partial:
+        // - kernel hooks (`promptCount`) under-counts terminal-origin or
+        //   SOUL-247 payload-drop sessions
+        // - provider transcript (`transcriptTurns`) is missing entirely
+        //   when the user only ever drove the session via Soul-Desktop
+        //   (no native chat file) — promptCount is the real value there
+        // max() is robust to either being zero / partial without freezing
+        // the row at a stale low number, which was the "turn count keeps
+        // resetting on relaunch" bug.
+        let n = max(session.promptCount, session.transcriptTurns)
         if n > 0 {
             let label = n == 1 ? "1 turn" : "\(n) turns"
-            return "\(label) · \(ago)"
-        }
-        // Fallback: transcript-derived count from the provider's own file
-        // when the kernel ledger had no UserPrompt events. SOUL-221: drop
-        // the `~` prefix — the transcript scan is just as accurate as the
-        // audit ledger, and the tilde made users read the number as an
-        // estimate even though the count's been authoritative since first
-        // scan.
-        let t = session.transcriptTurns
-        if t > 0 {
-            let label = t == 1 ? "1 turn" : "\(t) turns"
             return "\(label) · \(ago)"
         }
         return ago

@@ -163,13 +163,30 @@ final class ThreadController {
         var sourceProvider: Provider? = nil
         var targetProvider: Provider? = nil
     }
-    var queuedPrompts: [QueuedPrompt] = []
+    var queuedPrompts: [QueuedPrompt] = [] {
+        didSet { queuedVersion &+= 1 }
+    }
+
+    /// Bumped on every `queuedPrompts` write so dependent caches
+    /// (`queuedItemIDs`) can invalidate against a stable version key
+    /// instead of recomputing on every read.
+    @ObservationIgnored private var queuedVersion: Int = 0
+    @ObservationIgnored private var queuedItemIDsCache: (version: Int, value: Set<UUID>)? = nil
 
     /// The set of `userMessage` item IDs that have been appended to `items`
     /// but not yet dispatched. ThreadView styles these bubbles with a
     /// "pending" look so the user can tell which prompts are queued vs. the
-    /// one the agent is actively chewing on.
-var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
+    /// one the agent is actively chewing on. Cached by `queuedVersion` —
+    /// previously this allocated a fresh Set on every read, and
+    /// `splitGroupedItems` called it on every body fire.
+    var queuedItemIDs: Set<UUID> {
+        if let cache = queuedItemIDsCache, cache.version == queuedVersion {
+            return cache.value
+        }
+        let result = Set(queuedPrompts.map(\.itemId))
+        queuedItemIDsCache = (queuedVersion, result)
+        return result
+    }
 
     var groupedItems: [ThreadItem] {
         if let cache = groupedItemsCache, cache.version == itemsVersion {
@@ -177,6 +194,36 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
         }
         let result = ThreadItemGrouper.group(items)
         groupedItemsCache = (itemsVersion, result)
+        return result
+    }
+
+    /// Pre-computed split of `groupedItems` into "main" rows and queued
+    /// rows. ThreadView previously called `splitGroupedItems` from its body
+    /// (and the hydrate/restore handlers) — each call was an O(N) walk +
+    /// fresh array allocation. Cached against `(itemsVersion, queuedVersion)`
+    /// so a body re-eval that doesn't touch items OR queue returns the
+    /// existing tuple by reference. Audit fix #1.
+    @ObservationIgnored private var groupedSplitCache: (itemsVersion: Int, queuedVersion: Int, value: (main: [ThreadItem], queued: [ThreadItem]))? = nil
+
+    var groupedItemsSplit: (main: [ThreadItem], queued: [ThreadItem]) {
+        if let cache = groupedSplitCache,
+           cache.itemsVersion == itemsVersion,
+           cache.queuedVersion == queuedVersion {
+            return cache.value
+        }
+        let queuedIds = queuedItemIDs
+        var main: [ThreadItem] = []
+        var queued: [ThreadItem] = []
+        main.reserveCapacity(groupedItems.count)
+        for item in groupedItems {
+            if queuedIds.contains(item.id) {
+                queued.append(item)
+            } else {
+                main.append(item)
+            }
+        }
+        let result = (main: main, queued: queued)
+        groupedSplitCache = (itemsVersion, queuedVersion, result)
         return result
     }
 
@@ -538,6 +585,16 @@ var queuedItemIDs: Set<UUID> { Set(queuedPrompts.map(\.itemId)) }
     var codexTokensUsed: Int?
     /// Model context-window budget reported by the same notification.
     var codexContextWindow: Int?
+
+    /// SOUL-IDENTITY-SPLIT: live transcript filename used by the provider
+    /// on disk. Tracks Claude's `/compact` rotations — different from
+    /// `nativeSessionId` once Claude rotates. nil until first detected.
+    /// Persisted to hooks.jsonl as a `ProviderTranscriptID` event so
+    /// chip + replay readers pick it up after restart.
+    @ObservationIgnored var providerTranscriptId: String?
+    /// FSEvents-backed watcher; created when the thread becomes a Claude
+    /// session with a known native id. Re-armed after every prompt.
+    @ObservationIgnored var transcriptWatcher: ProviderTranscriptWatcher?
 
     /// Synchronously stake out the kernel session id before any async load
     /// kicks in. AppShell calls this right after wiring the controller into

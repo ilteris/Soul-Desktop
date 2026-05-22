@@ -20,6 +20,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
     case previousSession
     case olderSession
     case newerSession
+    case forceCompact
 
     var id: String { rawValue }
 
@@ -28,6 +29,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
         case .previousSession: return "Previous Session"
         case .olderSession:    return "Older Session"
         case .newerSession:    return "Newer Session"
+        case .forceCompact:    return "Compact Context"
         }
     }
 
@@ -36,6 +38,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
         case .previousSession: return "o"
         case .olderSession:    return "["
         case .newerSession:    return "]"
+        case .forceCompact:    return "k"
         }
     }
 
@@ -48,6 +51,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
         // natural "Open prior" gesture.
         case .previousSession: return [.command, .shift]
         case .olderSession, .newerSession: return [.command]
+        case .forceCompact: return [.command, .shift]
         }
     }
 
@@ -56,6 +60,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
         case .previousSession: return .soulPreviousSession
         case .olderSession:    return .soulOlderSession
         case .newerSession:    return .soulNewerSession
+        case .forceCompact:    return .soulForceCompact
         }
     }
 }
@@ -68,4 +73,10 @@ extension Notification.Name {
     static let soulOlderSession = Notification.Name("soul.kbd.olderSession")
     /// ⌘] — walk one row up in the recency-sorted list (toward newer sessions).
     static let soulNewerSession = Notification.Name("soul.kbd.newerSession")
+    /// ⌘⇧K — manual context compaction. Subscribed by AppShell, which
+    /// hands off to AutoCompactController.forceCompact() against the
+    /// active thread. Routed through the menu-bar CommandMenu rather than
+    /// a hidden `.background(Button)` because background views aren't in
+    /// the responder chain and don't reliably receive keyboard shortcuts.
+    static let soulForceCompact = Notification.Name("soul.kbd.forceCompact")
 }
