@@ -212,6 +212,23 @@ extension AppShell {
         }
     }
 
+    /// Route a turn-completed notification click to its originating session.
+    /// Looks the session up in the registry (cache or fresh scan) and
+    /// delegates to `loadSession`. If we're already on the right thread, the
+    /// guard inside loadSession makes this a no-op past the activate.
+    func openSessionFromNotification(sessionId: String, projectKey: String) {
+        if let activeKey = sessions.activeThreadKey,
+           let controller = sessions.threads[activeKey],
+           controller.sessionId == sessionId {
+            return
+        }
+        let projectPath = registryStore.projects().first { $0.id == projectKey }?.path
+        let candidates = registryStore.cachedSessions(forProject: projectKey)
+            ?? registryStore.allSessions(forProject: projectKey, projectPath: projectPath)
+        guard let session = candidates.first(where: { $0.id == sessionId }) else { return }
+        loadSession(session)
+    }
+
     func reloadActiveSession() {
         guard let key = sessions.activeThreadKey,
               let controller = sessions.threads[key],

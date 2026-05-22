@@ -82,6 +82,12 @@ struct AppShell: View {
     /// top center of the whole window instead of being clipped inside the
     /// 320pt sidebar column. SidebarView writes here via Binding.
     @State var repairToast: String? = nil
+    /// Provider-side context-compaction watcher. Shells out to
+    /// `soul autocompact` when the usage fraction crosses 85%, dispatches
+    /// the returned directive (slash command for Claude/Gemini, toast
+    /// for Codex/Pi). One instance lives for the AppShell's lifetime;
+    /// it short-circuits when no thread is active.
+    @State var autoCompact = AutoCompactController()
     @State var emptyStateDroppedAttachments: [String] = []
     @State var isImageDropTargeted: Bool = false
 
@@ -103,9 +109,23 @@ struct AppShell: View {
             if thread.provider == .codex,
                let tokens = thread.codexTokensUsed,
                let budget = thread.codexContextWindow {
-                return ContextUsage(tokens: tokens, max: budget, isEstimate: false)
+                return ContextUsage(
+                    tokens: tokens, max: budget, isEstimate: false,
+                    breakdown: ContextUsage.Breakdown(
+                        model: "codex",
+                        input: tokens,
+                        cacheCreate: nil,
+                        cacheRead: nil,
+                        source: "Streamed live from Codex `thread/tokenUsage/updated`."
+                    )
+                )
             }
-            return ContextUsage.compute(provider: thread.provider, sessionId: sid, cwd: thread.project.path)
+            return ContextUsage.compute(
+                provider: thread.provider,
+                sessionId: sid,
+                cwd: thread.project.path,
+                projectKey: thread.project.id
+            )
         }
         return nil
     }
@@ -215,6 +235,13 @@ struct AppShell: View {
         .onReceive(NotificationCenter.default.publisher(for: .soulNewerSession)) { _ in
             navigateHistory(forward: true)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NotificationManager.openSessionFromNotification)) { note in
+            guard
+                let sid = note.userInfo?["sessionId"] as? String,
+                let key = note.userInfo?["projectKey"] as? String
+            else { return }
+            openSessionFromNotification(sessionId: sid, projectKey: key)
+        }
         .onAppear {
             rightPane.reviewVisible = showReview
             // SOUL-SOUL_DESKTOP-161: warm the @Observable project cache so
@@ -249,6 +276,15 @@ struct AppShell: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: repairToast)
+        .autoCompactBridge(
+            controller: autoCompact,
+            fraction: contextUsage?.fraction,
+            activeThread: thread,
+            contextUsage: contextUsage,
+            onBranch: { provider in
+                if let thread { branchFrom(thread, to: provider) }
+            }
+        )
         .animation(sidePanelAnimation, value: showSidebar)
         .animation(sidePanelAnimation, value: rightPane.reviewVisible)
         .animation(sidePanelAnimation, value: rightPane.filePreviewPath)
@@ -315,7 +351,11 @@ struct AppShell: View {
                 setSidebarVisible(true)
             }
         }
-        .toolbar(.hidden)
+        .toolbar { mainToolbarContent }
+        // SOUL-249: hide the unified toolbar's glass bezel so our own
+        // capsule chips render flat instead of being double-wrapped in
+        // a system-supplied white pill.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .sheet(isPresented: $showSmoke) {
             if harness == .codex {
                 CodexSmokeView(
@@ -377,7 +417,7 @@ struct AppShell: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
             Button("") { toggleSidebar() }
-                .keyboardShortcut("\\", modifiers: .command)
+                .keyboardShortcut("b", modifiers: .command)
                 .opacity(0)
                 .frame(width: 0, height: 0)
         }

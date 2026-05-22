@@ -131,11 +131,23 @@ extension ThreadController {
             stopStallWatchdog()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
-            
-            NotificationManager.shared.sendTurnCompletedNotification(
-                threadTitle: displayTitle,
-                project: project.name
-            )
+
+            // SOUL-WRITER-DRAIN: force the hook-write queue to drain so
+            // this turn's UserPrompt + AfterTool + AfterAgent are durable
+            // on disk before we relinquish control. Without this, a
+            // force-quit (or pkill, or mac sleep + close) between turns
+            // could lose the in-flight writes — exactly what dropped
+            // the 23:01-23:03 /finalize events in 6c842dc8.
+            SoulRegistry.flushHooks()
+
+            if let sid = sessionId {
+                NotificationManager.shared.sendTurnCompletedNotification(
+                    threadTitle: displayTitle,
+                    project: project.name,
+                    sessionId: sid,
+                    projectKey: project.id
+                )
+            }
         }
 
         // First turn dispatches immediately; subsequent queued turns are
@@ -231,6 +243,11 @@ extension ThreadController {
                     }
                     return turn.agent
                 }()
+                // SOUL-IDENTITY-SPLIT: open the FSEvents window right
+                // before the prompt lands so the watcher catches Claude
+                // rotating its on-disk transcript filename (the post-
+                // /compact case). No-op for non-Claude.
+                armTranscriptWatcher()
                 do {
                     _ = try await client.prompt(sessionId: nid, text: agentText)
                 } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
@@ -272,7 +289,11 @@ extension ThreadController {
                 // shows the prompts with empty bodies. With this row, every
                 // Soul-Desktop session is replayable from our own ledger
                 // alone, regardless of agent-side disk state.
-                if let reply = mostRecentAgentReplyText() {
+                let reply = mostRecentAgentReplyText()
+                let agentMsgCount = items.filter { if case .agentMessage = $0 { return true } else { return false } }.count
+                NSLog("[ledger] AfterAgent gate: replyLen=\(reply?.count ?? -1) sid=\(sid) project=\(project.id) provider=\(provider.rawValue) agentMessagesInItems=\(agentMsgCount)")
+                if let reply {
+                    NSLog("[ledger] writing AfterAgent → \(project.id)/\(sid)")
                     ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                         "event": "AfterAgent",
                         "content": reply,
@@ -282,6 +303,8 @@ extension ThreadController {
                     // reply text; the per-chunk file can retire so it doesn't
                     // grow unbounded across a long session.
                     ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
+                } else {
+                    NSLog("[ledger] SKIPPED AfterAgent write — mostRecentAgentReplyText returned nil for sid=\(sid)")
                 }
 
                 // If this turn was a `/finalize` (the agent just wrote a
@@ -303,6 +326,7 @@ extension ThreadController {
                 current = queuedPrompts.isEmpty ? nil : queuedPrompts.removeFirst()
             }
         } catch {
+            NSLog("[ledger] dispatchPending CATCH: \(error) — AfterAgent write was bypassed by this throw")
             if suppressNextInterruptedTurnError {
                 suppressNextInterruptedTurnError = false
             } else {
