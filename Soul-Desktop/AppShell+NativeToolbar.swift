@@ -12,26 +12,6 @@ extension AppShell {
         principalTitleItem
 
         trailingChipsGroup
-
-        rightPaneToggleItem
-    }
-
-    @ToolbarContentBuilder
-    private var rightPaneToggleItem: some ToolbarContent {
-        // Only show the right-pane toggle when a thread is active. On the
-        // hero / empty state there's nothing reviewable, so the toggle is
-        // chrome with no purpose.
-        if thread != nil {
-            ToolbarItem(id: "soul.right", placement: .primaryAction) {
-                Button(action: toggleReview) {
-                    Image(systemName: "sidebar.right")
-                        .foregroundStyle(SoulColor.fgMuted)
-                }
-                .buttonStyle(.plain)
-                .help("Toggle right pane")
-                .padding(.trailing, 16)
-            }
-        }
     }
 
     @ToolbarContentBuilder
