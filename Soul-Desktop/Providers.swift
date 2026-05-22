@@ -110,6 +110,7 @@ enum StallPolicy {
     /// complete. User can override via Settings → Advanced.
     static let toolCallTimeoutKey = "soul.toolCallTimeout.seconds"
     static let toolCallTimeoutDefault: Int = 300
+    static let longRunningToolTimeoutFloorSeconds: Int = 900
 
     static var toolCallTimeoutSeconds: Int {
         let v = UserDefaults.standard.integer(forKey: toolCallTimeoutKey)

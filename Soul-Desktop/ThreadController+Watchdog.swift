@@ -80,14 +80,14 @@ extension ThreadController {
         // from the turn-level quiet check — catches the `tail -f` case
         // where a single tool call sits in_progress forever while still
         // emitting enough output to keep `lastActivityAt` fresh.
-        let toolTimeout = StallPolicy.toolCallTimeoutSeconds
-        let signpostThreshold = Int(Double(toolTimeout) * StallPolicy.toolCallSignpostFraction)
         let now = Date()
         var expired: [String] = []
-        var toSignpost: [(toolId: String, quietFor: Int)] = []
+        var toSignpost: [(toolId: String, quietFor: Int, threshold: Int)] = []
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
             let quietFor = Int(now.timeIntervalSince(lastSeen))
+            let toolTimeout = timeoutSeconds(forToolCall: toolId)
+            let signpostThreshold = Int(Double(toolTimeout) * StallPolicy.toolCallSignpostFraction)
             if isSubagentToolCall(toolId: toolId) {
                 if signpostThreshold > 0,
                    quietFor >= signpostThreshold,
@@ -106,15 +106,33 @@ extension ThreadController {
             if signpostThreshold > 0,
                quietFor >= signpostThreshold,
                !toolCallSignposted.contains(toolId) {
-                toSignpost.append((toolId, quietFor))
+                toSignpost.append((toolId, quietFor, toolTimeout))
             }
         }
         for entry in toSignpost {
-            emitToolCallSignpost(toolId: entry.toolId, quietFor: entry.quietFor, threshold: toolTimeout)
+            emitToolCallSignpost(toolId: entry.toolId, quietFor: entry.quietFor, threshold: entry.threshold)
         }
         for toolId in expired {
-            await fireToolCallTimeout(toolId: toolId, threshold: toolTimeout)
+            await fireToolCallTimeout(toolId: toolId, threshold: timeoutSeconds(forToolCall: toolId))
         }
+    }
+
+    /// Effective per-tool timeout. The global setting remains the floor for
+    /// short, local tools, but shell/execute calls often run repository-wide
+    /// searches or builds that are legitimately quiet for several minutes.
+    /// Give those tools the same default headroom as the turn-level ceiling
+    /// unless the user has configured an even larger tool timeout.
+    private func timeoutSeconds(forToolCall toolId: String) -> Int {
+        let base = StallPolicy.toolCallTimeoutSeconds
+        guard let uuid = seenToolCallIds[toolId],
+              let idx = items.firstIndex(where: { $0.id == uuid }),
+              case .toolCall(_, let kind, let title, _, _, _) = items[idx]
+        else { return base }
+        let label = "\(kind) \(title)".lowercased()
+        if label.contains("execute") || label.contains("shell") || label.contains("bash") {
+            return max(base, StallPolicy.longRunningToolTimeoutFloorSeconds)
+        }
+        return base
     }
 
     /// Soul specialist calls can legitimately run past the generic
