@@ -115,8 +115,8 @@ struct GeneralPane: View {
                 )
                 Divider().padding(.leading, 14)
                 ToggleRow(
-                    title: "Prevent sleep while running",
-                    description: "Keep your computer awake while Soul is running a chat",
+                    title: "Keep this Mac awake",
+                    description: "Prevent idle sleep while Soul Desktop is open, so mobile streams and local sessions stay reachable.",
                     value: $preventSleep
                 )
                 Divider().padding(.leading, 14)
@@ -153,4 +153,3 @@ struct GeneralPane: View {
         }
     }
 }
-

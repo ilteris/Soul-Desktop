@@ -17,6 +17,9 @@ struct Soul_DesktopApp: App {
         signal(SIGPIPE, SIG_IGN)
 
         NotificationManager.shared.requestAuthorization()
+        Task { @MainActor in
+            SoulPowerAssertion.shared.start()
+        }
     }
 
     private static func enforceSingleInstance() {
