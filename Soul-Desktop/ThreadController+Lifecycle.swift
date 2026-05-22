@@ -499,7 +499,12 @@ extension ThreadController {
         // populated at spawn time; line 342 ("if sessionId == nil ...")
         // will be a no-op when we pre-mint.
         if sessionId == nil {
-            sessionId = UUID().uuidString.lowercased()
+            // The controller id is already the provisional kernel id used by
+            // early UI/queue code before ensureSession runs. Adopt it rather
+            // than minting a second UUID here, or the first turn can split:
+            // UserPrompt under controller.id, provider hooks under the new
+            // SOUL_SESSION_ID.
+            sessionId = Self.looksLikeUUID(id) ? id : UUID().uuidString.lowercased()
         }
         if let sid = sessionId {
             env["SOUL_SESSION_ID"] = sid
