@@ -196,6 +196,31 @@ extension SoulRegistry {
         return false
     }
 
+    private static func isUserVisibleSidebarSession(
+        hasFinalize: Bool,
+        title: String?,
+        promptCount: Int,
+        transcriptTurns: Int,
+        eventCount: Int,
+        sessionStartPpid: Int?
+    ) -> Bool {
+        if isSidebarControlTitle(title) { return false }
+
+        // Launchd-started rows with no prompts are daemon residue, not chats.
+        if !hasFinalize, sessionStartPpid == 1, promptCount == 0 {
+            return false
+        }
+
+        // Administrative summaries are useful to agents, but a finalize JSON
+        // alone should not become a human-visible conversation row.
+        let hasConversation = promptCount > 0 || transcriptTurns > 0 || eventCount >= 4
+        if hasFinalize {
+            return hasConversation
+        }
+
+        return hasConversation || title?.isEmpty == false
+    }
+
     /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
     /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
     private final class GeminiDirCache {
@@ -435,17 +460,14 @@ extension SoulRegistry {
 
             let hasFinalize = (shape.finalizePath != nil)
             let title = s.intent ?? s.summary
-            let hasTitle = title?.isEmpty == false
-            let hasConversation = s.promptCount > 0 || s.transcriptTurns > 0 || s.eventCount >= 4
-            let isControlOnly = isSidebarControlTitle(title)
-            // Finalize-only records and orchestration/control prompts are
-            // administrative memory. Keep them in the registry for agents
-            // and audits, but do not surface them as user chat rows.
-            s.substantive = !isControlOnly && (hasConversation || (!hasFinalize && hasTitle))
-
-            if !hasFinalize, sessionStartPpid == 1, s.promptCount == 0 {
-                s.substantive = false
-            }
+            s.substantive = isUserVisibleSidebarSession(
+                hasFinalize: hasFinalize,
+                title: title,
+                promptCount: s.promptCount,
+                transcriptTurns: s.transcriptTurns,
+                eventCount: s.eventCount,
+                sessionStartPpid: sessionStartPpid
+            )
 
             out.append(s)
         }
