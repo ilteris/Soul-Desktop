@@ -227,6 +227,11 @@ struct AppShell: View {
         .onReceive(NotificationCenter.default.publisher(for: SoulAppDelegate.toggleReviewNotification)) { _ in
             toggleReview()
         }
+        // ⌘N — Soul is a single-window session browser. Replace the system
+        // New Window command with a draft session in the current project.
+        .onReceive(NotificationCenter.default.publisher(for: .soulNewChat)) { _ in
+            newChat()
+        }
         // ⌘[ / ⌘] — browser-style back / forward through viewed sessions.
         // Cross-project: jumps the sidebar to the target's project too.
         .onReceive(NotificationCenter.default.publisher(for: .soulOlderSession)) { _ in

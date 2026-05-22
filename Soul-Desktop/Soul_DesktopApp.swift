@@ -55,6 +55,9 @@ struct Soul_DesktopApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(replacing: .newItem) {
+                shortcutButton(.newChat)
+            }
             CommandGroup(after: .windowArrangement) {
                 TypographyLabMenuItem()
             }

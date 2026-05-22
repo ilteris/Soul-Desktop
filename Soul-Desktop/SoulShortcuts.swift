@@ -17,6 +17,7 @@ import SwiftUI
 ///   4. Add an `.onReceive(NotificationCenter.default.publisher(for: .your))`
 ///      in the view that handles the action.
 enum SoulShortcut: String, CaseIterable, Identifiable {
+    case newChat
     case previousSession
     case olderSession
     case newerSession
@@ -26,6 +27,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .newChat:         return "New Chat"
         case .previousSession: return "Previous Session"
         case .olderSession:    return "Older Session"
         case .newerSession:    return "Newer Session"
@@ -35,6 +37,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
 
     var key: KeyEquivalent {
         switch self {
+        case .newChat:         return "n"
         case .previousSession: return "o"
         case .olderSession:    return "["
         case .newerSession:    return "]"
@@ -44,6 +47,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
 
     var modifiers: EventModifiers {
         switch self {
+        case .newChat: return [.command]
         // SOUL-SOUL_DESKTOP-234: started at ⇧⌃O but that combo is the
         // macOS "Speak selected text" trigger when Accessibility →
         // Spoken Content is enabled. macOS eats the key before SwiftUI
@@ -57,6 +61,7 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
 
     var notification: Notification.Name {
         switch self {
+        case .newChat:         return .soulNewChat
         case .previousSession: return .soulPreviousSession
         case .olderSession:    return .soulOlderSession
         case .newerSession:    return .soulNewerSession
@@ -66,6 +71,10 @@ enum SoulShortcut: String, CaseIterable, Identifiable {
 }
 
 extension Notification.Name {
+    /// ⌘N — create a new draft chat in the current project. This intentionally
+    /// replaces SwiftUI's default New Window command for Soul's single-window
+    /// session model.
+    static let soulNewChat = Notification.Name("soul.kbd.newChat")
     /// Posted when the user invokes the "previous session" shortcut. Subscribed
     /// by `SidebarView` (which owns session ordering per project).
     static let soulPreviousSession = Notification.Name("soul.kbd.previousSession")
