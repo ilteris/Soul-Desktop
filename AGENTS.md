@@ -587,33 +587,55 @@ for removal instructions.
 Standard architectural oversight.
 </manager_brief>
 
-> ## 🎯 ACTIVE TASK — authoritative imperative
-> **ID:** `SOUL-SOUL_DESKTOP-250` | **Status:** pending
-> **Subject:** One-shot cleanup script: collapse historical duplicate AfterAgent rows in hooks.jsonl
-> **Definition of Done:** ['Script lives at ~/dotfiles/soul/kernel/commands/soul_dedupe_hooks.py. Dry-run shows N candidate dup pairs per affected session before --apply does anything.', 'Originals preserved to ~/.Trash/soul-dedupe-hooks-<ts>/<project>/<sid>/hooks.jsonl.original on --apply.', 'Live verify: re-open the Sync Check session after running --apply on it — agent replies render once each.', 'Scan after run: 0 dup-pair AfterAgents remain across the registry.']
-> _All other sections (Last Session, Recent Arc, Next Step) are historical context. If they reference a different task ID, prefer this block._
+## 📡 Project Pulse
+
+_Snapshot of pending work at session start. Treat as orientation, not as a command — do not begin a task unless the user asks._
+
+**Active task** (currently flagged):
+- `SOUL-SOUL_DESKTOP-250` (pending) — One-shot cleanup script: collapse historical duplicate AfterAgent rows in hooks.jsonl
+  - Definition of Done:
+    - Script lives at ~/dotfiles/soul/kernel/commands/soul_dedupe_hooks.py. Dry-run shows N candidate dup pairs per affected session before --apply does anything.
+    - Originals preserved to ~/.Trash/soul-dedupe-hooks-<ts>/<project>/<sid>/hooks.jsonl.original on --apply.
+    - Live verify: re-open the Sync Check session after running --apply on it — agent replies render once each.
+    - Scan after run: 0 dup-pair AfterAgents remain across the registry.
+
+**Other pending:**
+- `SOUL-SOUL_DESKTOP-248` — Kernel data-integrity sweep: prove SOUL-247's payload-drop class is the only one
+- `SOUL-SOUL_DESKTOP-241` — Regression: user-message send produces no agent response after Steer interaction
+- `SOUL-SOUL_DESKTOP-240` — Externalize Steer: compose-during-interrupt with edit/trash before commit
+- `SOUL-SOUL_DESKTOP-239` — User-message image attachments: render inline ~100x100 thumbnail instead of bare filename link
+- `SOUL-SOUL_DESKTOP-091` — Implement semantic non-consecutive tool grouping
+- `SOUL-SOUL_DESKTOP-088` — Use native transcript for terminal-origin session titles
+- `SOUL-SOUL_DESKTOP-082` — Sidebar title-collision: near-identical auto-generated session titles are indistinguishable
+- `SOUL-SOUL_DESKTOP-077` — Steer click misbehavior: 5x 'steered to next prompt' rows, queued prompt duplicated, tool-timeout race
+- `SOUL-SOUL_DESKTOP-051` — Native ACP image content blocks for image attachments
+- `SOUL-SOUL_DESKTOP-050` — Codex Phase 3: render tool-call / file-change / reasoning / plan items in canvas
+- `SOUL-SOUL_DESKTOP-049` — Per-provider quota / usage chip (Codex API, Claude/Gemini transcript scan, Pi unknown)
+- `SOUL-SOUL_DESKTOP-002` — Thread header menu: Fork into same/new worktree
 
 ## Manager Brief
 
 Standard architectural oversight.
 
 ## Last Session
-_2026-05-20 22:25_
-**Intent:** Ship SPEC-245-K Phase A (resume preamble via kernel) end-to-end and triage the data-integrity issues exposed during testing.
-**Summary:** Migrated Soul-Desktop's session-resume preamble logic into the kernel as a new `soul preamble` CLI verb backed by a verbatim renderer, gemini-3.5-flash summarizer, and per-provider channel adapter (Claude system-meta vs user-channel prefix). Shipped Soul-Desktop's hydrate to consume it asynchronously so the canvas paints instantly. Diagnosing test sessions exposed two cascading bugs: split-ledger duplication (same provider sid registered under multiple project dirs — fixed at write time + 9 historical dirs reconciled) and kernel writer payload-drop (39.4% of UserPrompt/AfterAgent events had empty content across 92 sessions; root cause was Claude UserPromptSubmit field-name mismatch + Stop hook firing before transcript flush; fixed with bounded polling and a HookCaptureDropped diagnostic event, 4 of 92 sessions salvaged). Sidebar selection now matches on (project, sid) instead of sid alone.
-**Rationale:** Drew the kernel/Swift boundary early so the LLM call lives in Python where auth and retry conventions already exist; everything downstream extended that surface instead of re-implementing in Swift.
+_2026-05-22 08:43_
+**Intent:** Stabilize the kernel ledger writer contract (one dir per session, not two) and stop the resume preamble from coercing agents into auto-starting active tasks.
+**Summary:** Diagnosed and fixed the split-ledger bug class — kernel middleware writer used provider-native session id (ISO_UUIDv7 for gemini, kernel UUID for Soul-Desktop) producing two sibling hooks.jsonl dirs per turn. Shipped two-edit fix: Soul-Desktop pre-mints kernel UUID before ACPProviderSpawn so SOUL_SESSION_ID is in env at first hook fire; middleware_runner.py hoists the env override to right after json.loads so it lands before _persist_user_prompt_event and the state injection. Also reworded the harness ACTIVE TASK 'authoritative imperative' callout — was causing agents to interpret a bare 'hi' as 'execute SOUL-XXX-NNN now'. Replaced with /pulse-style Project Pulse snapshot listing active + all pending tasks as orientation, explicit 'do not begin a task unless user asks' guidance, list-aware DoD renderer for nested bullets. Side fixes: notification-click activates existing Soul-Desktop instance + routes to originating session via userInfo + UNUserNotificationCenterDelegate; many sidebar toggle UI iterations reverted to native NavigationSplitView default after fighting macOS 26 Liquid Glass chrome.
+**Rationale:** Adversarial audit killed the original env-override patch — caught (a) ACPProviderSpawn.enrichedEnvironment built env from scratch without injecting SOUL_SESSION_ID, (b) patch location at line 447 missed the _persist_user_prompt_event call at line 419 which reads input_data['session_id'] first. Corrected patch hoists override to after json.loads and pre-mints kernel sid pre-spawn so fresh sessions also get the env var (resumed sessions already had it via assignSessionId). For the preamble: imperative framing in CLAUDE.md/GEMINI.md was load-bearing for the 'hi triggers 19 tools' regression; /pulse-as-preamble (user's idea) replaces directive with orientation and surfaces full backlog instead of one task.
 
 ## Recent Arc
-_Last 2 sessions (past 3 days)_
+_Last 4 sessions (past 3 days)_
 
-### 2026-05-20 (2 sessions)
+### 2026-05-22
+- **00:09** [Claude] Shipped cross-provider auto-compact (soul autocompact kernel verb + AutoCompactController desktop) at 50% threshold with per-provider directives (Claude /compact, Gemini /compre...
+
+### 2026-05-20 (3 sessions)
+- **22:25** [Claude] Migrated Soul-Desktop's session-resume preamble logic into the kernel as a new `soul preamble` CLI verb backed by a verbatim renderer, gemini-3.5-flash summarizer, and per-provi...
 - **17:55** [Claude] Extended SPEC-061 with SOUL-SOUL-025-G (one-line  verb addition to ~/dotfiles/soul/bin/soul case statement so 'soul delegate' becomes the canonical entrypoint per Gate S26). Rew...
 - **17:41** [Claude] Cross-project ⌘[/⌘] browser-history nav shipped; sidebar auto-scrolls active row; killed the 200% nav-spike with a stage-2 disk-scan TTL gate and the expand/collapse beachball w...
 
-## Carry-Over Note
-_From last session — references `SOUL-SOUL_DESKTOP-248, SOUL-SOUL_DESKTOP-249`, not the active task (`SOUL-SOUL_DESKTOP-250`). Treat as background, not the imperative._
-
-Pick up SOUL-SOUL_DESKTOP-248 (data-integrity sweep + soul verify drift-lint rule) or SOUL-SOUL_DESKTOP-249 (authority split — Soul-Desktop owns AfterAgent for ACP, kernel uses cursor for terminal Claude); both unblock long-term hooks-writer health.
+## Next Step
+Live-verify the split-ledger fix end-to-end: open a fresh gemini session in Soul-Desktop, send a prompt, confirm only ONE sessions/<project>/<kernel-uuid>/ dir gets written. Then trigger a finalize on this session to confirm GEMINI.md/CLAUDE.md regenerate with the new Project Pulse block.
 
 ## Active Specialists
 `@systems_architect`
@@ -1036,4 +1058,4 @@ Keep the whole block under 240 chars. Skip on trivial conversational turns (gree
 _Schema violations cause "undefined" in dashboards and API responses._
 
 
-<!-- Teddy Hydration Stamp: 2026-05-20 22:25:22 | Project: soul-desktop -->
+<!-- Teddy Hydration Stamp: 2026-05-22 08:43:32 | Project: soul-desktop -->
