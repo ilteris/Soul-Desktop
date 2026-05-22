@@ -139,6 +139,9 @@ struct ToolCallCarouselRow: View {
                     ForEach(items, id: \.id) { item in
                         ThreadItemRow(projectPath: projectPath, item: item, isHistorical: isHistorical, isGrouped: true)
                     }
+                    ToolCallCollapseButton {
+                        withAnimation(.easeOut(duration: 0.08)) { expanded = false }
+                    }
                 }
                 .padding(.leading, 12)
             }
@@ -160,4 +163,3 @@ struct ToolCallCarouselRow: View {
         NSPasteboard.general.setString(titles, forType: .string)
     }
 }
-

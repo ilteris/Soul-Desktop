@@ -279,47 +279,6 @@ struct ThreadView: View {
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
-                .onScrollGeometryChange(for: ScrollFollowGeometry.self) { geometry in
-                    let viewportBottom = geometry.contentOffset.y + geometry.containerSize.height
-                    let contentBottom = geometry.contentSize.height
-                    // Generous threshold: layout settling, the 44pt
-                    // trailing sentinel, and composer overlap mean the
-                    // "visible bottom of the conversation" is ~150pt
-                    // shy of contentSize.height. Treating the bottom
-                    // 200pt as "at the bottom" matches user perception
-                    // — when they've manually scrolled to where they
-                    // can see the last message, the flag clears.
-                    return ScrollFollowGeometry(
-                        offsetY: geometry.contentOffset.y,
-                        atBottom: viewportBottom >= contentBottom - 200,
-                        contentHeight: contentBottom
-                    )
-                } action: { oldValue, newValue in
-                    // 1. Reaching the bottom (any path) clears detach.
-                    if newValue.atBottom {
-                        scrollFollow.userDetachedFromBottom = false
-                    }
-                    // 2. Any decrease in offsetY = user scrolled up. This
-                    //    is the ONLY legitimate detach signal — content
-                    //    growth never decreases offset, so we don't
-                    //    accidentally detach the user during streaming.
-                    //    No threshold: trackpad delivers sub-pixel ticks
-                    //    that aggregate to large scrolls; any negative
-                    //    delta counts.
-                    else if newValue.offsetY < oldValue.offsetY {
-                        scrollFollow.userDetachedFromBottom = true
-                    }
-                    // 3. Sticky-follow during streaming. Content growth
-                    //    pushes contentHeight up while offsetY stays put.
-                    //    Re-pin to bottom as long as the user hasn't
-                    //    explicitly scrolled away.
-                    if newValue.contentHeight > oldValue.contentHeight,
-                       !scrollFollow.userDetachedFromBottom,
-                       !isAutoScrolling,
-                       !userInteracting {
-                        proxy.scrollTo("__bottom__", anchor: .bottom)
-                    }
-                }
                 .onScrollPhaseChange { _, newPhase, context in
                     let viewportBottom = context.geometry.contentOffset.y + context.geometry.containerSize.height
                     let contentBottom = context.geometry.contentSize.height

@@ -56,6 +56,9 @@ struct ToolCallRow: View {
             // record of what the agent *did*; render it unconditionally.
             if diffExpanded, let details {
                 DiffView(details: details)
+                ToolCallCollapseButton {
+                    withAnimation(.easeOut(duration: 0.08)) { diffExpanded = false }
+                }
             }
         }
     }
@@ -243,6 +246,35 @@ struct FileChipRow<Trailing: View>: View {
 
             Spacer()
         }
+    }
+}
+
+struct ToolCallCollapseButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button(action: action) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Collapse")
+                        .font(SoulFont.ui(11, weight: .semibold))
+                }
+                .foregroundStyle(SoulColor.fgSubtle)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(SoulColor.border.opacity(0.45), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.soulHover)
+            .help("Collapse tool output")
+        }
+        .padding(.top, 2)
     }
 }
 

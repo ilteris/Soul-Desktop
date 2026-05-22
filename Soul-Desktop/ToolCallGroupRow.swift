@@ -61,6 +61,10 @@ struct ToolCallGroupRow: View {
                             .padding(.vertical, 4)
                             .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 4))
                     }
+
+                    ToolCallCollapseButton {
+                        withAnimation(.easeOut(duration: 0.08)) { expanded = false }
+                    }
                 }
                 .padding(.leading, 12)
             }
@@ -200,5 +204,4 @@ struct ToolCallGroupRow: View {
         NSPasteboard.general.setString(combined.trimmingCharacters(in: .whitespacesAndNewlines), forType: .string)
     }
 }
-
 
