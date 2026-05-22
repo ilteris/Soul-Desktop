@@ -50,16 +50,14 @@ extension ThreadController {
         scrollAnchorItemId = nil
 
         let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent)
+        appendPromptHook(prompt, sessionId: sessionId ?? id)
+        SoulRegistry.flushHooks()
 
         if isWorking {
             // Already running a turn; stash this for the dispatch loop to
             // pick up. UserPrompt is logged here so the hooks ledger
             // reflects the order the user sent things, not the order the
             // agent processed them.
-            ledger.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
-                "event": "UserPrompt",
-                "text": trimmedDisplay,
-            ])
             queuedPrompts.append(prompt)
             return nil
         }
@@ -101,14 +99,10 @@ extension ThreadController {
             sourceProvider: sourceProvider,
             targetProvider: targetProvider
         )
+        appendPromptHook(prompt, sessionId: sessionId ?? id)
+        SoulRegistry.flushHooks()
 
         if isWorking {
-            ledger.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
-                "event": QueuedPrompt.LedgerEvent.branchSummary.rawValue,
-                "summary": trimmedSummary,
-                "from_provider": sourceProvider.rawValue,
-                "to_provider": targetProvider.rawValue,
-            ])
             queuedPrompts.append(prompt)
             return nil
         }
@@ -165,7 +159,8 @@ extension ThreadController {
                 guard let sid = sessionId else { return }
                 while let turn = current {
                     if isFirstTurn {
-                        appendPromptHook(turn, sessionId: sid)
+                        // UserPrompt was persisted synchronously when the
+                        // visible bubble was created.
                     } else {
                         turnStartedAt = Date()
                         relocateQueuedBubbleToEnd(turn)
@@ -215,7 +210,8 @@ extension ThreadController {
 
             while let turn = current {
                 if isFirstTurn {
-                    appendPromptHook(turn, sessionId: sid)
+                    // UserPrompt was persisted synchronously when the
+                    // visible bubble was created.
                 } else {
                     turnStartedAt = Date()
                     relocateQueuedBubbleToEnd(turn)
