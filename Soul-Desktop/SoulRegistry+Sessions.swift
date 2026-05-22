@@ -191,6 +191,7 @@ extension SoulRegistry {
         let upper = title.uppercased()
         if upper.hasPrefix("ACT AS @") { return true }
         if upper.hasPrefix("ACT AS ") { return true }
+        if upper.hasPrefix("PRODUCE A CONCISE 3-5 WORD TITLE FOR THE FOLLOWING CHAT") { return true }
         if title.hasPrefix("<prior_session_context>") { return true }
         if title.hasPrefix("</prior_session_context>") { return true }
         return false
