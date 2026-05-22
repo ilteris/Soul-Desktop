@@ -78,9 +78,9 @@ extension Notification.Name {
     /// Posted when the user invokes the "previous session" shortcut. Subscribed
     /// by `SidebarView` (which owns session ordering per project).
     static let soulPreviousSession = Notification.Name("soul.kbd.previousSession")
-    /// ⌘[ — walk one row down in the recency-sorted list (toward older sessions).
+    /// ⌘[ — walk one row down in the creation-sorted list (toward older sessions).
     static let soulOlderSession = Notification.Name("soul.kbd.olderSession")
-    /// ⌘] — walk one row up in the recency-sorted list (toward newer sessions).
+    /// ⌘] — walk one row up in the creation-sorted list (toward newer sessions).
     static let soulNewerSession = Notification.Name("soul.kbd.newerSession")
     /// ⌘⇧K — manual context compaction. Subscribed by AppShell, which
     /// hands off to AutoCompactController.forceCompact() against the

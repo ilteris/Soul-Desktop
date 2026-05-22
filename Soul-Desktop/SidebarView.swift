@@ -361,7 +361,7 @@ struct SidebarView: View {
         // AppShell owns the cross-project view history stack.
     }
 
-    /// SOUL-SOUL_DESKTOP-234: walk `delta` rows in the sidebar's recency-sorted
+    /// SOUL-SOUL_DESKTOP-234: walk `delta` rows in the sidebar's creation-sorted
     /// list (delta < 0 = newer, delta > 0 = older). Falls back to the most
     /// recent visible session if nothing is active. Respects the same filter
     /// pipeline the rendered list uses (substantive, loadable/replayable,

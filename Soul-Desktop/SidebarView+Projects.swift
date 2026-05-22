@@ -18,7 +18,7 @@ extension SidebarView {
     /// sorted by basename for stable layout. Returned as an array because
     /// SwiftUI ForEach needs deterministic iteration order.
     /// Combined per-project chat list: every live session + every finalized
-    /// session for the project, deduped by id, sorted by timestamp desc.
+    /// session for the project, deduped by id, sorted by creation timestamp desc.
     /// Live rows additionally filter by transcript loadability (unless the
     /// user toggled "Show unreadable sessions") — finalized rows always
     /// show because they carry summary/intent + a hooks ledger that
@@ -484,6 +484,7 @@ extension SidebarView {
                 loadable: true,
                 replayable: true,
                 substantive: true,
+                lastActivityAt: ctrl.lastActivityAt,
                 isWorking: ctrl.isWorking
             )
             if let existing = byId[sid] {
@@ -504,6 +505,7 @@ extension SidebarView {
                 // naturally. Same for isLive — true real state, not derived
                 // from "is a controller pointed at this row."
                 merged.liveProvider = ctrl.provider.rawValue
+                merged.lastActivityAt = max(existing.lastActivityAt ?? existing.timestamp, ctrl.lastActivityAt)
                 merged.isWorking = ctrl.isWorking
                 // SOUL-216 (revised): live ctrl.items userMessage count is
                 // the canonical source — it matches the ThreadView toolbar

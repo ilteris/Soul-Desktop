@@ -121,7 +121,7 @@ extension AppShell {
             .trimmingCharacters(in: .whitespacesAndNewlines), !seed.isEmpty {
             controller.customTitle = seed
         }
-        controller.lastActivityAt = session.timestamp
+        controller.lastActivityAt = session.lastActivityAt ?? session.timestamp
         controller.assignSessionId(session.id)
         sessions.mount(controller)
         let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi

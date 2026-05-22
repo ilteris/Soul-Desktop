@@ -30,6 +30,8 @@ enum SessionWriter: String, Hashable, Codable {
 struct SoulSession: Identifiable, Hashable, Codable {
     var id: String                 // session_id
     var project: String
+    /// Stable sidebar sort timestamp. For ledgers with hook events this is
+    /// the session creation/start time, not the latest file activity.
     var timestamp: Date
     var intent: String?
     var summary: String?
@@ -75,9 +77,12 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// summary, or live with ≥ 4 hook events or a UserPrompt). Used to drop
     /// crash residue without an age heuristic.
     var substantive: Bool = true
+    /// Most recent observed activity. Kept separate from `timestamp` so
+    /// sidebar rows can display freshness without reordering on every write.
+    var lastActivityAt: Date? = nil
     /// First hook-event timestamp (the moment the session was started).
-    /// Pairs with `timestamp` (most-recent activity) to compute duration —
-    /// e.g. "23m" / "1h 4m" / "2d 3h" — rendered under the row title.
+    /// Pairs with `lastActivityAt` to compute duration — e.g. "23m" /
+    /// "1h 4m" / "2d 3h" — rendered under the row title.
     var startedAt: Date? = nil
     /// True iff the agent is currently processing a turn in this session.
     /// Drives the "working" indicator in the sidebar.
@@ -1045,6 +1050,10 @@ enum SoulRegistry {
 
     static func mtime(_ path: String) -> Date {
         (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? Date()
+    }
+
+    static func creationTime(_ path: String) -> Date? {
+        try? FileManager.default.attributesOfItem(atPath: path)[.creationDate] as? Date
     }
 
     static func stringOrNil(_ v: Any?) -> String? {

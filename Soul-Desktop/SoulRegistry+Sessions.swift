@@ -270,7 +270,6 @@ extension SoulRegistry {
             return (id, shape, m)
         }
         .sorted { $0.recency > $1.recency }
-        .prefix(limit * 2)
 
         let dirCache = GeminiDirCache()
         var out: [SoulSession] = []
@@ -278,12 +277,14 @@ extension SoulRegistry {
             let id = cand.id
             let shape = cand.shape
             var s = SoulSession(id: id, project: key, timestamp: cand.recency)
+            s.lastActivityAt = cand.recency
 
             if let path = shape.finalizePath,
                let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 if let ts = parseTimestamp(obj["timestamp"] as? String) {
-                    s.timestamp = max(s.timestamp, ts)
+                    s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, ts)
+                    s.timestamp = ts
                 }
                 s.intent = stringOrNil(obj["intent"])
                 s.summary = stringOrNil(obj["summary"])
@@ -315,28 +316,30 @@ extension SoulRegistry {
                     s.writer = .unknown
                 }
                 s.startedAt = meta.firstEventTimestamp
+                if let last = meta.lastEventTimestamp {
+                    s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, last)
+                }
             }
 
             s.isLive = (shape.finalizePath == nil)
             // Stale: live session with no activity in 1 hour. Computed from
-            // mtime (not the pinned sort timestamp below) so it tracks real
+            // lastActivityAt (not the pinned sort timestamp below) so it tracks real
             // activity even though we freeze the sort key.
             if s.isLive {
-                let lastActive = cand.recency
+                let lastActive = s.lastActivityAt ?? cand.recency
                 s.isStale = Date().timeIntervalSince(lastActive) > 3600
             }
-            // SPEC-245-K regression fix: kernel writes hooks.jsonl on every
-            // UserPrompt/AfterAgent, so `cand.recency = max(jsonMtime,
-            // hooksMtime)` bumps mid-conversation and the live session
-            // bubbles to the top of the sidebar on each turn. SidebarView+
-            // Projects.swift:449-455 documents the long-standing rule —
-            // "the sort should not reorder on activity" — but only enforced
-            // it on the synthetic/merge path. Pin the sort key for live
-            // sessions to firstEventTimestamp so typing doesn't shuffle the
-            // list. Finalized sessions keep the finalize timestamp set
-            // earlier from the .json file.
-            if s.isLive, let started = s.startedAt {
+            // Sidebar rows should be stable: once a session exists, appending
+            // prompts, assistant chunks, titles, summaries, or finalize rows
+            // must not move it around. Use creation/start time for every row
+            // that has a ledger, and keep last activity in `lastActivityAt`
+            // for stale/dirty/display state.
+            if let started = s.startedAt {
                 s.timestamp = started
+            } else if let dir = shape.sessionDir, let created = creationTime(dir) {
+                s.timestamp = created
+            } else if let hooks = shape.hooksPath, let created = creationTime(hooks) {
+                s.timestamp = created
             }
             if let h = shape.hooksMtime, let j = shape.jsonMtime, h.timeIntervalSince(j) > 5 {
                 s.isDirty = true

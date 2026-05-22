@@ -154,7 +154,7 @@ if isActiveReplay {
     /// than wall-clock duration — a 16h session that's just sitting open
     /// shouldn't look more substantial than a 30-minute 20-turn deep dive.
     private func metaLine(_ session: SoulSession) -> String {
-        let ago = relative(session.timestamp)
+        let ago = relative(session.lastActivityAt ?? session.timestamp)
         // Pick the larger of the two counts. Either source can be partial:
         // - kernel hooks (`promptCount`) under-counts terminal-origin or
         //   SOUL-247 payload-drop sessions
@@ -173,13 +173,13 @@ if isActiveReplay {
     }
 
     /// Humanized session length string for the row's second line. Defined
-    /// as the wall-clock interval between the first hook event
-    /// (`startedAt`) and the most-recent activity (`session.timestamp`).
+    /// as the wall-clock interval between the first hook event (`startedAt`)
+    /// and the most-recent activity (`lastActivityAt`).
     /// Returns nil for sessions that don't have a startedAt yet or where
     /// the span is under ~30s (so brand-new chats don't display "0m").
     private func duration(_ session: SoulSession) -> String? {
         guard let started = session.startedAt else { return nil }
-        let span = session.timestamp.timeIntervalSince(started)
+        let span = (session.lastActivityAt ?? session.timestamp).timeIntervalSince(started)
         if span < 30 { return nil }
         let total = Int(span)
         let days = total / 86400
@@ -474,7 +474,7 @@ private struct LiveSessionRow: View {
                     .background(.blue.opacity(0.12), in: Capsule())
             }
             Spacer(minLength: 0)
-            Text(relative(session.timestamp))
+            Text(relative(session.lastActivityAt ?? session.timestamp))
                 .font(SoulFont.code(11))
                 .foregroundStyle(SoulColor.fgSubtle)
         }
