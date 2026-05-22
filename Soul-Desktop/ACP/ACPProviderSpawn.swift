@@ -34,7 +34,7 @@ struct ACPProviderSpawn {
             // skips the protocol's history replay through user/agent message
             // chunks, so the canvas comes up empty. Route resume through
             // session/load like Claude.
-            return .init(executablePath: path, arguments: ["--acp"], environment: env)
+            return .init(executablePath: path, arguments: geminiACPArguments(), environment: env)
         case .pi:
             // pi-acp 0.0.27 only parses `--terminal-login` from argv —
             // anything else (including the `--resume <sid>` we used to
@@ -80,7 +80,7 @@ private func bundledGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
         .path
     guard FileManager.default.fileExists(atPath: entry) else { return nil }
     guard let node = which("node") else { return nil }
-    return .init(executablePath: node, arguments: [entry, "--acp"], environment: env)
+    return .init(executablePath: node, arguments: [entry] + geminiACPArguments(), environment: env)
 }
 
 /// Resolve a local gemini-cli spawn when the user has opted in via
@@ -104,7 +104,21 @@ private func localGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
     }
     guard FileManager.default.fileExists(atPath: entry) else { return nil }
     guard let node = which("node") else { return nil }
-    return .init(executablePath: node, arguments: [entry, "--acp"], environment: env)
+    return .init(executablePath: node, arguments: [entry] + geminiACPArguments(), environment: env)
+}
+
+private func geminiACPArguments() -> [String] {
+    let home = NSHomeDirectory()
+    let includeDirs = [
+        // Agents are routinely instructed to inspect Soul kernel scripts from
+        // project sessions. Without these include dirs Gemini's read/edit
+        // tools reject paths like ~/dotfiles/soul/bin/soul as out-of-workspace.
+        "\(home)/dotfiles/soul",
+        "\(home)/dotfiles",
+    ].filter { FileManager.default.fileExists(atPath: $0) }
+
+    guard !includeDirs.isEmpty else { return ["--acp"] }
+    return ["--acp", "--include-directories", includeDirs.joined(separator: ",")]
 }
 
 private func enrichedEnvironment() -> [String: String] {
