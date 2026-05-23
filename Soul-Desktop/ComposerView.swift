@@ -10,7 +10,8 @@ struct ComposerView: View {
     /// Two-arg send: (display, agent). Display is what shows in the user
     /// bubble (typically the bare `/cmd`); agent is the expanded prompt
     /// shipped over ACP. For free-text turns they're identical.
-    var onSend: (_ display: String, _ agent: String) -> Void = { _, _ in }
+    var onSend: (_ display: String, _ agent: String, _ extraBlocks: [ContentBlock]) -> Bool = { _, _, _ in false }
+    var supportsImageAttachments: Bool = false
     var onCancel: () -> Void = {}
     var isWorking: Bool = false
     /// Number of prompts queued behind the in-flight turn. Surfaced as a chip
@@ -22,7 +23,7 @@ struct ComposerView: View {
     /// into the field and edit it; ⏎ then replaces the queued entry via
     /// `onEditQueued` instead of appending a new one. SOUL-199.
     var queuedTail: (id: UUID, text: String)? = nil
-    var onEditQueued: (UUID, String) -> Void = { _, _ in }
+    var onEditQueued: (UUID, String) -> Bool = { _, _ in false }
     var onClearQueue: () -> Void = {}
     /// Cancel the in-flight ACP turn and dispatch the next queued prompt as
     /// a fresh turn. Surfaced as a "Steer" button on the queue chip alongside
@@ -113,23 +114,57 @@ struct ComposerView: View {
             display = trimmedArgs
             agent = trimmedArgs
         }
-        let attachmentSuffix: String = {
-            guard !droppedAttachments.isEmpty else { return "" }
-            let links = droppedAttachments.map { Self.markdownLink(forPath: $0) }
-            return (display.isEmpty ? "" : "\n\n") + links.joined(separator: " ")
-        }()
-        let finalDisplay = display + attachmentSuffix
-        let finalAgent = agent + attachmentSuffix
+        var agentLinks: [String] = []
+        var displayLinks: [String] = []
+        var extraBlocks: [ContentBlock] = []
+
+        for path in droppedAttachments {
+            let link = Self.markdownLink(forPath: path)
+            displayLinks.append(link)
+
+            let isImg = DropAttachmentHandler.isImageURL(URL(fileURLWithPath: path))
+            if isImg && supportsImageAttachments {
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                    let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+                    let mimeType: String
+                    switch ext {
+                    case "png": mimeType = "image/png"
+                    case "jpeg", "jpg": mimeType = "image/jpeg"
+                    case "gif": mimeType = "image/gif"
+                    case "webp": mimeType = "image/webp"
+                    default: mimeType = "image/jpeg"
+                    }
+                    extraBlocks.append(.image(mimeType: mimeType, base64: data.base64EncodedString()))
+                } else {
+                    agentLinks.append(link)
+                }
+            } else {
+                agentLinks.append(link)
+            }
+        }
+
+        let finalDisplay = display + (displayLinks.isEmpty ? "" : (display.isEmpty ? "" : "\n\n") + displayLinks.joined(separator: " "))
+        let finalAgent = agent + (agentLinks.isEmpty ? "" : (agent.isEmpty ? "" : "\n\n") + agentLinks.joined(separator: " "))
+
         guard !finalDisplay.isEmpty else { return }
         // SOUL-199: in edit-queued mode, replace the queued entry in place
         // instead of appending a new prompt. The agent sees the new text
         // when the queue drains; the visible bubble redraws too.
+        let accepted: Bool
         if let editingId = editingQueuedItemId {
-            onEditQueued(editingId, finalDisplay)
-            editingQueuedItemId = nil
+            accepted = onEditQueued(editingId, finalDisplay)
+            if accepted {
+                editingQueuedItemId = nil
+            }
         } else {
-            onSend(finalDisplay, finalAgent)
+            accepted = onSend(finalDisplay, finalAgent, extraBlocks)
         }
+        // Contract: the composer is allowed to clear only after the owner
+        // has synchronously accepted the prompt. "Accepted" means the app
+        // has either painted/persisted the user bubble or updated an
+        // existing queued bubble. Provider spawn/dispatch may still fail
+        // later, but the user's text is already represented in app state.
+        guard accepted else { return }
         lastSent = finalDisplay
         prompt = ""
         droppedAttachments = []
@@ -550,4 +585,3 @@ private struct StopButton: View {
             .help(clicked ? "Cancelling…" : "Stop the current turn")
     }
 }
-

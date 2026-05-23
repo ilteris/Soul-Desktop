@@ -175,8 +175,8 @@ actor ACPClient {
         _ = try await call(method: "session/load", params: req)
     }
 
-    func prompt(sessionId: String, text: String) async throws -> String {
-        let req = PromptRequest(sessionId: sessionId, prompt: [.text(text)])
+    func prompt(sessionId: String, text: String, extraBlocks: [ContentBlock] = []) async throws -> String {
+        let req = PromptRequest(sessionId: sessionId, prompt: [.text(text)] + extraBlocks)
         let result = try await call(method: "session/prompt", params: req)
         let resp = try decode(PromptResponse.self, from: result)
         return resp.stopReason

@@ -20,8 +20,8 @@ extension ThreadController {
     /// the current turn resolves. The behavior switch (queue vs steer-via-
     /// cancel) is the future home for a user setting; the queue side is the
     /// safe default.
-    func send(display: String, agent: String) async {
-        guard let pending = acceptUserPrompt(display: display, agent: agent) else { return }
+    func send(display: String, agent: String, extraBlocks: [ContentBlock] = []) async {
+        guard let pending = acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) else { return }
         await dispatchPending(pending)
     }
 
@@ -34,10 +34,13 @@ extension ThreadController {
     /// the bubble on the same runloop tick as the Enter keystroke instead of
     /// waiting for the `Task { await send(...) }` body to be scheduled —
     /// previously perceptible as a brief freeze before the bubble appeared.
-    func acceptUserPrompt(display: String, agent: String) -> QueuedPrompt? {
+    func acceptUserPrompt(display: String, agent: String, extraBlocks: [ContentBlock] = []) -> QueuedPrompt? {
         let trimmedDisplay = display.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAgent.isEmpty else { return nil }
+        if sessionId == nil {
+            sessionId = id
+        }
 
         let messageId = UUID()
         items.append(.userMessage(id: messageId, text: trimmedDisplay, timestamp: Date()))
@@ -49,7 +52,7 @@ extension ThreadController {
         scrollAnchorAtBottom = true
         scrollAnchorItemId = nil
 
-        let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent)
+        let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent, extraBlocks: extraBlocks)
         appendPromptHook(prompt, sessionId: sessionId ?? id)
         SoulRegistry.flushHooks()
 
@@ -185,7 +188,8 @@ extension ThreadController {
                     // prompts in the kernel ledger; replay/hydrate shows
                     // empty agent responses. With it, `hydrateFromDisk`
                     // (codex branch below) renders full conversations.
-                    if let reply = mostRecentAgentReplyText() {
+                    if let raw = mostRecentAgentReplyText() {
+                        let reply = LedgerPreamble.scrubEchoed(raw)
                         ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                             "event": "AfterAgent",
                             "content": reply,
@@ -245,7 +249,7 @@ extension ThreadController {
                 // /compact case). No-op for non-Claude.
                 armTranscriptWatcher()
                 do {
-                    _ = try await client.prompt(sessionId: nid, text: agentText)
+                    _ = try await client.prompt(sessionId: nid, text: agentText, extraBlocks: turn.extraBlocks)
                 } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
                     // SOUL-SOUL_DESKTOP-103: Gemini-CLI rotates / drops the
                     // session mid-conversation (observed: session loaded fine,
@@ -274,7 +278,7 @@ extension ThreadController {
                     // never saw the preamble, and pendingContextPreamble
                     // was already cleared above. Re-sending agentText
                     // makes the recovery idempotent.
-                    _ = try await client.prompt(sessionId: nid, text: agentText)
+                    _ = try await client.prompt(sessionId: nid, text: agentText, extraBlocks: turn.extraBlocks)
                 }
 
                 // Persist the agent's full reply text to the kernel hooks
@@ -285,10 +289,11 @@ extension ThreadController {
                 // shows the prompts with empty bodies. With this row, every
                 // Soul-Desktop session is replayable from our own ledger
                 // alone, regardless of agent-side disk state.
-                let reply = mostRecentAgentReplyText()
+                let rawReply = mostRecentAgentReplyText()
+                let reply = rawReply.map(LedgerPreamble.scrubEchoed)
                 let agentMsgCount = items.filter { if case .agentMessage = $0 { return true } else { return false } }.count
                 NSLog("[ledger] AfterAgent gate: replyLen=\(reply?.count ?? -1) sid=\(sid) project=\(project.id) provider=\(provider.rawValue) agentMessagesInItems=\(agentMsgCount)")
-                if let reply {
+                if let reply, !reply.isEmpty {
                     NSLog("[ledger] writing AfterAgent → \(project.id)/\(sid)")
                     ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
                         "event": "AfterAgent",

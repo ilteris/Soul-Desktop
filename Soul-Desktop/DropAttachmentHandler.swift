@@ -68,7 +68,20 @@ enum DropAttachmentHandler {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             attachmentsDir = dir
         }
+        let maxSize = 5 * 1024 * 1024
         for (i, src) in fileURLs.enumerated() {
+            if isImageURL(src) {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: src.path)
+                let size = attrs?[.size] as? Int ?? 0
+                if size > maxSize {
+                    let alert = NSAlert()
+                    alert.messageText = "Image too large"
+                    alert.informativeText = "The image \(src.lastPathComponent) is larger than the 5MB limit."
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                    continue
+                }
+            }
             let finalPath: String
             if isImageURL(src), let dir = attachmentsDir {
                 let dst = "\(dir)/\(stamp)-\(i)-\(src.lastPathComponent)"
@@ -86,16 +99,25 @@ enum DropAttachmentHandler {
             }
         }
         for (data, hint) in dataDrops {
+            if data.count > maxSize {
+                let alert = NSAlert()
+                alert.messageText = "Image too large"
+                alert.informativeText = "The pasted image is larger than the 5MB limit."
+                alert.alertStyle = .warning
+                alert.runModal()
+                continue
+            }
             if let path = writeImageDataAsAttachment(data, hint: hint, projectPath: projectPath),
                !existing.contains(path),
                !newPaths.contains(path) {
                 newPaths.append(path)
             }
         }
+
         return newPaths
     }
 
-    private static func isImageURL(_ url: URL) -> Bool {
+    static func isImageURL(_ url: URL) -> Bool {
         let exts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif"]
         return exts.contains(url.pathExtension.lowercased())
     }

@@ -186,6 +186,7 @@ final class ThreadController {
         let itemId: UUID
         let display: String
         let agent: String
+        var extraBlocks: [ContentBlock] = []
         var ledgerEvent: LedgerEvent = .userPrompt
         var sourceProvider: Provider? = nil
         var targetProvider: Provider? = nil
@@ -656,6 +657,7 @@ final class ThreadController {
     // live here is removed in SOUL-SOUL_DESKTOP-137.
     var hasInitialized = false
     var supportsLoadSession = false
+    var supportsImageAttachments = false
     var openAgentMessageId: UUID?
     var openAgentThoughtId: UUID? = nil
     /// Last finalize timestamp the live-injection helper has surfaced

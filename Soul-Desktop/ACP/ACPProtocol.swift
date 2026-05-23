@@ -158,17 +158,24 @@ struct PromptResponse: Codable {
     var stopReason: String
 }
 
-enum ContentBlock: Codable {
+enum ContentBlock: Codable, Hashable, Equatable {
     case text(String)
+    case image(mimeType: String, base64: String)
 
-    private enum CodingKeys: String, CodingKey { case type, text }
+    private enum CodingKeys: String, CodingKey { case type, text, mimeType, data }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
-        case "text": self = .text(try c.decode(String.self, forKey: .text))
-        default:     self = .text("")
+        case "text": 
+            self = .text(try c.decode(String.self, forKey: .text))
+        case "image":
+            let mimeType = try c.decode(String.self, forKey: .mimeType)
+            let data = try c.decode(String.self, forKey: .data)
+            self = .image(mimeType: mimeType, base64: data)
+        default:     
+            self = .text("")
         }
     }
     func encode(to encoder: Encoder) throws {
@@ -177,6 +184,10 @@ enum ContentBlock: Codable {
         case .text(let s):
             try c.encode("text", forKey: .type)
             try c.encode(s, forKey: .text)
+        case .image(let mimeType, let base64):
+            try c.encode("image", forKey: .type)
+            try c.encode(mimeType, forKey: .mimeType)
+            try c.encode(base64, forKey: .data)
         }
     }
 }

@@ -189,14 +189,18 @@ struct ThreadView: View {
                 projectName: controller.project.name,
                 projectPath: controller.project.path,
                 commands: controller.availableCommands,
-                onSend: { display, agent in
+                onSend: { display, agent, extraBlocks in
                     // Sync prefix: paint the user bubble on the same
                     // runloop tick as the Enter keystroke. Async tail
                     // (ensureSession + ACP prompt) runs in a Task so it
                     // doesn't block the composer's keyDown handler.
-                    guard let pending = controller.acceptUserPrompt(display: display, agent: agent) else { return }
-                    Task { await controller.dispatchPending(pending) }
+                    guard !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+                    if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
+                        Task { await controller.dispatchPending(pending) }
+                    }
+                    return true
                 },
+                  supportsImageAttachments: controller.supportsImageAttachments,
                 onCancel: onCancel,
                 isWorking: controller.isWorking,
                 queuedCount: controller.queuedPrompts.count,
@@ -512,9 +516,15 @@ struct ThreadView: View {
                 isAutoScrolling = false
                 return
             }
-            withAnimation(.smooth(duration: 0.18)) {
-                proxy.scrollTo(id, anchor: .bottom)
-            }
+            // Avoid animated scrollTo during transcript growth. Animating a
+            // ScrollViewReader target inside a LazyVStack forces SwiftUI to
+            // repeatedly estimate row heights while the transcript is also
+            // changing, which shows up in backtraces as
+            // LazyStack.measureEstimates / _FlexFrameLayout churn. A direct
+            // re-pin is less fancy but much closer to native chat behavior:
+            // new content stays attached to the bottom without making the
+            // scroll view solve an animation path through a changing list.
+            proxy.scrollTo(id, anchor: .bottom)
             // Second-pass correction. The first scrollTo can land short
             // because LazyVStack hasn't finished sizing the freshly-
             // appended row by then, leaving the user's just-sent prompt
@@ -699,7 +709,7 @@ struct ThreadItemRow: View {
         // shows up as slightly blurry / shimmering text during fractional-offset trackpad scroll.
         switch item {
         case .userMessage(_, let text, let ts):
-            UserMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
+            UserMessageRow(text: LedgerPreamble.scrubEchoed(text), timestamp: ts, isHistorical: isHistorical, isQueued: isQueued)
         case .branchSummary(_, let summary, let sourceProvider, let targetProvider, _):
             FinalizeCard(
                 title: "Branch Summary",
@@ -713,7 +723,7 @@ struct ThreadItemRow: View {
         case .agentMessage(_, let text, let complete, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
             // MarkdownView rebuild when the row's inputs haven't changed.
-            AgentMessageRow(text: text, timestamp: ts, isHistorical: isHistorical, isStreaming: !complete, showFooter: showAgentFooter)
+            AgentMessageRow(text: LedgerPreamble.scrubEchoed(text), timestamp: ts, isHistorical: isHistorical, isStreaming: !complete, showFooter: showAgentFooter)
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)

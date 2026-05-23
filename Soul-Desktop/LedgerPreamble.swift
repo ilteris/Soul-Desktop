@@ -140,4 +140,94 @@ enum LedgerPreamble {
         guard !preamble.isEmpty else { return agent }
         return preamble + "\nNew user message:\n" + agent
     }
+
+    /// Strip any `<prior_session_context>...</prior_session_context>` block
+    /// the agent inadvertently echoed back into its reply. Defensive — the
+    /// preamble instructs "do NOT recap it" but gemini-3.5-flash and codex
+    /// sometimes copy the opening tag plus a user/agent recap before
+    /// pivoting to their actual response.
+    ///
+    /// Boundary detection (in priority order, first match wins):
+    ///   1. `</prior_session_context>` close tag — drop through it.
+    ///   2. `\n---\n` separator — drop through it (envelope's body delimiter).
+    ///   3. First "User: …" / "You: …" recap-line block followed by a markdown
+    ///      header — drop through the last consecutive recap line.
+    ///   4. First markdown header (`^#+ `) — drop up to it (header is real content).
+    ///   5. Two consecutive blank lines — drop up to them (paragraph break).
+    /// If none match, strip just the opener line (worst case: we leak a few
+    /// lines of recap rather than eat the whole reply).
+    static func scrubEchoed(_ text: String) -> String {
+        guard text.contains("<prior_session_context>") else { return text }
+        var out = text
+        // Soul-Desktop's wire prefix marker is deterministic and never appears
+        // organically in user input — if present, drop everything up to and
+        // including it. Catches the UserPrompt-pollution case (preamble +
+        // "New user message:" + actual text) without relying on heuristics.
+        let marker = "\nNew user message:\n"
+        if let openRange = out.range(of: "<prior_session_context>"),
+           let markerRange = out.range(of: marker, range: openRange.upperBound..<out.endIndex) {
+            out.removeSubrange(openRange.lowerBound..<markerRange.upperBound)
+        }
+        // Paired form: drop opener-to-close inclusive.
+        while let openRange = out.range(of: "<prior_session_context>"),
+              let closeRange = out.range(of: "</prior_session_context>", range: openRange.upperBound..<out.endIndex) {
+            out.removeSubrange(openRange.lowerBound..<closeRange.upperBound)
+        }
+        // Unclosed form passes — scan for a boundary in priority order.
+        if let openRange = out.range(of: "<prior_session_context>") {
+            let scan = openRange.upperBound..<out.endIndex
+            if let dashEnd = out.range(of: "\n---\n", range: scan) {
+                out.removeSubrange(openRange.lowerBound..<dashEnd.upperBound)
+            } else if let headerRange = firstMarkdownHeader(in: out, range: scan) {
+                // Drop everything from the opener up to (but not including)
+                // the first markdown header — the model's real response.
+                out.removeSubrange(openRange.lowerBound..<headerRange.lowerBound)
+            } else if let recapEnd = lastRecapLineEnd(in: out, range: scan) {
+                out.removeSubrange(openRange.lowerBound..<recapEnd)
+            } else if let blank = out.range(of: "\n\n\n", range: scan) {
+                out.removeSubrange(openRange.lowerBound..<blank.upperBound)
+            } else if let lineEnd = out.range(of: "\n", range: scan) {
+                // Worst case: drop the tag line only.
+                out.removeSubrange(openRange.lowerBound..<lineEnd.upperBound)
+            }
+        }
+        return out.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+
+    /// Range of the first line that starts with one or more `#` followed by a
+    /// space (markdown header).
+    private static func firstMarkdownHeader(in s: String, range: Range<String.Index>) -> Range<String.Index>? {
+        var cursor = range.lowerBound
+        while cursor < range.upperBound {
+            let lineEnd = s[cursor..<range.upperBound].firstIndex(of: "\n") ?? range.upperBound
+            let line = s[cursor..<lineEnd]
+            if let firstNonHash = line.firstIndex(where: { $0 != "#" }),
+               firstNonHash > line.startIndex,
+               line[firstNonHash] == " " {
+                return cursor..<lineEnd
+            }
+            if lineEnd == range.upperBound { break }
+            cursor = s.index(after: lineEnd)
+        }
+        return nil
+    }
+
+    /// Index just past the last consecutive `User:` / `You:` recap line. Used
+    /// when the agent echoed a recap pair but didn't follow with `---` or a
+    /// header — we still want to chop off the recap so the canvas isn't a
+    /// reprint of the prior turn.
+    private static func lastRecapLineEnd(in s: String, range: Range<String.Index>) -> String.Index? {
+        var cursor = range.lowerBound
+        var lastMatch: String.Index? = nil
+        while cursor < range.upperBound {
+            let lineEnd = s[cursor..<range.upperBound].firstIndex(of: "\n") ?? range.upperBound
+            let line = s[cursor..<lineEnd]
+            if line.hasPrefix("User:") || line.hasPrefix("You:") {
+                lastMatch = lineEnd
+            }
+            if lineEnd == range.upperBound { break }
+            cursor = s.index(after: lineEnd)
+        }
+        return lastMatch
+    }
 }

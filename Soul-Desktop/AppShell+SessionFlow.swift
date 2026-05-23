@@ -1,14 +1,21 @@
 import SwiftUI
 
 extension AppShell {
-    func startThread(display: String, agent: String) {
-        guard let project = currentProject() else { return }
+    func startThread(display: String, agent: String, extraBlocks: [ContentBlock] = []) -> Bool {
+        guard let project = currentProject() else { return false }
         sessions.draftSession = nil
         let controller = ThreadController(provider: harness, project: project)
         controller.permissionMode = pendingPermissionMode
+        // Contract: a fresh controller must not be mounted until the first
+        // prompt has been synchronously accepted. Mounting before acceptance
+        // creates a visible "New chat" shell that can race sidebar refreshes
+        // and provider NativeSessionID hooks, producing a persisted session
+        // row with no user turn content.
+        guard let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) else { return false }
         sessions.mount(controller)
         newChatNonce &+= 1
-        Task { await controller.send(display: display, agent: agent) }
+        Task { await controller.dispatchPending(pending) }
+        return true
     }
 
     /// ⌘[ (forward: false) / ⌘] (forward: true) — pop one off the corresponding

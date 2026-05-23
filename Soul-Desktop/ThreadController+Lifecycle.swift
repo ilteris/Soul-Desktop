@@ -528,6 +528,7 @@ extension ThreadController {
 
         let initResp = try await client.initialize()
         supportsLoadSession = initResp.agentCapabilities?.loadSession ?? false
+        supportsImageAttachments = initResp.agentCapabilities?.promptCapabilities?.image ?? false
     }
 
 }

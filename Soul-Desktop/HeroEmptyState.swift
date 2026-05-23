@@ -5,7 +5,7 @@ struct HeroEmptyState: View {
     var projectPath: String? = nil
     var currentProjectID: String = ""
     @Binding var prompt: String
-    var onSend: (_ display: String, _ agent: String) -> Void = { _, _ in }
+    var onSend: (_ display: String, _ agent: String, _ extraBlocks: [ContentBlock]) -> Bool = { _, _, _ in false }
     var onSelectProject: (String) -> Void = { _ in }
     var onNewProject: () -> Void = {}
     var devCommand: String? = nil

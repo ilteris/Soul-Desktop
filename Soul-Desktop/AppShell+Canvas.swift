@@ -175,7 +175,7 @@ extension AppShell {
                     projectPath: currentProject()?.path,
                     currentProjectID: selectedProject ?? "",
                     prompt: $prompt,
-                    onSend: { display, agent in startThread(display: display, agent: agent) },
+                    onSend: { display, agent, extraBlocks in startThread(display: display, agent: agent, extraBlocks: extraBlocks) },
                     onSelectProject: { selectedProject = $0 },
                     onNewProject: openNewProjectWizard,
                     devCommand: currentProject()?.devCommand,

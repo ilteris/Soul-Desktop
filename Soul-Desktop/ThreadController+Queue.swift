@@ -132,16 +132,18 @@ func drainQueuedPromptAfterTurn() {
     /// in `items[]` (so the UI redraws). No-op if the prompt has already
     /// shipped — by the time the row leaves the queued state the agent's
     /// turn is in flight.
-    func editQueuedPrompt(itemId: UUID, newText: String) {
+    @discardableResult
+    func editQueuedPrompt(itemId: UUID, newText: String) -> Bool {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let qIdx = queuedPrompts.firstIndex(where: { $0.itemId == itemId }) else { return }
+        guard !trimmed.isEmpty else { return false }
+        guard let qIdx = queuedPrompts.firstIndex(where: { $0.itemId == itemId }) else { return false }
         let original = queuedPrompts[qIdx]
         queuedPrompts[qIdx] = QueuedPrompt(itemId: original.itemId, display: trimmed, agent: trimmed)
         if let iIdx = items.firstIndex(where: { $0.id == itemId }),
            case .userMessage(let id, _, let ts) = items[iIdx] {
             items[iIdx] = .userMessage(id: id, text: trimmed, timestamp: ts)
         }
+        return true
     }
 
     /// Drop a queued prompt before it dispatches. Removes both the
