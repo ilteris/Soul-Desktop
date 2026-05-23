@@ -28,8 +28,21 @@ extension SidebarView {
         }.value
         await MainActor.run {
             self.projects = projs
-            self.sessionCounts = counts
-            Self.writeSessionCountsCache(counts)
+            // Merge, don't replace. `sessionCounts` is seeded from the
+            // persisted filtered-count cache (see SidebarView.swift:104).
+            // Replacing it with the raw on-disk count clobbers the cached
+            // value and produces the 230→9 flicker on cold launch — raw
+            // count shows first, then Stage 2 filtering drops it back to
+            // the truth. Only adopt the raw count for projects we don't
+            // have any prior count for; otherwise keep the cached value
+            // until Stage 2's `recomputePersistedSessionCounts()` lands
+            // the authoritative filtered number.
+            var merged = self.sessionCounts
+            for (key, rawCount) in counts where merged[key] == nil {
+                merged[key] = rawCount
+            }
+            self.sessionCounts = merged
+            Self.writeSessionCountsCache(merged)
             if selectedProject == nil || projs.first(where: { $0.id == selectedProject }) == nil {
                 selectedProject = projs.first?.id
             }

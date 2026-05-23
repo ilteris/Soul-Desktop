@@ -433,6 +433,13 @@ extension SidebarView {
             count += 1
         }
         for ctrl in activeThreads where ctrl.project.id == project.id {
+            // Contract: synthetic rows represent accepted user-visible
+            // conversations, not naked controller shells. A controller with
+            // no session id, no items, and no queued prompts is startup /
+            // failed-send residue and must not affect the project badge.
+            guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
+                continue
+            }
             let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
             if archivedSet.contains(sid) { continue }
             if seenIds.insert(sid).inserted { count += 1 }
@@ -464,6 +471,12 @@ extension SidebarView {
         for s in onDisk { byId[s.id] = s }
 
         for ctrl in activeThreads where ctrl.project.id == project.id {
+            // Contract: don't surface a live synthetic row until it has
+            // accepted content or an assigned session id. This prevents
+            // "New chat" ghosts from masking prompt-loss bugs as real rows.
+            guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
+                continue
+            }
             let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
             let synthetic = SoulSession(
                 id: sid,
