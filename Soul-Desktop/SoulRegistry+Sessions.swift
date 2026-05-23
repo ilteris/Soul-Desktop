@@ -109,7 +109,10 @@ extension SoulRegistry {
                 if (event == "UserPrompt" || event == "UserMessage") && meta.firstUserPrompt == nil {
                     let text = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String)
                     if let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
-                        meta.firstUserPrompt = String(stripCommandTags(t).prefix(120))
+                        let stripped = stripCommandTags(t).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !stripped.isEmpty {
+                            meta.firstUserPrompt = String(stripped.prefix(120))
+                        }
                     }
                 }
                 if event == "NativeSessionID" {
