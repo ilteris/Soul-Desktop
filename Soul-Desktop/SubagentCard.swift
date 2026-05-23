@@ -114,6 +114,23 @@ struct SubagentCard: View {
                 tailer?.stop()
             }
         }
+        .onChange(of: subagentId) { _, _ in
+            // The kernel prints `ID: <hex>` to stdout at the start of a
+            // delegation, but the first tool_call notification may arrive
+            // BEFORE that line streams through. In that window the parent's
+            // `parseDelegationId` returns nil and the SubagentCard is born
+            // with `subagentId = toolId` (the ACP call id, which doesn't
+            // match the kernel's subagents/<hex>/ path) → we tail nothing.
+            // Once the streaming content lands and a tool_call_update lifts
+            // the structured `.subagent` details to the real id, restart
+            // the tailer against the corrected path so live output starts
+            // flowing inside the card.
+            tailer?.stop()
+            tailer = SubagentLogTailer(path: logPath)
+            if !isTerminal {
+                tailer?.start()
+            }
+        }
     }
 
     private var header: some View {
@@ -152,7 +169,8 @@ struct SubagentCard: View {
     @ViewBuilder
     private var logBody: some View {
         let content = tailer?.content ?? ""
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prose = Self.extractProse(from: content)
+        let trimmed = prose.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             HStack(spacing: 6) {
                 Text(isHistorical ? "(log not tailed for archived run)" : "Waiting for first output…")
@@ -162,45 +180,35 @@ struct SubagentCard: View {
             }
             .padding(.leading, 16)
         } else if expanded {
-            ScrollView {
-                Text(trimmed)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(SoulColor.fg.opacity(0.85))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+            VStack(alignment: .leading, spacing: 4) {
+                MarkdownView(text: trimmed)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 4)
+                collapseControl
             }
-            .frame(maxHeight: 240)
-            .background(SoulColor.bg.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-            .padding(.leading, 16)
-            .padding(.trailing, 4)
-            collapseControl
         } else {
-            let tail = lastLines(trimmed, count: 3)
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(tail.enumerated()), id: \.offset) { _, line in
-                    Text(line)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(SoulColor.fg.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(preview(trimmed, maxChars: 280))
+                    .font(SoulFont.ui(12))
+                    .foregroundStyle(SoulColor.fg.opacity(0.78))
+                    .lineLimit(3)
+                    .truncationMode(.tail)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 4)
+                expandControl(charCount: trimmed.count)
             }
-            .padding(.leading, 16)
-            .padding(.trailing, 4)
-            expandControl(byteCount: trimmed.utf8.count)
         }
     }
 
-    private func expandControl(byteCount: Int) -> some View {
+    private func expandControl(charCount: Int) -> some View {
         Button {
-            expanded = true
+            withAnimation(.easeInOut(duration: 0.12)) { expanded = true }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9))
-                Text("Expand log")
-                Text("(\(formatBytes(byteCount)))")
+                Text("Expand reply")
+                Text("(\(charCount) chars)")
                     .foregroundStyle(SoulColor.fgSubtle)
             }
             .font(SoulFont.ui(10, weight: .medium))
@@ -208,7 +216,85 @@ struct SubagentCard: View {
         }
         .buttonStyle(.soulHover)
         .padding(.leading, 16)
-        .padding(.top, 4)
+        .padding(.top, 2)
+    }
+
+    /// Show the first chars of `s` as a single-paragraph preview. Newlines
+    /// inside the window collapse to spaces so the truncation doesn't dump
+    /// the user mid-line.
+    private func preview(_ s: String, maxChars: Int) -> String {
+        let flat = s.replacingOccurrences(of: "\n", with: " ")
+        if flat.count <= maxChars { return flat }
+        return String(flat.prefix(maxChars)) + "…"
+    }
+
+    /// Parse the live.log stream into readable prose. Gemini/Claude/Codex
+    /// stream JSON lines that bury the assistant text inside structured
+    /// envelopes (claude-sdk message frames, gemini stream-json events);
+    /// raw JSON in the card body reads as noise. Extract only the text
+    /// payload and concatenate, falling back to the raw line if it's not
+    /// a recognized JSON shape (preamble lines, plain prose).
+    static func extractProse(from raw: String) -> String {
+        guard !raw.isEmpty else { return "" }
+        var out: [String] = []
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let s = String(line)
+            let trimmed = s.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            // JSON-line? Try to extract assistant text.
+            if trimmed.hasPrefix("{"),
+               let data = trimmed.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let extracted = extractTextFromEvent(obj), !extracted.isEmpty {
+                    out.append(extracted)
+                }
+                continue
+            }
+            // Plain prose (header lines like "--- Subagent @X (ID: ...) Started ---",
+            // warnings, etc.) — keep verbatim.
+            out.append(s)
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// Walk a few known envelope shapes and return any visible assistant text.
+    /// Recognizes:
+    ///   • Claude SDK: `{type:"assistant", message:{content:[{type:"text", text}]}}`
+    ///   • Gemini stream-json: `{type:"content", content:"…"}` or
+    ///     `{response:{candidates:[{content:{parts:[{text:"…"}]}}]}}`
+    ///   • Generic: any top-level `text` / `content` / `output` string.
+    private static func extractTextFromEvent(_ obj: [String: Any]) -> String? {
+        // Claude SDK assistant frames
+        if (obj["type"] as? String) == "assistant",
+           let message = obj["message"] as? [String: Any],
+           let content = message["content"] {
+            if let arr = content as? [[String: Any]] {
+                let pieces = arr.compactMap { $0["text"] as? String }
+                if !pieces.isEmpty { return pieces.joined(separator: "\n") }
+            }
+            if let s = content as? String, !s.isEmpty { return s }
+        }
+        // Gemini stream-json: direct content event
+        if (obj["type"] as? String) == "content", let s = obj["content"] as? String {
+            return s
+        }
+        // Gemini response wrapper
+        if let response = obj["response"] as? [String: Any],
+           let candidates = response["candidates"] as? [[String: Any]] {
+            var pieces: [String] = []
+            for c in candidates {
+                guard let content = c["content"] as? [String: Any],
+                      let parts = content["parts"] as? [[String: Any]] else { continue }
+                for p in parts {
+                    if let t = p["text"] as? String, !t.isEmpty { pieces.append(t) }
+                }
+            }
+            if !pieces.isEmpty { return pieces.joined() }
+        }
+        // Generic fallbacks (some adapters flatten to top-level fields)
+        if let s = obj["text"] as? String { return s }
+        if let s = obj["output"] as? String { return s }
+        return nil
     }
 
     private var collapseControl: some View {
