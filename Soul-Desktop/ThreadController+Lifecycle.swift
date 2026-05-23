@@ -179,7 +179,12 @@ extension ThreadController {
                     renderHistoryIfAvailable(sid: sid)
                     items.append(.status(id: UUID(), text: "ℹ session could not be resumed — starting fresh"))
                     let newSid = try await client.newSession(cwd: project.path)
-                    sessionId = newSid
+                    // Keep `sessionId` pinned to the original disk UUID so subsequent
+                    // hook writes append to the existing ledger and the sidebar row
+                    // merges back onto the resumed disk row instead of splitting into
+                    // a duplicate. The provider's freshly-allocated handle belongs
+                    // only in `nativeSessionId`; every ACP call site reads it as
+                    // `nativeSessionId ?? sessionId`.
                     nativeSessionId = newSid
                     hasInitialized = true
                 }
