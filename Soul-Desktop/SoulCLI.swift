@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum SoulCLIError: LocalizedError {
     case nonZeroExit(code: Int32, stderr: String)
@@ -19,8 +20,108 @@ enum SoulCLIError: LocalizedError {
 }
 
 enum SoulCLI {
+    enum Stream: Sendable {
+        case stdout(String)
+        case stderr(String)
+    }
+
     static func runMutation(_ args: [String], stdin: Data? = nil) async throws {
         _ = try await run(args, stdin: stdin)
+    }
+
+    static func runText(_ args: [String], stdin: Data? = nil, includeStderr: Bool = true) async throws -> String {
+        let result = try await runCapture(args, stdin: stdin)
+        let outText = String(data: result.stdout, encoding: .utf8) ?? ""
+        let errText = String(data: result.stderr, encoding: .utf8) ?? ""
+        guard result.status == 0 else {
+            throw SoulCLIError.nonZeroExit(code: result.status, stderr: errText)
+        }
+        guard includeStderr else { return outText }
+        if errText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return outText
+        }
+        return outText.isEmpty ? errText : outText + "\n" + errText
+    }
+
+    static func runStream(
+        _ args: [String],
+        stdin: Data? = nil,
+        onStart: (@Sendable (Int32) -> Void)? = nil,
+        onEvent: @escaping @Sendable (Stream) -> Void
+    ) async throws -> Int32 {
+        try await Task.detached(priority: .userInitiated) {
+            guard let executable = soulExecutablePath() else {
+                throw SoulCLIError.executableNotFound
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = args
+            process.environment = cliEnvironment()
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            let stdoutHandle = stdout.fileHandleForReading
+            let stderrHandle = stderr.fileHandleForReading
+
+            stdoutHandle.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+                onEvent(.stdout(text))
+            }
+            stderrHandle.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+                onEvent(.stderr(text))
+            }
+
+            if let stdin {
+                let input = Pipe()
+                process.standardInput = input
+                try process.run()
+                input.fileHandleForWriting.write(stdin)
+                try? input.fileHandleForWriting.close()
+            } else {
+                try process.run()
+            }
+            onStart?(process.processIdentifier)
+
+            process.waitUntilExit()
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
+
+            let remainingOut = stdoutHandle.readDataToEndOfFile()
+            if !remainingOut.isEmpty, let text = String(data: remainingOut, encoding: .utf8) {
+                onEvent(.stdout(text))
+            }
+            let remainingErr = stderrHandle.readDataToEndOfFile()
+            if !remainingErr.isEmpty, let text = String(data: remainingErr, encoding: .utf8) {
+                onEvent(.stderr(text))
+            }
+
+            let status = process.terminationStatus
+            if status != 0 {
+                throw SoulCLIError.nonZeroExit(
+                    code: status,
+                    stderr: String(data: remainingErr, encoding: .utf8) ?? ""
+                )
+            }
+            return status
+        }.value
+    }
+
+    static func terminateProcessTree(pid: Int32) {
+        let children = childPIDs(of: pid)
+        for child in children {
+            terminateProcessTree(pid: child)
+        }
+        Darwin.kill(pid, SIGTERM)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            Darwin.kill(pid, SIGKILL)
+        }
     }
 
     static func runJSON<T: Decodable>(_ args: [String], stdin: Data? = nil, as type: T.Type) async throws -> T {
@@ -33,6 +134,43 @@ enum SoulCLI {
 
     @discardableResult
     private static func run(_ args: [String], stdin: Data?) async throws -> Data {
+        let result = try await runCapture(args, stdin: stdin)
+        guard result.status == 0 else {
+            let message = String(data: result.stderr, encoding: .utf8) ?? ""
+            throw SoulCLIError.nonZeroExit(code: result.status, stderr: message)
+        }
+        return result.stdout
+    }
+
+    private struct Capture: Sendable {
+        var status: Int32
+        var stdout: Data
+        var stderr: Data
+    }
+
+    private static func childPIDs(of pid: Int32) -> [Int32] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-P", "\(pid)"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            return text
+                .split(whereSeparator: \.isNewline)
+                .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } catch {
+            return []
+        }
+    }
+
+    private static func runCapture(_ args: [String], stdin: Data?) async throws -> Capture {
         try await Task.detached(priority: .userInitiated) {
             guard let executable = soulExecutablePath() else {
                 throw SoulCLIError.executableNotFound
@@ -62,11 +200,7 @@ enum SoulCLI {
             let out = stdout.fileHandleForReading.readDataToEndOfFile()
             let err = stderr.fileHandleForReading.readDataToEndOfFile()
 
-            guard process.terminationStatus == 0 else {
-                let message = String(data: err, encoding: .utf8) ?? ""
-                throw SoulCLIError.nonZeroExit(code: process.terminationStatus, stderr: message)
-            }
-            return out
+            return Capture(status: process.terminationStatus, stdout: out, stderr: err)
         }.value
     }
 
@@ -100,6 +234,7 @@ enum SoulCLI {
         let home = NSHomeDirectory()
         let extras = [
             "\(home)/dotfiles/soul/bin",
+            "\(home)/dotfiles/bin",
             "\(home)/bin",
             "\(home)/.local/bin",
             "/opt/homebrew/bin",

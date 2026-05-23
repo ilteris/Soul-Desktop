@@ -269,6 +269,24 @@ struct SidebarView: View {
 
                 Spacer()
 
+                Button {
+                    UserDefaults.standard.set("controlPanel", forKey: "soul.appVersion")
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "command")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(SoulColor.fgMuted)
+                        Text("Control")
+                            .font(SoulFont.ui(14))
+                            .foregroundStyle(SoulColor.fg)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.soulHover)
+                .help("Open Control Panel")
+
+                Spacer()
+
                 buildBadge
             }
             .padding(16)

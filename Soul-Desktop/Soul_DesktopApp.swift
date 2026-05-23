@@ -35,7 +35,7 @@ struct Soul_DesktopApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppShell()
+            SoulRootView()
                 .frame(minWidth: 1000, minHeight: 700)
                 // SOUL-SOUL_DESKTOP-156: every Button without an explicit
                 // .buttonStyle override picks up hit-area expansion + press
@@ -75,11 +75,35 @@ struct Soul_DesktopApp: App {
             CommandMenu("Session") {
                 shortcutButton(.forceCompact)
             }
+            CommandMenu("App Version") {
+                Button("Control Panel") {
+                    UserDefaults.standard.set("controlPanel", forKey: "soul.appVersion")
+                }
+                .keyboardShortcut("2", modifiers: [.command, .option])
+                Button("Classic Chat") {
+                    UserDefaults.standard.set("classic", forKey: "soul.appVersion")
+                }
+                .keyboardShortcut("1", modifiers: [.command, .option])
+            }
         }
 
         Window("Typography Lab", id: "typography-lab") {
             TypographyLab()
                 .frame(minWidth: 820, minHeight: 540)
+        }
+    }
+}
+
+private struct SoulRootView: View {
+    @AppStorage("soul.appVersion") private var appVersion: String = "classic"
+
+    var body: some View {
+        Group {
+            if appVersion == "controlPanel" {
+                AppShellV2()
+            } else {
+                AppShell()
+            }
         }
     }
 }
