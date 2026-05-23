@@ -130,6 +130,12 @@ private func enrichedEnvironment() -> [String: String] {
         // Soul OS kernel CLI — lets spawned agents call `soul pulse`,
         // `soul task ...`, and friends without a PATH miss.
         "\(home)/dotfiles/soul/bin",
+        // User's personal bin in dotfiles. Hosts the `gemini` wrapper that
+        // execs `node $HOME/Code/gemini-cli/.../index.js`, plus other
+        // per-user binaries. Spawned kernel scripts (`soul delegate
+        // --provider gemini` in particular) look up `gemini` via PATH and
+        // would otherwise re-route to Claude with "binary not available".
+        "\(home)/dotfiles/bin",
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
         "/usr/local/bin",
@@ -216,8 +222,13 @@ private func whichUncached(_ tool: String) -> String? {
             return candidate
         }
     }
+    // `command -v` returns a shell function's name (not a path) when the tool
+    // is shadowed by a lazy-load wrapper (nvm's `node()` is the canonical
+    // example). `whence -p` (zsh) and `type -p` (bash) skip functions and
+    // aliases and emit only the binary path, so we try those first and only
+    // fall back to `command -v` for non-zsh/bash shells.
     if let shellPath = loginShellPath(),
-       let resolved = runLoginShell(command: "command -v \(tool)", shell: shellPath)?
+       let resolved = runLoginShell(command: "whence -p \(tool) 2>/dev/null || type -p \(tool) 2>/dev/null || command -v \(tool)", shell: shellPath)?
         .trimmingCharacters(in: .whitespacesAndNewlines),
        !resolved.isEmpty,
        FileManager.default.isExecutableFile(atPath: resolved) {
