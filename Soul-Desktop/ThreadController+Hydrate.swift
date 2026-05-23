@@ -70,7 +70,24 @@ extension ThreadController {
             let lookupId = r.nativeId ?? sid
             switch prov {
             case .claude:
-                r.history = ClaudeTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
+                // SOUL-LEDGER-FIRST: prefer the kernel hooks ledger over
+                // ~/.claude/projects/<sid>.jsonl. The provider transcript
+                // skips assistant text blocks for tool_use-only turns
+                // (5 AfterAgent rows on disk, only 2 text blocks in the
+                // transcript → canvas looked partial). The kernel ledger
+                // captures every UserPrompt + AfterAgent in full. Fall
+                // back to the provider transcript only when the ledger
+                // doesn't carry both kinds (terminal-origin sessions that
+                // pre-date the writer or sessions hit by the SOUL-254
+                // payload-drop class).
+                let ledger = HooksReader.events(forSession: sid, project: proj).map { $0.item }
+                let hasUser = ledger.contains { if case .userMessage = $0 { return true } else { return false } }
+                let hasAgent = ledger.contains { if case .agentMessage = $0 { return true } else { return false } }
+                if hasUser && hasAgent {
+                    r.history = ledger
+                } else {
+                    r.history = ClaudeTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
+                }
             case .geminiCLI:
                 r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
             case .pi:

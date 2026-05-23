@@ -232,7 +232,11 @@ extension SoulRegistry {
             return hasConversation
         }
 
-        return hasConversation || title?.isEmpty == false
+        // Contract: live rows without accepted turn content are not user
+        // conversations. A Title or NativeSessionID hook can arrive from
+        // provider/session bootstrap before any UserPrompt is durable; showing
+        // that as "New chat" masks a prompt-loss bug as a real session.
+        return hasConversation
     }
 
     /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
@@ -377,6 +381,14 @@ extension SoulRegistry {
                 s.startedAt = meta.firstEventTimestamp
                 if let last = meta.lastEventTimestamp {
                     s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, last)
+                }
+                // Sort key = actual session start (first ledger event), not
+                // finalize-time / file-mtime. Without this, regenerating a
+                // preamble or re-saving finalize JSON on an old session
+                // bumps it above newer rows in the sidebar. firstEventTimestamp
+                // is monotonic per session, so the row pins to its true origin.
+                if let started = meta.firstEventTimestamp {
+                    s.timestamp = started
                 }
             }
 

@@ -462,6 +462,7 @@ extension ThreadController {
                 || normalizedToolName.hasSuffix("_delegate_to_specialist")
                 || normalizedToolName.contains("delegate_to_specialist")
                 || rawKind == "delegate_to_specialist"
+            let delegateCommand = SpecialistPalette.parseDelegateCommand(command.isEmpty ? rawTitle : command)
             // Claude Code's `Agent` tool (the SDK's old `Task` tool — both
             // shapes have been observed in the wild). Distinct from Soul's
             // `delegate_to_specialist`: no live.log, no kernel subagent dir.
@@ -507,16 +508,19 @@ extension ThreadController {
                     startLine: nil
                 )
             }
-            if isDelegateTool || directSpecialist != nil {
+            if isDelegateTool || directSpecialist != nil || delegateCommand != nil {
+                let outputText = extractContentText(from: payload)
                 let specialist = rawInput?["specialist"]?.stringValue
                     ?? payload["specialist"]?.stringValue
                     ?? directSpecialist
+                    ?? delegateCommand?.specialist
                     ?? "specialist"
                 let objective = rawInput?["task"]?.stringValue
                     ?? rawInput?["objective"]?.stringValue
                     ?? rawInput?["query"]?.stringValue
                     ?? payload["task"]?.stringValue
                     ?? payload["query"]?.stringValue
+                    ?? delegateCommand?.objective
                     ?? ""
                 // Server-resolved color from agent frontmatter — parsed as a hex
                 // string ("#RRGGBB" or "RRGGBB") from the tool metadata. Optional;
@@ -534,7 +538,7 @@ extension ThreadController {
                     kind: .subagent(
                         specialist: specialist,
                         objective: objective,
-                        subagentId: toolId,
+                        subagentId: SpecialistPalette.parseDelegationId(from: outputText) ?? toolId,
                         colorHex: colorHex,
                         findingPath: findingPath
                     ),

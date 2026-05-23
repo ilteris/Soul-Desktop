@@ -370,12 +370,26 @@ enum HooksReader {
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return [] }
 
-        var out: [ReplayEvent] = []
+        var records: [(Date, [String: Any])] = []
         for line in blob.split(separator: "\n") {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             guard let ts = parseTimestamp(obj["timestamp"] as? String) else { continue }
+            records.append((ts, obj))
+        }
+
+        var completedDelegations: [String: [String: Any]] = [:]
+        for (_, obj) in records {
+            let event = (obj["event"] as? String) ?? ""
+            guard event == "DelegationCompleted" || event == "DelegationFailed",
+                  let id = obj["delegation_id"] as? String,
+                  !id.isEmpty else { continue }
+            completedDelegations[id] = obj
+        }
+
+        var out: [ReplayEvent] = []
+        for (ts, obj) in records {
             let event = (obj["event"] as? String) ?? ""
 
             switch event {
@@ -444,6 +458,12 @@ enum HooksReader {
                         )
                     ))
                 }
+            case "DelegationStarted":
+                if let item = delegationItem(from: obj, completed: completedDelegations[obj["delegation_id"] as? String ?? ""]) {
+                    out.append(ReplayEvent(id: UUID(), timestamp: ts, item: item))
+                }
+            case "DelegationCompleted", "DelegationFailed":
+                continue
             case "CodexApproval":
                 let op = obj["op"] as? String ?? "APPROVAL"
                 let intent = obj["intent"] as? String ?? "Codex command approval handled"
@@ -469,6 +489,52 @@ enum HooksReader {
             }
         }
         return out
+    }
+
+    private static func delegationItem(from obj: [String: Any], completed: [String: Any]?) -> ThreadItem? {
+        let delegationId = (obj["delegation_id"] as? String) ?? ""
+        let specialist = (obj["specialist"] as? String) ?? "specialist"
+        let objective = (obj["objective"] as? String)
+            ?? (obj["task"] as? String)
+            ?? ""
+        guard !delegationId.isEmpty else { return nil }
+
+        let status: String = {
+            switch completed?["event"] as? String {
+            case "DelegationCompleted": return "completed"
+            case "DelegationFailed": return "failed"
+            default: return "in_progress"
+            }
+        }()
+        let findingPath = (completed?["finding_path"] as? String)
+            ?? (obj["finding_path"] as? String)
+        let colorHex = parseHexColor((completed?["color"] as? String) ?? (obj["color"] as? String))
+        let title = "@\(specialist)"
+
+        return .toolCall(
+            id: UUID(),
+            kind: "delegate",
+            title: title,
+            status: status,
+            locationHint: objective,
+            details: ToolCallDetails(
+                kind: .subagent(
+                    specialist: specialist,
+                    objective: objective,
+                    subagentId: delegationId,
+                    colorHex: colorHex,
+                    findingPath: findingPath
+                )
+            )
+        )
+    }
+
+    private static func parseHexColor(_ raw: String?) -> UInt32? {
+        guard var raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw.hasPrefix("#") { raw.removeFirst() }
+        return UInt32(raw, radix: 16)
     }
 
     private static func toolItem(from obj: [String: Any]) -> ThreadItem? {
