@@ -76,13 +76,23 @@ extension SidebarView {
             // means the next launch shows the right number immediately.
             recomputePersistedSessionCounts()
         }
-        // Refresh any project the user already had expanded from a prior
-        // launch so freshly-changed sessions get re-rendered (cache may
-        // have been invalidated above, in which case loadProject does the
-        // full disk scan). No auto-expansion at startup — every project
-        // starts collapsed unless the user has explicitly opened it.
-        for p in projs where isExpanded(p.id) {
-            await loadProject(p.id)
+        // Refresh expanded projects in parallel and don't block reload()
+        // on them — the sidebar already painted from `primed` cache above.
+        // Each loadProject is a single `soul session list --json` shell-out
+        // (~500-700ms); sequentially that scales with project count
+        // (SOUL-SOUL_DESKTOP-263 made every project a CLI hop). Fire them
+        // in a TaskGroup so cold launch is bounded by max(times), not sum,
+        // and detach the whole batch so the caller (AppShell on appear)
+        // doesn't wait. RegistryWatcher will catch any in-flight mutations.
+        let expanded = projs.filter { isExpanded($0.id) }
+        if !expanded.isEmpty {
+            Task { [expanded] in
+                await withTaskGroup(of: Void.self) { group in
+                    for p in expanded {
+                        group.addTask { await self.loadProject(p.id) }
+                    }
+                }
+            }
         }
         await reloadSessions()
     }
@@ -92,73 +102,61 @@ extension SidebarView {
     /// already carries `substantive`/`loadable`/`replayable` flags so the
     /// sidebar doesn't have to re-check disk.
     ///
-    /// SOUL-SOUL_DESKTOP-145: two-stage to match the render-time pagination.
-    /// Stage 1 scans the most-recent `sessionPageSize` (20) sessions for
-    /// fast initial paint. Stage 2 runs the full 100-session scan in the
-    /// background and replaces sessionsByProject when ready. For projects
-    /// with hundreds of sessions (Soul OS at 111), users see rows in tens
-    /// of ms instead of hundreds.
+    /// Single-pass project scan. The kernel's `readHooksMetadata` is a
+    /// binary-needle + bounded-JSON walk that finishes a couple-hundred-
+    /// session project in low-millisecond range, so the old "Stage 1: 20
+    /// rows, Stage 2: full list" split (-145 / -229) is no longer needed.
+    /// One scan → one assignment → one badge recompute.
+    ///
+    /// SOUL-SOUL_DESKTOP-234 lives on as the 5s TTL gate: browser-style
+    /// project switching with ⌘[/⌘] could otherwise fire a full disk walk
+    /// per visit. RegistryWatcher keeps the currently-selected project
+    /// fresh; revisits within 5s skip the redundant scan.
     func loadProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId })
             ?? registryStore.activeProjects().first(where: { $0.id == projectId })
         else { return }
 
-        // Stage 1: fast scan, bounded to the page size we'll actually render.
-        //
-        // SOUL-SOUL_DESKTOP-229: stage 1 exists to give a brand-new project
-        // a fast first paint. If `sessionsByProject[projectId]` is already
-        // populated (e.g. -149 prime at launch loaded the on-disk cache,
-        // or a previous loadProject finished), overwriting it with just
-        // the 20-row quick scan visibly shrinks the project's header
-        // chatCount badge until stage 2 restores it ~1-2s later. That's
-        // what users were seeing on session click: clicking a session in
-        // an already-warm project flips `activeProjectId` → fires this
-        // function → stage 1 truncates the 67-row warm cache to 20. Gate
-        // the stage-1 assignment to fresh projects only.
-        let alreadyWarm = (sessionsByProject[projectId]?.isEmpty == false)
-        if !alreadyWarm {
-            let quickLimit = sessionPageSize
-            let quickRows: [SoulSession] = await Task.detached(priority: .userInitiated) {
-                registryStore.allSessions(forProject: project.id, limit: quickLimit, projectPath: project.path)
-            }.value
-            await MainActor.run {
-                if !quickRows.isEmpty, (self.sessionsByProject[projectId]?.isEmpty ?? true) {
-                    self.sessionsByProject[projectId] = quickRows
-                }
-            }
+        // INSTANT PAINT: always paint from the disk cache the moment we're
+        // asked to load a project. We accept stale data here — a busy
+        // project's dir mtime ticks on every hook write, so the strict
+        // `cachedSessions` (mtime-validated) would miss often. Stale rows
+        // are fine for the millisecond between click and CLI completion;
+        // freshness is restored when the refresh below lands.
+        if self.sessionsByProject[projectId] == nil,
+           let stale = registryStore.cachedSessionsStaleOK(forProject: projectId),
+           !stale.isEmpty {
+            self.sessionsByProject[projectId] = stale
+            recomputePersistedSessionCounts()
         }
 
-        // SOUL-SOUL_DESKTOP-234: TTL gate on stage-2 scans. Browser-style
-        // ⌘[/⌘] navigation can switch projects multiple times per second.
-        // Every switch was firing a 100-session disk walk per visit, even
-        // when the project's rows were already in `sessionsByProject` from
-        // a scan moments ago. Skip stage 2 if the project was fully
-        // scanned within the last 5s — RegistryWatcher already keeps the
-        // currently selected project fresh; revisits to recent projects
-        // see no real disk churn worth re-walking.
-        if alreadyWarm,
-           let last = projectLastFullScanAt[projectId],
+        // Skip the CLI scan if the strict cache is fresh (in-memory or
+        // disk-stamp-validated). RegistryWatcher invalidates this via
+        // fsevents the moment the dir actually changes, so freshness
+        // is preserved without paying for a CLI hop every click.
+        if registryStore.cachedSessions(forProject: projectId) != nil {
+            projectLastFullScanAt[projectId] = Date()
+            return
+        }
+
+        if let last = projectLastFullScanAt[projectId],
            Date().timeIntervalSince(last) < 5 {
             return
         }
         projectLastFullScanAt[projectId] = Date()
 
-        // Stage 2: full scan in background. The default limit (100) covers
-        // the "Show more" expanded case. Warm the cache so subsequent
-        // reloadSessions paint-instant paths see the full list.
-        let fullRows: [SoulSession] = await Task.detached(priority: .background) {
+        let rows: [SoulSession] = await Task.detached(priority: .userInitiated) {
             let r = registryStore.allSessions(forProject: project.id, projectPath: project.path)
             registryStore.warmCache(forProject: project.id, sessions: r)
             return r
         }.value
         await MainActor.run {
-            // Preserve previous rows on empty (defensive against transient
-            // disk-read churn). A genuinely empty project gets cleared
-            // elsewhere when its row count is known to be zero.
-            if !fullRows.isEmpty {
-                self.sessionsByProject[projectId] = fullRows
-                recomputePersistedSessionCounts()
-            }
+            // Defensive: a transient empty read shouldn't blank the cache.
+            // A genuinely-empty project gets cleared elsewhere when the
+            // row count is known to be zero.
+            guard !rows.isEmpty else { return }
+            self.sessionsByProject[projectId] = rows
+            recomputePersistedSessionCounts()
         }
     }
 

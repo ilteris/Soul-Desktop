@@ -5,6 +5,10 @@ protocol SoulRegistryStore: Sendable {
     func activeProjects() -> [SoulProject]
     func sessionCount(forProject projectKey: String) -> Int
     func cachedSessions(forProject projectKey: String) -> [SoulSession]?
+    /// "Show me anything, even if stale." Used to paint the moment a
+    /// project is clicked so the user never sees a blank sidebar on a
+    /// busy project whose dir mtime ticks invalidate the strict cache.
+    func cachedSessionsStaleOK(forProject projectKey: String) -> [SoulSession]?
     func allSessions(forProject projectKey: String, limit: Int?, projectPath: String?) -> [SoulSession]
     func warmCache(forProject projectKey: String, sessions: [SoulSession])
     func invalidateCache(forProject projectKey: String)
@@ -90,6 +94,10 @@ final class LiveSoulRegistryStore: SoulRegistryStore, @unchecked Sendable {
 
     func cachedSessions(forProject projectKey: String) -> [SoulSession]? {
         SoulRegistry.cachedSessions(forProject: projectKey)
+    }
+
+    func cachedSessionsStaleOK(forProject projectKey: String) -> [SoulSession]? {
+        SoulRegistry.cachedSessionsStaleOK(forProject: projectKey)
     }
 
     func allSessions(forProject projectKey: String, limit: Int?, projectPath: String?) -> [SoulSession] {

@@ -73,10 +73,26 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// the kernel ledger, so finalized rows whose provider transcript has
     /// rotated out are still replay-able.
     var replayable: Bool = true
-    /// True iff this row reflects a real conversation (finalized with
-    /// summary, or live with ≥ 4 hook events or a UserPrompt). Used to drop
-    /// crash residue without an age heuristic.
-    var substantive: Bool = true
+    /// `"machine"` if the writer stamped this as a non-user session
+    /// (title generation, subagent, finalize summary). Read by the sidebar
+    /// visibility policy as the primary "hide from humans" signal.
+    var sessionVisibility: String? = nil
+    /// Count of `Delegation{Started,Completed,Failed}` events. The visibility
+    /// policy subtracts these from `eventCount` so delegation-only stub
+    /// sessions don't look like real conversations.
+    var delegationEventCount: Int = 0
+    /// Parent PID stamped on SESSION_START. `1` (launchd) + no prompts =
+    /// daemon residue, suppressed.
+    var sessionStartPpid: Int? = nil
+    /// True iff a `<uuid>.json` (or timestamp-prefixed equivalent) sits on
+    /// disk for this id. Distinguishes finalized rows from live ledgers in
+    /// the visibility policy.
+    var hasFinalize: Bool = false
+    /// True when the session has UserPrompt events but no AfterAgent events.
+    /// Set by the partial-capture backfill (`SessionMeta { partial_capture:
+    /// true }`) and by the live binary scan. Drives a muted "prompts only"
+    /// subtitle in the sidebar so the user knows the row will load thin.
+    var partialCapture: Bool = false
     /// Most recent observed activity. Kept separate from `timestamp` so
     /// sidebar rows can display freshness without reordering on every write.
     var lastActivityAt: Date? = nil
@@ -177,6 +193,38 @@ enum SoulRegistry {
         return nil
     }
 
+    /// "Show me anything you have, even if stale." Used by the sidebar to
+    /// paint the moment a project is clicked — we'd rather show 2-minute-old
+    /// data instantly than make the user wait for a fresh CLI scan on a busy
+    /// project whose dir mtime ticks on every hook write. The caller is
+    /// expected to also kick off a refresh; this is just the "paint now"
+    /// side of the contract.
+    static func cachedSessionsStaleOK(forProject key: String) -> [SoulSession]? {
+        // In-memory cache wins regardless of stamp — it's at most one scan
+        // out of date and reflects what we last saw with our own eyes.
+        cacheLock.lock()
+        if let hit = cache[key] {
+            cacheLock.unlock()
+            return hit.sessions
+        }
+        cacheLock.unlock()
+        // Fall through to disk cache, ignoring the stamp mismatch. If the
+        // schema decodes, the data is renderable — every field is optional
+        // or has a default.
+        let path = diskCachePath(forProject: key)
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        guard let env = try? dec.decode(DiskCacheEnvelope.self, from: data) else { return nil }
+        // Warm in-memory so subsequent reads don't re-decode the file.
+        // Use the on-disk stamp so a true fresh scan can still spot the
+        // mismatch and overwrite us.
+        cacheLock.lock()
+        cache[key] = ProjectCache(dirMtime: Date(timeIntervalSince1970: env.stamp), sessions: env.sessions)
+        cacheLock.unlock()
+        return env.sessions
+    }
+
     static func warmCache(forProject key: String, sessions: [SoulSession]) {
         let m = projectStamp(key: key)
         cacheLock.lock()
@@ -259,25 +307,35 @@ enum SoulRegistry {
     // MARK: - Projects
 
     static func projects() -> [SoulProject] {
-        let url = URL(fileURLWithPath: "\(soulPath)/config/PROJECTS.json")
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let dict = json["projects"] as? [String: [String: Any]]
-        else { return [] }
-
-        let mapped = dict.map { (key, val) in
-            SoulProject(
-                id: key,
-                name: val["name"] as? String ?? key,
-                path: expand(val["path"] as? String ?? ""),
-                pillar: val["pillar"] as? String,
-                tier: val["tier"] as? Int,
-                status: val["status"] as? String,
-                primaryHost: val["primary_host"] as? String,
-                devCommand: val["dev_command"] as? String,
-                devURL: val["dev_url"] as? String
-            )
-        }
+        // Source of truth: `soul project list` (kernel CLI). Direct read of
+        // ~/dotfiles/soul/config/PROJECTS.json was retired in
+        // SOUL-SOUL_DESKTOP-261 so the desktop and kernel can't drift on the
+        // project-manifest schema. The CLI emits JSONL (one project per
+        // line). On failure (CLI missing, non-zero exit) we return [] so
+        // the sidebar shows empty rather than rendering stale state.
+        guard let data = SoulCLI.runSync(["project", "list"]) else { return [] }
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let mapped: [SoulProject] = text
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty,
+                      let lineData = trimmed.data(using: .utf8),
+                      let val = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                      let key = val["_key"] as? String
+                else { return nil }
+                return SoulProject(
+                    id: key,
+                    name: val["name"] as? String ?? key,
+                    path: expand(val["path"] as? String ?? ""),
+                    pillar: val["pillar"] as? String,
+                    tier: val["tier"] as? Int,
+                    status: val["status"] as? String,
+                    primaryHost: val["primary_host"] as? String,
+                    devCommand: val["dev_command"] as? String,
+                    devURL: val["dev_url"] as? String
+                )
+            }
 
         // Sort by recency: most-recently-active project first. Activity is
         // measured at the sessions/<project>/ directory mtime — APFS bumps
@@ -840,7 +898,27 @@ enum SoulRegistry {
         return nil
     }
 
+    /// SOUL-SOUL_DESKTOP-263: thin wrapper over `soul session show <sid> --json`.
+    /// One CLI hop replaces three separate hooks.jsonl walks (findTitle /
+    /// findNativeSessionID / latestFinalize). Returns nil on CLI failure
+    /// (executable missing, non-zero exit, decode error) — callers degrade
+    /// individually rather than treating CLI failure as "session has no
+    /// title", which would mis-render the canvas.
+    static func sessionShow(projectKey: String, sessionId: String) -> SessionListPayload.Record? {
+        guard let data = SoulCLI.runSync(["session", "show", sessionId, "-p", projectKey, "--json"]) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(SessionListPayload.Record.self, from: data)
+    }
+
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {
+        // HOT PATH — called from AppShell.body via ContextUsage.compute on
+        // every body re-eval. Stays direct-disk because shelling out to the
+        // CLI here would (a) block the main actor for ~100ms per body
+        // tick and (b) trigger SwiftUI's "may not be accessed during view
+        // updates" crash on downstream ScrollViewProxy access. SOUL-SOUL_DESKTOP-263
+        // keeps `soul session show` as the canonical CLI surface; this
+        // helper consumes the same on-disk JSONL via a tight binary scan.
         let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
@@ -852,15 +930,6 @@ enum SoulRegistry {
                   (obj["event"] as? String) == "NativeSessionID",
                   provider == nil || (obj["provider"] as? String) == provider
             else { continue }
-            // Accept both spellings: `nativeId` (camelCase, written by
-            // ThreadController+Lifecycle on fresh-session and by codex
-            // spawnAndInitializeCodex) and `native_session_id` (snake_case,
-            // written by kernel CLI hooks on the agent side). They've co-
-            // existed since the very first NativeSessionID hook and the
-            // mismatch silently broke the kernel-sid → native-id resume
-            // path: findNativeSessionID always returned nil for desktop-
-            // authored sessions, so ensureSession never took the resume
-            // branch even when a valid native UUID was on disk.
             if let nid = obj["nativeId"] as? String { return nid }
             return obj["native_session_id"] as? String
         }
@@ -887,22 +956,10 @@ enum SoulRegistry {
     }
 
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
-        // SOUL-SOUL_DESKTOP-100: trace each step of the finalize lookup.
+        // HOT PATH — see findNativeSessionID. Direct disk scan.
         let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
         let dirs = projectSessionDirs(projectKey)
         let fm = FileManager.default
-        // SOUL-IDENTITY-SPLIT: when a session has been finalized multiple
-        // times, the kernel writes a timestamped sibling like
-        // `<ISO>_<sid>.json` per finalize. The previous loop broke on the
-        // FIRST match in directory-enumeration order — alphabetical on
-        // macOS — which meant older finalize JSONs sorted first and
-        // shadowed newer ones. Re-finalizing then never updated the
-        // FinalizeCard because `latestFinalize` kept returning the May
-        // 14 file even after a May 21 one landed. Collect every match
-        // and sort by name DESC: timestamp prefixes sort lex-correctly,
-        // and bare `<sid>.json` sorts after timestamped siblings (no
-        // leading digit prefix) so it only wins when nothing else
-        // matches.
         var candidates: [(dir: String, name: String)] = []
         for dir in dirs {
             guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
@@ -946,13 +1003,13 @@ enum SoulRegistry {
     }
 
     static func findTitle(projectKey: String, sessionId: String) -> String? {
+        // HOT PATH — see findNativeSessionID. Direct disk scan.
         let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path),
               let blob = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
-        let lines = blob.split(separator: "\n", omittingEmptySubsequences: true)
         var latest: String? = nil
-        for line in lines {
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   (obj["event"] as? String) == "Title",

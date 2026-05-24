@@ -154,7 +154,13 @@ if isActiveReplay {
     /// than wall-clock duration — a 16h session that's just sitting open
     /// shouldn't look more substantial than a 30-minute 20-turn deep dive.
     private func metaLine(_ session: SoulSession) -> String {
-        let ago = relative(session.lastActivityAt ?? session.timestamp)
+        // Session-start time, not last-activity. Sidebar row stamps are
+        // about "when did this conversation begin", not "when was the
+        // hooks file last touched" — which can bump for non-conversation
+        // reasons (preamble regen, finalize JSON rewrite, etc.). Falls
+        // back to `timestamp` (the pinned sort key) when no first-hook
+        // event is recorded.
+        let ago = relative(session.startedAt ?? session.timestamp)
         // Pick the larger of the two counts. Either source can be partial:
         // - kernel hooks (`promptCount`) under-counts terminal-origin or
         //   SOUL-247 payload-drop sessions

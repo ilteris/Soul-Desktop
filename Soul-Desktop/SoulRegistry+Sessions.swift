@@ -11,7 +11,62 @@ import Foundation
 /// Pure file shuffle, no behavior change. Refactor 16/N — agent
 /// ergonomics: shrink SoulRegistry.swift below the threshold where
 /// a coding agent can hold it in context.
+/// Decodable for the `soul session list -p <key> --json` payload. Mirrors
+/// the canonical kernel response (see ~/dotfiles/soul/kernel/commands/soul_session_view.py).
+/// SOUL-SOUL_DESKTOP-263.
+struct SessionListPayload: Decodable {
+    var project: String
+    var sessions: [Record]
+
+    struct Record: Decodable {
+        var session_id: String
+        var session_dir: String?
+        var hooks_path: String?
+        var hooks_mtime: Double?
+        var finalize_path: String?
+        var finalize_mtime: Double?
+        var has_finalize: Bool?
+        var event_count: Int?
+        var prompt_count: Int?
+        var delegation_event_count: Int?
+        var first_event_ts: String?
+        var last_event_ts: String?
+        var first_user_prompt: String?
+        var title: String?
+        var worktree_path: String?
+        var session_start_ppid: Int?
+        var session_visibility: String?
+        var session_kind: String?
+        var has_desktop_signature: Bool?
+        var partial_capture: Bool?
+        var native_session_ids: [String: String]?
+        var finalize: Finalize?
+
+        struct Finalize: Decodable {
+            var intent: String?
+            var summary: String?
+            var rationale: String?
+            var fixed: String?
+            var next_step: String?
+            var timestamp: String?
+            var source: String?
+            var status: String?
+            var worktree_path: String?
+        }
+    }
+}
+
 extension SoulRegistry {
+
+    /// Single shell-out to `soul session list -p <key> --json`. Returns nil
+    /// on CLI failure (executable missing, non-zero exit, decode error) —
+    /// callers degrade to empty. SOUL-SOUL_DESKTOP-263.
+    static func loadSessionListPayload(projectKey: String) -> SessionListPayload? {
+        guard let data = SoulCLI.runSync(["session", "list", "-p", projectKey, "--json"]) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(SessionListPayload.self, from: data)
+    }
 
     // MARK: - Sessions
 
@@ -47,6 +102,14 @@ extension SoulRegistry {
     private struct HooksMetadata {
         var eventCount: Int = 0
         var promptCount: Int = 0
+        /// Count of `Delegation{Started,Completed,Failed}` events. These get
+        /// written under a parent session id by `soul_subagent.py` and can
+        /// land in a session that has no UserPrompt of its own — leaving a
+        /// phantom "New chat" row whose only content is "delegate ×2" from
+        /// the user's perspective. Subtract from eventCount when deciding
+        /// sidebar visibility so the heuristic doesn't mistake delegation
+        /// scaffolding for real conversation.
+        var delegationEventCount: Int = 0
         var worktreePath: String? = nil
         var firstUserPrompt: String? = nil
         var titleHook: String? = nil
@@ -68,6 +131,10 @@ extension SoulRegistry {
         /// it from the human sidebar.
         var sessionVisibility: String? = nil
         var sessionKind: String? = nil
+        /// True when UserPrompt > 0 but AfterAgent == 0 — model output never
+        /// reached the ledger. Either the explicit `SessionMeta { partial_capture:
+        /// true }` backfill stamp landed, or the live binary scan derived it.
+        var partialCapture: Bool = false
     }
 
     private static func readHooksMetadata(path: String) -> HooksMetadata {
@@ -83,9 +150,37 @@ extension SoulRegistry {
         else if meta.eventCount == 0 && !data.isEmpty { meta.eventCount = 1 }
 
         // 2. promptCount: Fast binary scan for event markers.
-        let userPromptNeedle = Data("\"event\":\"UserPrompt\"".utf8)
-        let userMessageNeedle = Data("\"event\":\"UserMessage\"".utf8)
-        meta.promptCount = countNeedle(userPromptNeedle, in: data) + countNeedle(userMessageNeedle, in: data)
+        //    Match both `"event":"X"` (Swift JSONEncoder, no whitespace) and
+        //    `"event": "X"` (Python json.dumps default, space after colon).
+        //    Different writers across the kernel emit one or the other; if
+        //    the scanner only matched one variant it would silently miss
+        //    every event in the other.
+        func countEvent(_ name: String) -> Int {
+            let tight = Data("\"event\":\"\(name)\"".utf8)
+            let spaced = Data("\"event\": \"\(name)\"".utf8)
+            return countNeedle(tight, in: data) + countNeedle(spaced, in: data)
+        }
+        meta.promptCount = countEvent("UserPrompt") + countEvent("UserMessage")
+        meta.delegationEventCount =
+            countEvent("DelegationStarted") +
+            countEvent("DelegationCompleted") +
+            countEvent("DelegationFailed")
+
+        // 2b. partialCapture: explicit stamp from /tmp/audit_partial_capture.py
+        //     wins, otherwise derive from "UserPrompt > 0 AND AfterAgent == 0".
+        //     AfterModel is treated as a hit too because some providers
+        //     persist via that event name instead.
+        let partialTight = Data("\"partial_capture\":true".utf8)
+        let partialSpaced = Data("\"partial_capture\": true".utf8)
+        if countNeedle(partialTight, in: data) + countNeedle(partialSpaced, in: data) > 0 {
+            meta.partialCapture = true
+        } else if meta.promptCount > 0 {
+            let afterAgent = countEvent("AfterAgent")
+            let afterModel = countEvent("AfterModel")
+            if afterAgent + afterModel == 0 {
+                meta.partialCapture = true
+            }
+        }
 
         // 3. Head metadata: parse first 64KB for title, worktree, start-ppid.
         let maxHead = min(data.count, 64 * 1024)
@@ -120,6 +215,16 @@ extension SoulRegistry {
                        let nid = obj["native_session_id"] as? String {
                         meta.nativeSessionIDs[prov] = nid
                     }
+                    meta.hasDesktopSignature = true
+                }
+                // SOUL-OWNERSHIP-MARKER: SessionOwner is written synchronously
+                // by ThreadController.assignSessionId BEFORE any async work,
+                // so it survives mid-session crashes that happen before the
+                // first agent response (and therefore before NativeSessionID/
+                // Title would land). Closes the "Session is running elsewhere"
+                // false positive class on crashed desktop sessions.
+                if event == "SessionOwner",
+                   (obj["writer"] as? String) == "soul-desktop" {
                     meta.hasDesktopSignature = true
                 }
                 if event == "SESSION_START" || event == "AfterTool" || event == "AfterAgent" || event == "AfterModel" {
@@ -198,49 +303,10 @@ extension SoulRegistry {
         return n
     }
 
-    private static func isSidebarControlTitle(_ raw: String?) -> Bool {
-        guard let title = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
-            return false
-        }
-        let upper = title.uppercased()
-        if upper.hasPrefix("ACT AS @") { return true }
-        if upper.hasPrefix("ACT AS ") { return true }
-        if upper.hasPrefix("PRODUCE A CONCISE 3-5 WORD TITLE FOR THE FOLLOWING CHAT") { return true }
-        if title.hasPrefix("<prior_session_context>") { return true }
-        if title.hasPrefix("</prior_session_context>") { return true }
-        return false
-    }
-
-    private static func isUserVisibleSidebarSession(
-        hasFinalize: Bool,
-        title: String?,
-        promptCount: Int,
-        transcriptTurns: Int,
-        eventCount: Int,
-        sessionStartPpid: Int?,
-        sessionVisibility: String?
-    ) -> Bool {
-        if sessionVisibility == "machine" { return false }
-        if isSidebarControlTitle(title) { return false }
-
-        // Launchd-started rows with no prompts are daemon residue, not chats.
-        if !hasFinalize, sessionStartPpid == 1, promptCount == 0 {
-            return false
-        }
-
-        // Administrative summaries are useful to agents, but a finalize JSON
-        // alone should not become a human-visible conversation row.
-        let hasConversation = promptCount > 0 || transcriptTurns > 0 || eventCount >= 4
-        if hasFinalize {
-            return hasConversation
-        }
-
-        // Contract: live rows without accepted turn content are not user
-        // conversations. A Title or NativeSessionID hook can arrive from
-        // provider/session bootstrap before any UserPrompt is durable; showing
-        // that as "New chat" masks a prompt-loss bug as a real session.
-        return hasConversation
-    }
+    // Visibility policy retired from this file — see SidebarVisibilityPolicy.swift
+    // for the single decision site. The historical `isUserVisibleSidebarSession`
+    // and `isSidebarControlTitle` were duplicated across allSessions /
+    // mergedChatList / filteredChatCount; consolidated into one type.
 
     /// Per-scan cache of gemini chat-dir listings + a first-8-char reverse
     /// index that maps `<first8>` → `(chatsDir, filename, isResumable)`.
@@ -273,67 +339,70 @@ extension SoulRegistry {
         }
     }
 
-    static func allSessions(forProject key: String, limit: Int = 100, projectPath: String? = nil) -> [SoulSession] {
-        let fm = FileManager.default
+    /// Returns every session row for the project, sorted newest-first by
+    /// `timestamp` (== `firstEventTimestamp` from the kernel ledger).
+    ///
+    /// The `limit` parameter is honored only when explicitly passed — Stage 1
+    /// loading in `SidebarView+Loading` uses `limit = sessionPageSize (20)`
+    /// for a fast first paint. Stage 2 and all badge/full-list consumers
+    /// pass no argument so the full list is returned.
+    ///
+    /// Default was previously `100`, which silently truncated older genuine
+    /// chats out of `sessionsByProject` once a project accumulated >100
+    /// candidate sessions (Soul OS hit ~210 because every chat spawns a
+    /// title-generation machine session, plus delegate/preamble/finalize
+    /// kernel sessions). The render layer already paginates via
+    /// `sessionPageSize`, so a load-time limit just hid rows from the badge
+    /// and "Show N more" expander.
+    static func allSessions(forProject key: String, limit: Int = .max, projectPath: String? = nil) -> [SoulSession] {
+        // Single source of truth: `soul session list -p <key> --json` (kernel
+        // CLI). The directory walk + hooks.jsonl needle scan + finalize JSON
+        // read are now done server-side in soul_session_view.py. Soul-Desktop
+        // only handles what the kernel doesn't own:
+        //   - Provider transcript probes (loadable, transcriptTurns,
+        //     liveProvider) — those touch ~/.claude/, ~/.gemini/, ~/.pi/
+        //     which are provider artifacts, not kernel state.
+        //   - The is-dirty / is-stale / sort-key derivation that depends
+        //     on session-row UI semantics rather than ledger truth.
+        // SOUL-SOUL_DESKTOP-263.
+        guard let payload = loadSessionListPayload(projectKey: key) else { return [] }
 
         struct Shape {
-            var finalizeName: String?
             var finalizePath: String?
-            var sessionDir: String?
             var hooksPath: String?
             var jsonMtime: Date?
             var hooksMtime: Date?
+            var sessionDir: String?
         }
-        var shapes: [String: Shape] = [:]
-        for dir in projectSessionDirs(key) {
-            guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for name in entries {
-                if name.hasSuffix(".json") {
-                    let stem = String(name.dropLast(5))
-                    let id: String? = {
-                        if UUID(uuidString: stem) != nil { return stem }
-                        if let tail = stem.split(separator: "_").last, UUID(uuidString: String(tail)) != nil {
-                            return String(tail)
-                        }
-                        return nil
-                    }()
-                    guard let id else { continue }
-                    let path = "\(dir)/\(name)"
-                    let m = mtime(path)
-                    var s = shapes[id] ?? Shape()
-                    if s.jsonMtime.map({ m > $0 }) ?? true {
-                        s.finalizeName = name
-                        s.finalizePath = path
-                        s.jsonMtime = m
-                    }
-                    shapes[id] = s
-                } else if UUID(uuidString: name) != nil {
-                    let hooks = "\(dir)/\(name)/hooks.jsonl"
-                    guard fm.fileExists(atPath: hooks) else { continue }
-                    let m = mtime(hooks)
-                    var s = shapes[name] ?? Shape()
-                    if s.hooksMtime.map({ m > $0 }) ?? true {
-                        s.sessionDir = "\(dir)/\(name)"
-                        s.hooksPath = hooks
-                        s.hooksMtime = m
-                    }
-                    shapes[name] = s
-                }
-            }
+        struct Ranked {
+            var id: String
+            var shape: Shape
+            var record: SessionListPayload.Record
+            var recency: Date
         }
-        if shapes.isEmpty { return [] }
 
-        let ranked = shapes.map { (id, shape) -> (id: String, shape: Shape, recency: Date) in
-            let m = max(shape.jsonMtime ?? .distantPast, shape.hooksMtime ?? .distantPast)
-            return (id, shape, m)
-        }
-        .sorted { $0.recency > $1.recency }
+        let ranked: [Ranked] = payload.sessions.map { rec in
+            var shape = Shape()
+            shape.finalizePath = rec.finalize_path
+            shape.hooksPath = rec.hooks_path
+            shape.jsonMtime = rec.finalize_mtime.map { Date(timeIntervalSince1970: $0) }
+            shape.hooksMtime = rec.hooks_mtime.map { Date(timeIntervalSince1970: $0) }
+            shape.sessionDir = rec.session_dir
+            let recency = max(
+                shape.jsonMtime ?? .distantPast,
+                shape.hooksMtime ?? .distantPast
+            )
+            return Ranked(id: rec.session_id, shape: shape, record: rec, recency: recency)
+        }.sorted { $0.recency > $1.recency }
+
+        if ranked.isEmpty { return [] }
 
         let dirCache = GeminiDirCache()
         var out: [SoulSession] = []
         for cand in ranked {
             let id = cand.id
             let shape = cand.shape
+            let rec = cand.record
             var s = SoulSession(id: id, project: key, timestamp: cand.recency)
             // For finalized rows, file activity is not necessarily chat
             // activity: opening a row can regenerate preamble/cache files
@@ -343,56 +412,57 @@ extension SoulRegistry {
             // as a cheap activity fallback.
             s.lastActivityAt = shape.finalizePath == nil ? cand.recency : shape.jsonMtime
 
-            if let path = shape.finalizePath,
-               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let ts = parseTimestamp(obj["timestamp"] as? String) {
+            // Finalize metadata — kernel-supplied so we don't open the
+            // JSON ourselves. Falls back to the ledger if no finalize
+            // exists. SOUL-SOUL_DESKTOP-263.
+            if let finalize = rec.finalize {
+                if let ts = parseTimestamp(finalize.timestamp) {
                     s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, ts)
                     s.timestamp = ts
                 }
-                s.intent = stringOrNil(obj["intent"])
-                s.summary = stringOrNil(obj["summary"])
-                s.source = obj["source"] as? String
-                s.status = obj["status"] as? String
-                s.worktreePath = stringOrNil(obj["worktree_path"])
+                s.intent = finalize.intent
+                s.summary = finalize.summary
+                s.source = finalize.source
+                s.status = finalize.status
+                s.worktreePath = finalize.worktree_path
             }
 
-            var sessionStartPpid: Int? = nil
-            var nativeSessionIDs: [String: String] = [:]
-            var sessionVisibility: String? = nil
-            if let hooks = shape.hooksPath {
-                let meta = readHooksMetadata(path: hooks)
-                s.eventCount = meta.eventCount
-                s.promptCount = meta.promptCount
-                sessionStartPpid = meta.sessionStartPpid
-                nativeSessionIDs = meta.nativeSessionIDs
-                sessionVisibility = meta.sessionVisibility
-                if s.worktreePath == nil { s.worktreePath = meta.worktreePath }
-                if let t = meta.titleHook, !t.isEmpty {
-                    s.intent = t
-                } else if s.intent == nil {
-                    s.intent = meta.firstUserPrompt
-                }
-                if s.summary == nil { s.summary = s.intent }
-                if meta.hasDesktopSignature {
-                    s.writer = .soulDesktop
-                } else if meta.hasTerminalSignal {
-                    s.writer = .external
-                } else {
-                    s.writer = .unknown
-                }
-                s.startedAt = meta.firstEventTimestamp
-                if let last = meta.lastEventTimestamp {
-                    s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, last)
-                }
-                // Sort key = actual session start (first ledger event), not
-                // finalize-time / file-mtime. Without this, regenerating a
-                // preamble or re-saving finalize JSON on an old session
-                // bumps it above newer rows in the sidebar. firstEventTimestamp
-                // is monotonic per session, so the row pins to its true origin.
-                if let started = meta.firstEventTimestamp {
-                    s.timestamp = started
-                }
+            // Ledger metadata — kernel-derived. Replaces readHooksMetadata
+            // for the cold-scan path; readHooksMetadata is still used by
+            // other call sites but allSessions now relies on the CLI.
+            s.eventCount = rec.event_count ?? 0
+            s.promptCount = rec.prompt_count ?? 0
+            let sessionStartPpid: Int? = rec.session_start_ppid
+            let nativeSessionIDs: [String: String] = rec.native_session_ids ?? [:]
+            let sessionVisibility: String? = rec.session_visibility
+            let delegationEventCount: Int = rec.delegation_event_count ?? 0
+            let partialCapture: Bool = rec.partial_capture ?? false
+            if s.worktreePath == nil { s.worktreePath = rec.worktree_path }
+            if let title = rec.title, !title.isEmpty {
+                s.intent = title
+            } else if s.intent == nil {
+                s.intent = rec.first_user_prompt
+            }
+            if s.summary == nil { s.summary = s.intent }
+            if rec.has_desktop_signature == true {
+                s.writer = .soulDesktop
+            } else if shape.hooksPath != nil {
+                // No desktop signature but we have a ledger → external
+                // terminal-side writer.
+                s.writer = .external
+            } else {
+                s.writer = .unknown
+            }
+            s.startedAt = parseTimestamp(rec.first_event_ts)
+            if let last = parseTimestamp(rec.last_event_ts) {
+                s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, last)
+            }
+            // Sort key = actual session start (first ledger event), not
+            // finalize-time / file-mtime. Without this, regenerating a
+            // preamble or re-saving finalize JSON on an old session
+            // bumps it above newer rows in the sidebar.
+            if let started = s.startedAt {
+                s.timestamp = started
             }
 
             s.isLive = (shape.finalizePath == nil)
@@ -489,17 +559,15 @@ extension SoulRegistry {
                 }
             }
 
-            let hasFinalize = (shape.finalizePath != nil)
-            let title = s.intent ?? s.summary
-            s.substantive = isUserVisibleSidebarSession(
-                hasFinalize: hasFinalize,
-                title: title,
-                promptCount: s.promptCount,
-                transcriptTurns: s.transcriptTurns,
-                eventCount: s.eventCount,
-                sessionStartPpid: sessionStartPpid,
-                sessionVisibility: sessionVisibility
-            )
+            // Persist the inputs the visibility policy needs to decide
+            // "should this row appear in the sidebar?" Single source of
+            // truth now lives in SidebarVisibilityPolicy — no `substantive`
+            // gets pre-computed and stored on disk.
+            s.hasFinalize = (shape.finalizePath != nil)
+            s.sessionVisibility = sessionVisibility
+            s.delegationEventCount = delegationEventCount
+            s.sessionStartPpid = sessionStartPpid
+            s.partialCapture = partialCapture
 
             out.append(s)
         }

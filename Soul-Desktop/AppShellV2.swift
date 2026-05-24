@@ -2533,33 +2533,26 @@ final class SoulSpecialistStore: ObservableObject {
 
     nonisolated private static func projectTeam(projectKey: String?) -> [String] {
         guard let projectKey, !projectKey.isEmpty else { return [] }
-        let home = URL(fileURLWithPath: NSHomeDirectory())
-        let candidates = [
-            home.appendingPathComponent("dotfiles/soul/config/PROJECTS.json"),
-            home.appendingPathComponent("soul_registry/PROJECTS.json")
-        ]
+        // Single source of truth: `soul project show <key>` (kernel CLI).
+        // The legacy dual-path read of ~/dotfiles/soul/config/PROJECTS.json
+        // + ~/soul_registry/PROJECTS.json was retired in
+        // SOUL-SOUL_DESKTOP-261 — the CLI now handles project-key lookup
+        // and harness_config resolution. Returns [] on CLI failure or when
+        // the project has no team configured.
+        guard let data = SoulCLI.runSync(["project", "show", projectKey]),
+              let project = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let harness = project["harness_config"] as? [String: Any],
+              let team = harness["team"] as? [Any]
+        else { return [] }
 
-        for url in candidates {
-            guard
-                let data = try? Data(contentsOf: url),
-                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let projects = root["projects"] as? [String: Any],
-                let project = projects[projectKey] as? [String: Any],
-                let harness = project["harness_config"] as? [String: Any],
-                let team = harness["team"] as? [Any]
-            else { continue }
-
-            let names = team.compactMap { member -> String? in
-                if let name = member as? String { return name }
-                guard let object = member as? [String: Any] else { return nil }
-                return object["persona"] as? String
-                    ?? object["name"] as? String
-                    ?? object["specialist"] as? String
-                    ?? object["id"] as? String
-            }
-            if !names.isEmpty { return names }
+        return team.compactMap { member -> String? in
+            if let name = member as? String { return name }
+            guard let object = member as? [String: Any] else { return nil }
+            return object["persona"] as? String
+                ?? object["name"] as? String
+                ?? object["specialist"] as? String
+                ?? object["id"] as? String
         }
-        return []
     }
 
     nonisolated private static func agentFileSpecialists() -> [String] {

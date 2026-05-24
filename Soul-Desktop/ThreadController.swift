@@ -634,6 +634,22 @@ final class ThreadController {
     func assignSessionId(_ sid: String) {
         sessionId = sid
         startFinalizeWatcher()
+        // SOUL-OWNERSHIP-MARKER: stamp Soul-Desktop's ownership of this kernel
+        // session id BEFORE any async work runs. The existing desktop-signature
+        // markers (NativeSessionID, Title) land only after the first agent
+        // response completes — so a mid-session crash leaves an orphan whose
+        // ledger has UserPrompt + AfterTool + AfterAgent but no desktop tag,
+        // and `SoulRegistry+Sessions` then misreads it as terminal-owned and
+        // blocks reopen with "Session is running elsewhere". Writing here
+        // guarantees the marker lands at the same moment the controller
+        // takes ownership, so any crash thereafter still leaves behind proof
+        // the session was desktop-driven.
+        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+            "event": "SessionOwner",
+            "writer": "soul-desktop",
+            "pid": Int(ProcessInfo.processInfo.processIdentifier),
+            "provider": provider.rawValue,
+        ])
     }
 
     /// SOUL-SOUL_DESKTOP-075 (b1): watch the project's sessions dir for new

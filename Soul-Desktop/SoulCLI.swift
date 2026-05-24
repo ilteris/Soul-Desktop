@@ -132,6 +132,79 @@ enum SoulCLI {
         return decoded
     }
 
+    /// Synchronous escape hatch for sync call sites that need a CLI result
+    /// without async plumbing — e.g. `SoulRegistry.projects()`,
+    /// `AppShellV2.projectTeam(...)`, and the session-show helpers.
+    /// Blocks the calling thread until the CLI returns. Returns stdout
+    /// bytes on success or nil on any failure (executable missing,
+    /// non-zero exit, I/O error) — the caller decides how to degrade.
+    ///
+    /// NB: we MUST drain stdout concurrently with `waitUntilExit()`.
+    /// macOS pipe buffers are ~64 KB; the CLI's `soul session list --json`
+    /// output is ~330 KB for the busiest project. If the parent waits
+    /// for exit before reading, the child blocks on a full pipe and the
+    /// parent blocks on the child — silent deadlock.
+    static func runSync(_ args: [String]) -> Data? {
+        guard let executable = soulExecutablePath() else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+        process.environment = cliEnvironment()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        // Drain both streams off-thread so the child can't deadlock on a
+        // full pipe buffer. Each thread reads until EOF (pipe closes when
+        // the child exits) and posts its accumulated bytes back.
+        let stdoutBox = NSMutableData()
+        let stderrBox = NSMutableData()
+        let stdoutLock = NSLock()
+        let stderrLock = NSLock()
+        let stdoutQueue = DispatchQueue(label: "soul-cli.stdout")
+        let stderrQueue = DispatchQueue(label: "soul-cli.stderr")
+        let group = DispatchGroup()
+
+        group.enter()
+        stdoutQueue.async {
+            let handle = stdoutPipe.fileHandleForReading
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                stdoutLock.lock()
+                stdoutBox.append(chunk)
+                stdoutLock.unlock()
+            }
+            group.leave()
+        }
+        group.enter()
+        stderrQueue.async {
+            let handle = stderrPipe.fileHandleForReading
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                stderrLock.lock()
+                stderrBox.append(chunk)
+                stderrLock.unlock()
+            }
+            group.leave()
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        // Wait for the drainer threads to flush whatever was buffered after
+        // the child's last write. Their loops exit on EOF (pipe close on
+        // child termination).
+        group.wait()
+        guard process.terminationStatus == 0 else { return nil }
+        return stdoutBox as Data
+    }
+
     @discardableResult
     private static func run(_ args: [String], stdin: Data?) async throws -> Data {
         let result = try await runCapture(args, stdin: stdin)

@@ -392,61 +392,49 @@ extension SidebarView {
         return urls.count
     }
 
-    /// Per-project chat list for the sidebar. One disk-derived row per
-    /// session UUID, optionally augmented with synthetic rows for in-memory
-    /// ThreadControllers that haven't written hooks.jsonl yet.
-    ///
-    /// Filter pipeline (default-on, all overridable from the filter menu):
-    ///   - `substantive`            → drop crash-residue dirs
-    ///   - `loadable || replayable` → drop fully orphan rows (toggle: showUnreadable)
-    ///   - `chatSourceFilter`       → optional provider scope
-    ///   - `hideUntitled`           → optional drop of empty-titled rows
-    /// SOUL-SOUL_DESKTOP-148: derive the badge count from the same filter
-    /// the rendered list uses (substantive + loadable/replayable + provider
-    /// filter + hideUntitled), minus archived. Returns nil if the project's
-    /// sessions haven't been loaded yet — caller falls back to the raw
-    /// disk-count badge in that case (which gets corrected on first expand
-    /// when the Stage-1 scan populates sessionsByProject).
+    /// Build the visibility-policy `Context` once per render from the
+    /// sidebar's current UI state. All callers (badge count + merged list)
+    /// run through the same policy so the two can't disagree.
+    private func visibilityContext(for project: SoulProject) -> SidebarVisibilityPolicy.Context {
+        SidebarVisibilityPolicy.Context(
+            archivedIds: archiveStore.archivedIDs(forProject: project.id),
+            showUnreadable: showUnreadable,
+            chatSourceFilter: chatSourceFilter,
+            hideUntitled: hideUntitled
+        )
+    }
+
+    /// Count of rows that would render in the project's active list (i.e.,
+    /// match the visibility policy AND are not archived). Returns nil if
+    /// the project's sessions haven't been loaded yet — caller falls back
+    /// to the raw disk-count badge. SOUL-SOUL_DESKTOP-234: avoid building
+    /// the full ordered list here; the badge only needs a count.
     func filteredChatCount(for project: SoulProject) -> Int? {
-        // SOUL-SOUL_DESKTOP-234: avoid calling mergedChatList here. That
-        // helper builds a [String: SoulSession] dict and sorts the result
-        // — work the badge only needs counted, not ordered. Expand/collapse
-        // re-renders every project row, so this path is hit N times per
-        // body invocation. The dict+sort across ~100 sessions per project
-        // for 10+ projects was producing a visible main-thread beachball.
-        // O(M) scan with a Set for de-dup is enough.
         guard let onDisk = sessionsByProject[project.id] else { return nil }
-        let archivedSet = archiveStore.archivedIDs(forProject: project.id)
+        let ctx = visibilityContext(for: project)
         var seenIds = Set<String>()
         seenIds.reserveCapacity(onDisk.count)
         var count = 0
         for s in onDisk {
-            if !s.substantive { continue }
-            if !showUnreadable, !(s.loadable || s.replayable) { continue }
-            if let f = chatSourceFilter, (s.source ?? s.liveProvider ?? "") != f { continue }
-            if hideUntitled {
-                let title = (s.intent ?? s.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if title.isEmpty { continue }
-            }
-            if archivedSet.contains(s.id) { continue }
+            guard SidebarVisibilityPolicy.shouldShow(s, in: ctx) else { continue }
+            if ctx.archivedIds.contains(s.id) { continue }
             seenIds.insert(s.id)
             count += 1
         }
         for ctrl in activeThreads where ctrl.project.id == project.id {
-            // Contract: synthetic rows represent accepted user-visible
-            // conversations, not naked controller shells. A controller with
-            // no session id, no items, and no queued prompts is startup /
-            // failed-send residue and must not affect the project badge.
+            // Synthetic rows represent accepted user-visible conversations,
+            // not naked controller shells. Empty shells must not affect the
+            // badge.
             guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
                 continue
             }
             let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
-            if archivedSet.contains(sid) { continue }
+            if ctx.archivedIds.contains(sid) { continue }
             if seenIds.insert(sid).inserted { count += 1 }
         }
         if let draft = draftSession,
            draft.project == project.id,
-           !archivedSet.contains(draft.id),
+           !ctx.archivedIds.contains(draft.id),
            seenIds.insert(draft.id).inserted {
             count += 1
         }
@@ -454,19 +442,15 @@ extension SidebarView {
     }
 
     func mergedChatList(for project: SoulProject) -> [SoulSession] {
-        let onDisk = (sessionsByProject[project.id] ?? []).filter { s in
-            if !s.substantive { return false }
-            if !showUnreadable, !(s.loadable || s.replayable) { return false }
-            if let f = chatSourceFilter, (s.source ?? s.liveProvider ?? "") != f { return false }
-            if hideUntitled {
-                let title = (s.intent ?? s.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if title.isEmpty { return false }
-            }
-            return true
+        let ctx = visibilityContext(for: project)
+        let onDisk = (sessionsByProject[project.id] ?? []).filter {
+            SidebarVisibilityPolicy.shouldShow($0, in: ctx)
         }
         // Index by id so synthetic rows can merge titles cleanly instead of
         // duplicating. Live in-memory titles win — a freshly-renamed thread
-        // shouldn't get stomped by the stale disk record.
+        // shouldn't get stomped by the stale disk record. Archived
+        // partitioning happens at the call site so the disclosure group
+        // can still show the archived rows separately.
         var byId: [String: SoulSession] = [:]
         for s in onDisk { byId[s.id] = s }
 
@@ -496,7 +480,6 @@ extension SidebarView {
                 liveProvider: ctrl.provider.rawValue,
                 loadable: true,
                 replayable: true,
-                substantive: true,
                 lastActivityAt: ctrl.lastActivityAt,
                 isWorking: ctrl.isWorking
             )

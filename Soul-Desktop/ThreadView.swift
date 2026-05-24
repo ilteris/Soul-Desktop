@@ -257,29 +257,41 @@ struct ThreadView: View {
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(isAutoScrolling ? .hidden : .automatic)
                 .overlay(alignment: .bottom) {
-                    if scrollFollow.userDetachedFromBottom {
-                        Button {
-                            scrollFollow.userDetachedFromBottom = false
-                            autoScroll(to: "__bottom__", proxy: proxy)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(SoulColor.fg)
-                                .frame(width: 32, height: 32)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .overlay(
-                                    Circle()
-                                        .strokeBorder(SoulColor.border.opacity(0.5), lineWidth: 0.5)
-                                )
-                                .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 3)
+                    // SOUL-LAYOUT-CYCLE: keep the `.animation(value:)` inside
+                    // the overlay closure so its scope is JUST the jump-to-
+                    // bottom button — not the whole ScrollView. The same
+                    // pattern bit us before (see the long comment near the
+                    // skeleton overlay below): an .animation modifier on the
+                    // ScrollView installs an animation context spanning the
+                    // LazyVStack subtree, and during streaming with row-level
+                    // `.fixedSize` markdown bodies SwiftUI spins in
+                    // StackLayout / _FlexFrameLayout / MoveTransition ideal-
+                    // size negotiation until the stack overflows.
+                    Group {
+                        if scrollFollow.userDetachedFromBottom {
+                            Button {
+                                scrollFollow.userDetachedFromBottom = false
+                                autoScroll(to: "__bottom__", proxy: proxy)
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(SoulColor.fg)
+                                    .frame(width: 32, height: 32)
+                                    .background(.ultraThinMaterial, in: Circle())
+                                    .overlay(
+                                        Circle()
+                                            .strokeBorder(SoulColor.border.opacity(0.5), lineWidth: 0.5)
+                                    )
+                                    .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 3)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.bottom, 14)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                            .help("Jump to bottom")
                         }
-                        .buttonStyle(.plain)
-                        .padding(.bottom, 14)
-                        .transition(.scale(scale: 0.85).combined(with: .opacity))
-                        .help("Jump to bottom")
                     }
+                    .animation(.easeOut(duration: 0.16), value: scrollFollow.userDetachedFromBottom)
                 }
-                .animation(.easeOut(duration: 0.16), value: scrollFollow.userDetachedFromBottom)
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
