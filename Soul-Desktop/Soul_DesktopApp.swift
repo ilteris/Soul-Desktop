@@ -23,6 +23,18 @@ struct Soul_DesktopApp: App {
     }
 
     private static func enforceSingleInstance() {
+        // XCTest injects its bundle path into the host app's environment.
+        // The single-instance guard otherwise nukes the test runner when
+        // the developer's daily-driver Soul-Desktop is already running —
+        // the host app launches, sees itself as a duplicate, exit(0)s,
+        // and the test bundle exits with "Early unexpected exit, operation
+        // never finished bootstrapping" before any test code runs.
+        let env = ProcessInfo.processInfo.environment
+        if env["XCTestConfigurationFilePath"] != nil ||
+           env["XCTestBundlePath"] != nil ||
+           env["XCInjectBundleInto"] != nil {
+            return
+        }
         guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { return }
         let me = NSRunningApplication.current
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)

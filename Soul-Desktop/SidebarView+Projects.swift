@@ -130,6 +130,11 @@ extension SidebarView {
 
     @ViewBuilder
     func projectRow(_ project: SoulProject) -> some View {
+        // SOUL-SOUL_DESKTOP-270: one resolve() pass owns both the badge
+        // count and the rendered list. They cannot disagree anymore.
+        // resolved is nil when the project's sessions haven't been loaded
+        // yet — badge falls back to the raw disk count.
+        let resolved = resolvedRows(for: project)
         ProjectSidebarRow(
             project: project,
             isSelected: activeProjectId == project.id
@@ -137,7 +142,7 @@ extension SidebarView {
                     && activeSessionId == nil
                     && activeReplaySessionId == nil),
             isExpanded: expansionBinding(for: project.id),
-            chatCount: filteredChatCount(for: project) ?? (sessionCounts[project.id] ?? 0),
+            chatCount: resolved?.activeCount ?? (sessionCounts[project.id] ?? 0),
             onSelect: { selectedProject = project.id },
             onNewChat: {
                 onNewChat(project.id)
@@ -149,11 +154,9 @@ extension SidebarView {
                 pendingProjectDelete = ProjectDeleteRequest(project: project)
             }
         )
-        if isExpanded(project.id) {
-            let all = mergedChatList(for: project)
-            let archivedSet = archiveStore.archivedIDs(forProject: project.id)
-            let active = all.filter { !archivedSet.contains($0.id) }
-            let archived = all.filter { archivedSet.contains($0.id) }
+        if isExpanded(project.id), let rows = resolved {
+            let active = rows.active
+            let archived = rows.archived
             let showAll = sessionListExpanded.contains(project.id)
             let visible = showAll ? active : Array(active.prefix(sessionPageSize))
             ForEach(visible) { session in
@@ -164,11 +167,10 @@ extension SidebarView {
             } else if showAll && active.count > sessionPageSize {
                 showLessButton(for: project)
             }
-            // SOUL-SOUL_DESKTOP-230: gated on `showArchived` so the
-            // disclosure only paints when the user has explicitly opted
-            // in via the filter menu. Default is hidden — archived rows
-            // are soft-deletes and shouldn't be in the user's daily view.
-            if showArchived, !archived.isEmpty {
+            // Always render the disclosure when archived rows exist so the
+            // user has a visible signal that something is hidden — otherwise
+            // archiving a row makes it vanish with zero UI trace.
+            if !archived.isEmpty {
                 archivedDisclosure(for: project, archived: archived)
             }
         }
@@ -395,8 +397,8 @@ extension SidebarView {
     /// Build the visibility-policy `Context` once per render from the
     /// sidebar's current UI state. All callers (badge count + merged list)
     /// run through the same policy so the two can't disagree.
-    private func visibilityContext(for project: SoulProject) -> SidebarVisibilityPolicy.Context {
-        SidebarVisibilityPolicy.Context(
+    private func visibilityContext(for project: SoulProject) -> SidebarRowResolver.VisibilityContext {
+        SidebarRowResolver.VisibilityContext(
             archivedIds: archiveStore.archivedIDs(forProject: project.id),
             showUnreadable: showUnreadable,
             chatSourceFilter: chatSourceFilter,
@@ -404,154 +406,26 @@ extension SidebarView {
         )
     }
 
-    /// Count of rows that would render in the project's active list (i.e.,
-    /// match the visibility policy AND are not archived). Returns nil if
-    /// the project's sessions haven't been loaded yet — caller falls back
-    /// to the raw disk-count badge. SOUL-SOUL_DESKTOP-234: avoid building
-    /// the full ordered list here; the badge only needs a count.
-    func filteredChatCount(for project: SoulProject) -> Int? {
+    /// Single resolve() pass. Both badge count and rendered list draw from
+    /// this Output, so they can no longer disagree (SOUL-267 bug class).
+    /// Returns nil when the project hasn't been loaded yet — caller falls
+    /// back to the raw disk-count badge. SOUL-SOUL_DESKTOP-270.
+    func resolvedRows(for project: SoulProject) -> SidebarRowResolver.Output? {
+        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+            let n = sessionsByProject[project.id]?.count
+            SidebarRowResolver.traceWrite("resolvedRows project=\(project.id) sessionsByProject.count=\(n.map(String.init) ?? "nil")")
+        }
         guard let onDisk = sessionsByProject[project.id] else { return nil }
-        let ctx = visibilityContext(for: project)
-        var seenIds = Set<String>()
-        seenIds.reserveCapacity(onDisk.count)
-        var count = 0
-        for s in onDisk {
-            guard SidebarVisibilityPolicy.shouldShow(s, in: ctx) else { continue }
-            if ctx.archivedIds.contains(s.id) { continue }
-            seenIds.insert(s.id)
-            count += 1
-        }
-        for ctrl in activeThreads where ctrl.project.id == project.id {
-            // Synthetic rows represent accepted user-visible conversations,
-            // not naked controller shells. Empty shells must not affect the
-            // badge.
-            guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
-                continue
-            }
-            let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
-            if ctx.archivedIds.contains(sid) { continue }
-            if seenIds.insert(sid).inserted { count += 1 }
-        }
-        if let draft = draftSession,
-           draft.project == project.id,
-           !ctx.archivedIds.contains(draft.id),
-           seenIds.insert(draft.id).inserted {
-            count += 1
-        }
-        return count
-    }
-
-    func mergedChatList(for project: SoulProject) -> [SoulSession] {
-        let ctx = visibilityContext(for: project)
-        let onDisk = (sessionsByProject[project.id] ?? []).filter {
-            SidebarVisibilityPolicy.shouldShow($0, in: ctx)
-        }
-        // Index by id so synthetic rows can merge titles cleanly instead of
-        // duplicating. Live in-memory titles win — a freshly-renamed thread
-        // shouldn't get stomped by the stale disk record. Archived
-        // partitioning happens at the call site so the disclosure group
-        // can still show the archived rows separately.
-        var byId: [String: SoulSession] = [:]
-        for s in onDisk { byId[s.id] = s }
-
-        for ctrl in activeThreads where ctrl.project.id == project.id {
-            // Contract: don't surface a live synthetic row until it has
-            // accepted content or an assigned session id. This prevents
-            // "New chat" ghosts from masking prompt-loss bugs as real rows.
-            guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
-                continue
-            }
-            let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
-            let synthetic = SoulSession(
-                id: sid,
-                project: project.id,
-                // Stable: use the disk row's existing timestamp when merging
-                // (line below), and `startedAt` only as a fallback when the
-                // session has no disk row yet. Previously this was
-                // `max(lastActivityAt, startedAt)`, which made the row pop to
-                // the top of the sidebar every time the user typed — which
-                // shuffled the list mid-conversation. Disabled per user
-                // request: the sort should not reorder on activity.
-                timestamp: ctrl.startedAt,
-                intent: ctrl.displayTitle,
-                source: ctrl.provider.rawValue,
-                isLive: true,
-                writer: .soulDesktop,
-                liveProvider: ctrl.provider.rawValue,
-                loadable: true,
-                replayable: true,
-                lastActivityAt: ctrl.lastActivityAt,
-                isWorking: ctrl.isWorking
-            )
-            if let existing = byId[sid] {
-                // Take the disk row's metadata (source, worktree, status) and
-                // overlay the live title + timestamp from the controller.
-                var merged = existing
-                let t = ctrl.displayTitle
-                if !t.isEmpty { merged.intent = t }
-                // Keep the disk row's original timestamp — don't bump it from
-                // the live controller's startedAt / lastActivityAt. Live
-                // activity should NOT reorder the sidebar.
-                //
-                // Intentionally preserve `existing.writer` and `existing.isLive`:
-                // opening a row to view it doesn't make us its author or
-                // revive a finalized session. Once the user sends, the
-                // controller's appendHook writes NativeSessionID/Title to
-                // the ledger and the next disk scan reflects writer=.soulDesktop
-                // naturally. Same for isLive — true real state, not derived
-                // from "is a controller pointed at this row."
-                merged.liveProvider = ctrl.provider.rawValue
-                merged.lastActivityAt = max(existing.lastActivityAt ?? existing.timestamp, ctrl.lastActivityAt)
-                merged.isWorking = ctrl.isWorking
-                // SOUL-216 (revised): live ctrl.items userMessage count is
-                // the canonical source — it matches the ThreadView toolbar
-                // chip's chapterCount, so sidebar and toolbar can never
-                // disagree. Disk's promptCount under-counts external
-                // Gemini sessions (kernel only records UserPrompt when
-                // Soul-Desktop is the writer); ctrl.items reflects the
-                // full transcript.
-                //
-                // SOUL-219: hold the disk count while hydrate is streaming
-                // items in. Without this, the row's turn-count text
-                // climbs 0 → N visibly during the click-to-open animation,
-                // producing a flicker the user can spot. Once
-                // isReplayingLoad flips false, switch to the live ctrl
-                // count (which is now stable for the rest of the session).
-                //
-                // SOUL-SOUL_DESKTOP-228: additionally require `!items.isEmpty`.
-                // -219's gate covered the "during hydrate" window but missed
-                // the *before hydrate starts* window — a fresh ctrl exists
-                // with isReplayingLoad still false and zero items, so the
-                // override dropped promptCount to 0 for one or two renders.
-                // metaLine then returned just "ago", the turn count
-                // disappeared, the timestamp slid left, then jumped back
-                // right when the override re-engaged. Empty items mean
-                // "the controller hasn't produced anything yet" (whether
-                // because it hasn't loaded or because the session is
-                // genuinely empty); in both cases the disk count is the
-                // truthful value to display.
-                let liveCount = ctrl.items.filter { if case .userMessage = $0 { return true } else { return false } }.count
-                if !ctrl.isReplayingLoad && !ctrl.items.isEmpty {
-                    merged.promptCount = liveCount
-                }
-                byId[sid] = merged
-            } else {
-                byId[sid] = synthetic
-            }
-        }
-        if let draft = draftSession, draft.project == project.id {
-            byId[draft.id] = draft
-        }
-        // SOUL-SOUL_DESKTOP-198: starred sessions float to the top within
-        // their project group; ties (both starred or both unstarred) keep
-        // the existing recency sort.
-        let starred = starStore.starredIDs(forProject: project.id)
-        return byId.values.sorted { a, b in
-            let aStar = starred.contains(a.id)
-            let bStar = starred.contains(b.id)
-            if aStar != bStar { return aStar }
-            return a.timestamp > b.timestamp
-        }
+        let inputs = SidebarRowResolver.Inputs(
+            projectKey: project.id,
+            diskSessions: onDisk,
+            activeControllers: activeThreads.filter { $0.project.id == project.id },
+            draft: (draftSession?.project == project.id) ? draftSession : nil,
+            archivedIds: archiveStore.archivedIDs(forProject: project.id),
+            starredIds: starStore.starredIDs(forProject: project.id),
+            visibilityContext: visibilityContext(for: project)
+        )
+        return SidebarRowResolver.resolve(inputs)
     }
 
     func worktreeGroups(for lives: [SoulSession]) -> [(label: String, sessions: [SoulSession])] {

@@ -44,5 +44,34 @@ enum SoulSignposts {
 
     static func event(_ name: StaticString, _ message: String = "") {
         signposter.emitEvent(name, "\(message)")
+        // File companion for the Flash.* namespace (canvas-blank-on-send
+        // diagnostics). Enable with:
+        //   defaults write com.test.Soul-Desktop.dev soul.canvas.trace -bool true
+        // Then tail ~/tmp/soul-canvas-trace.log while reproducing the bug.
+        // Gated on UserDefaults + name-prefix so unrelated signposts
+        // (HooksReader, MarkdownView, etc.) stay out of the log.
+        let nameStr = "\(name)"
+        guard nameStr.hasPrefix("Flash."),
+              UserDefaults.standard.bool(forKey: "soul.canvas.trace") else { return }
+        flashTraceWrite("\(nameStr) \(message)")
+    }
+
+    private static let flashTracePath = NSString(string: "~/tmp/soul-canvas-trace.log").expandingTildeInPath
+    private static let flashTraceQueue = DispatchQueue(label: "soul.canvas.trace.file")
+
+    private static func flashTraceWrite(_ line: String) {
+        flashTraceQueue.async {
+            let ts = ISO8601DateFormatter().string(from: Date())
+            let row = "\(ts) \(line)\n"
+            let dir = (flashTracePath as NSString).deletingLastPathComponent
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            guard let data = row.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: flashTracePath),
+               let h = FileHandle(forWritingAtPath: flashTracePath) {
+                h.seekToEndOfFile(); h.write(data); h.closeFile()
+            } else {
+                try? data.write(to: URL(fileURLWithPath: flashTracePath))
+            }
+        }
     }
 }

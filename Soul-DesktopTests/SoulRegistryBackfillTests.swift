@@ -2,7 +2,15 @@ import Testing
 import Foundation
 @testable import Soul_Desktop
 
+/// `@MainActor` forces this suite onto the main actor, serializing every
+/// test against any other MainActor-scoped suite (e.g. SessionLedgerTruthTests).
+/// The Soul-Desktop registry path layer is `nonisolated(unsafe) static var`s
+/// — `homePath`, `sidProjectCache`, `cache` — that are mutated by
+/// `withTempHome` in each test. Without main-actor serialization, parallel
+/// test suites stomp on those statics and produce phantom `.miss` results
+/// (the tempDir swizzle of one suite vanishes mid-call of another).
 @Suite(.serialized)
+@MainActor
 struct SoulRegistryBackfillTests {
     
     private func withTempHome(_ body: (URL) throws -> Void) throws {
@@ -47,20 +55,17 @@ struct SoulRegistryBackfillTests {
             let hookLine = "{\"event\":\"UserPrompt\",\"text\":\"\(firstPrompt)\",\"timestamp\":\"2026-05-11T10:00:00.000000\",\"session_id\":\"\(sessionId)\"}\n"
             try hookLine.write(toFile: hooksPath, atomically: true, encoding: .utf8)
             
-            // 2. Setup Gemini transcript
+            // 2. Setup Gemini transcript — readGeminiChatHeader expects JSONL
+            // (line 1: {"sessionId": ...}, subsequent lines: {"type":"user","text":"..."}).
+            // The earlier nested-JSON fixture matched an older parser; it no
+            // longer round-trips through readGeminiChatHeader and the test
+            // looks like .miss because no candidate firstPrompt extracts.
             let chatsDir = home.appendingPathComponent(".gemini/tmp/test-proj/chats")
             try fm.createDirectory(at: chatsDir, withIntermediateDirectories: true)
             let geminiPath = chatsDir.appendingPathComponent("session-123-\(nativeId.prefix(8)).json").path
             let geminiJson = """
-            {
-                "sessionId": "\(nativeId)",
-                "messages": [
-                    {
-                        "type": "user",
-                        "content": [{"text": "\(firstPrompt)"}]
-                    }
-                ]
-            }
+            {"sessionId":"\(nativeId)"}
+            {"type":"user","text":"\(firstPrompt)"}
             """
             try geminiJson.write(toFile: geminiPath, atomically: true, encoding: .utf8)
             
@@ -71,13 +76,21 @@ struct SoulRegistryBackfillTests {
                 provider: "geminiCLI",
                 cwd: cwd
             )
-            
+
             #expect(result == .hit(nativeId))
-            
-            // Verify hook was written
+
+            // backfill → writeNativeSessionID → appendHook is async (writes
+            // through hookWriteQueue). Without flushHooks() the file read
+            // below races the writer and the file may not exist yet.
+            SoulRegistry.flushHooks()
+
+            // Verify hook was written. writeNativeSessionID emits the field
+            // as snake_case `native_session_id` (was `nativeId` in older
+            // schemas — kept both forms in findNativeSessionID for back-compat,
+            // but writes are snake_case only).
             let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"NativeSessionID\""))
-            #expect(updatedHooks.contains("\"nativeId\":\"\(nativeId)\""))
+            #expect(updatedHooks.contains("\"native_session_id\":\"\(nativeId)\""))
             #expect(updatedHooks.contains("\"source\":\"backfill\""))
         }
     }
@@ -101,9 +114,12 @@ struct SoulRegistryBackfillTests {
             let chatsDir = home.appendingPathComponent(".gemini/tmp/test-proj/chats")
             try fm.createDirectory(at: chatsDir, withIntermediateDirectories: true)
             let geminiPath = chatsDir.appendingPathComponent("session-456.jsonl").path
+            // readGeminiChatHeader reads `obj["text"] as? String` directly off
+            // the user line — the older nested `content[0].text` shape no
+            // longer extracts and the candidate.firstPrompt comes back nil.
             let geminiJsonl = """
-            {"sessionId": "\(nativeId)"}
-            {"type": "user", "content": [{"text": "\(firstPrompt)"}]}
+            {"sessionId":"\(nativeId)"}
+            {"type":"user","text":"\(firstPrompt)"}
             """
             try geminiJsonl.write(toFile: geminiPath, atomically: true, encoding: .utf8)
             
@@ -176,7 +192,9 @@ struct SoulRegistryBackfillTests {
             for i in 1...2 {
                 let id = "NATIVE-\(i)"
                 let path = chatsDir.appendingPathComponent("session-\(i).json").path
-                let json = "{\"sessionId\": \"\(id)\", \"messages\": [{\"type\": \"user\", \"content\": [{\"text\": \"\(firstPrompt)\"}]}]}"
+                // JSONL shape per readGeminiChatHeader contract — see
+                // testGeminiJsonHit for the bitrot details.
+                let json = "{\"sessionId\":\"\(id)\"}\n{\"type\":\"user\",\"text\":\"\(firstPrompt)\"}"
                 try json.write(toFile: path, atomically: true, encoding: .utf8)
             }
             
@@ -192,6 +210,8 @@ struct SoulRegistryBackfillTests {
             } else {
                 Issue.record("Expected ambiguous backfill result, got \(result)")
             }
+            // BackfillAmbiguous appendHook is async; flush before reading.
+            SoulRegistry.flushHooks()
             let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"BackfillAmbiguous\""))
         }
@@ -204,19 +224,23 @@ struct SoulRegistryBackfillTests {
             let sessionId = "S1"
             let nativeId = "ALREADY-MAPPED"
             
-            // Setup hooks with existing NativeSessionID
+            // Setup hooks with existing NativeSessionID. findNativeSessionID
+            // gates on `provider` when the caller passes one, so the seed
+            // must carry the provider field too — otherwise the existing
+            // mapping is invisible and backfill falls through to .miss
+            // instead of short-circuiting.
             let hooksDir = home.appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)")
             try fm.createDirectory(at: hooksDir, withIntermediateDirectories: true)
-            let hookLine = "{\"event\":\"NativeSessionID\",\"nativeId\":\"\(nativeId)\"}\n"
+            let hookLine = "{\"event\":\"NativeSessionID\",\"provider\":\"geminiCLI\",\"nativeId\":\"\(nativeId)\"}\n"
             try hookLine.write(toFile: hooksDir.appendingPathComponent("hooks.jsonl").path, atomically: true, encoding: .utf8)
-            
+
             let result = SoulRegistry.backfillNativeSessionID(
                 projectKey: projectKey,
                 sessionId: sessionId,
                 provider: "geminiCLI",
                 cwd: "/any"
             )
-            
+
             #expect(result == .alreadyMapped(nativeId))
         }
     }
@@ -260,11 +284,13 @@ struct SoulRegistryBackfillTests {
             let cwd = "/work/test-proj"
             let firstPrompt = "This prompt would otherwise match another transcript."
 
+            // NativeSessionID seed must include provider — see testShortCircuit
+            // for the gating rationale.
             let hooksDir = home.appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)")
             try fm.createDirectory(at: hooksDir, withIntermediateDirectories: true)
             let hooksPath = hooksDir.appendingPathComponent("hooks.jsonl").path
             let hooks = """
-            {"event":"NativeSessionID","nativeId":"\(sessionId)"}
+            {"event":"NativeSessionID","provider":"geminiCLI","nativeId":"\(sessionId)"}
             {"event":"UserPrompt","text":"\(firstPrompt)"}
 
             """
@@ -273,7 +299,8 @@ struct SoulRegistryBackfillTests {
             let chatsDir = home.appendingPathComponent(".gemini/tmp/test-proj/chats")
             try fm.createDirectory(at: chatsDir, withIntermediateDirectories: true)
             let nativeId = "99999999-9999-4999-9999-999999999999"
-            let geminiJson = "{\"sessionId\":\"\(nativeId)\",\"messages\":[{\"type\":\"user\",\"content\":[{\"text\":\"\(firstPrompt)\"}]}]}"
+            // JSONL shape per readGeminiChatHeader contract (see testGeminiJsonHit).
+            let geminiJson = "{\"sessionId\":\"\(nativeId)\"}\n{\"type\":\"user\",\"text\":\"\(firstPrompt)\"}"
             try geminiJson.write(toFile: chatsDir.appendingPathComponent("session-hit.json").path, atomically: true, encoding: .utf8)
 
             let result = SoulRegistry.backfillNativeSessionID(
@@ -299,6 +326,10 @@ struct SoulRegistryBackfillTests {
                 "event": "UserPrompt",
                 "text": "Timestamp check",
             ])
+            // appendHook dispatches the actual write to a serial queue;
+            // without flushHooks() the assertion races the writer and the
+            // file may not exist yet when we read.
+            SoulRegistry.flushHooks()
 
             let hooksPath = home
                 .appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")

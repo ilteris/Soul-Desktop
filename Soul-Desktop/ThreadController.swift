@@ -130,6 +130,7 @@ final class ThreadController {
     var items: [ThreadItem] = [] {
         didSet {
             itemsVersion &+= 1
+            SoulSignposts.event("Flash.items.didSet", "old=\(oldValue.count) new=\(items.count)")
         }
     }
     var historicalIDs: Set<UUID> = []
@@ -393,53 +394,41 @@ final class ThreadController {
     var silentCapture: String? = nil
 
     var displayTitle: String {
-        if let t = customTitle, !t.isEmpty {
-            // customTitle gets seeded from SoulRegistry.findTitle (raw Title
-            // hook text) and AppShell's session.intent seed (which is already
-            // stripped). Run through the strip again so the raw-Title-hook
-            // path doesn't leak `<command-message>…` into the toolbar.
-            // SOUL-SOUL_DESKTOP-163: stripCommandTags now returns "" when all
-            // content was noise tags (used to return the raw input — bad
-            // titles like `<local-command-caveat>…` leaked through). Fall
-            // through to the per-message fallbacks below instead of
-            // returning empty.
-            let stripped = SoulRegistry.stripCommandTags(t)
-            if !stripped.isEmpty { return stripped }
+        // SOUL-SOUL_DESKTOP-082 Phase 1: route through SessionTitleResolver
+        // so live and disk surfaces compute titles identically. Previously
+        // this had bespoke logic (strip bare slash, walk fallbacks) that the
+        // sidebar didn't share — same /pulse session got different titles
+        // when live vs read from disk.
+        let userPrompts: [String] = items.compactMap { item -> String? in
+            if case .userMessage(_, let t, _) = item {
+                let cleaned = SoulRegistry.stripCommandTags(t)
+                return cleaned.isEmpty ? nil : cleaned
+            }
+            return nil
         }
-
-        // Strip Claude slash-command stub tags from the captured user prompt
-        // so the toolbar reads the same as the sidebar (which runs the same
-        // strip via cleanTitle). Without this, terminal-origin Claude rows
-        // showed `<command-message>pulse</command-message>` in the toolbar
-        // while the sidebar correctly showed `/pulse`.
-        let firstUser: String? = items.lazy.compactMap {
-            if case .userMessage(_, let t, _) = $0 { return SoulRegistry.stripCommandTags(t) } else { return nil }
-        }.first
-
-        if let user = firstUser, !isBareSlashCommand(user) {
-            return truncateForTitle(user)
-        }
-
         let firstBranchSummary: String? = items.lazy.compactMap {
             if case .branchSummary(_, let summary, _, _, _) = $0 { return summary } else { return nil }
         }.first
-
-        if let summary = firstBranchSummary {
-            return truncateForTitle(summary)
-        }
-
         let firstAgent: String? = items.lazy.compactMap {
             if case .agentMessage(_, let t, _, _) = $0 { return t } else { return nil }
         }.first
+        let firstAgentLine: String? = firstAgent.flatMap { firstMeaningfulLine($0) }
 
-        if let agent = firstAgent, let line = firstMeaningfulLine(agent) {
-            return truncateForTitle(line)
-        }
-
-        if let user = firstUser {
-            return truncateForTitle(user)
-        }
-        return "New chat"
+        let inputs = SessionTitleResolver.Inputs(
+            customTitle: customTitle.flatMap { raw in
+                // Same stripping the previous code applied — keep the
+                // semantics so a raw Title hook with command-message
+                // scaffolding doesn't leak through.
+                let stripped = SoulRegistry.stripCommandTags(raw)
+                return stripped.isEmpty ? nil : stripped
+            },
+            finalizeIntent: nil, // live ThreadController has no finalize.intent yet
+            prompts: userPrompts,
+            firstAgentLine: firstAgentLine,
+            branchSummary: firstBranchSummary,
+            skillHint: nil
+        )
+        return SessionTitleResolver.resolve(inputs)
     }
 
     /// Most recent agent reply text in `items`, walking from the end.
@@ -462,19 +451,6 @@ final class ThreadController {
             }
         }
         return nil
-    }
-
-    private func isBareSlashCommand(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return false }
-        let body = trimmed.dropFirst()
-        return !body.contains(" ") && !body.contains("\n") && !body.isEmpty
-    }
-
-    private func truncateForTitle(_ text: String) -> String {
-        let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespaces)
-        return oneLine.count > 60 ? String(oneLine.prefix(60)) + "…" : oneLine
     }
 
     private func firstMeaningfulLine(_ text: String) -> String? {

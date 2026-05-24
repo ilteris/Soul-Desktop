@@ -434,29 +434,22 @@ struct CollapsibleBubbleBody: View {
 
     @State private var revealedLineCount: Int? = nil
 
-    private var lines: [Substring] {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-    }
-
-    private var isLong: Bool {
-        lines.count > collapseAbove
-    }
-
-    private var effectiveRevealed: Int {
-        revealedLineCount ?? previewLineCount
-    }
-
-    private var visibleText: String {
-        if !isLong || effectiveRevealed >= lines.count { return text }
-        return lines.prefix(effectiveRevealed).joined(separator: "\n")
-    }
-
-    private var remainingLines: Int {
-        max(0, lines.count - effectiveRevealed)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // SOUL-LAYOUT-CYCLE-2: compute the line split exactly once per body
+        // re-eval. Previously each of `isLong`, `effectiveRevealed`,
+        // `remainingLines`, and `visibleText` was a computed property that
+        // re-split `text` on every read — four full string splits per render
+        // × every visible bubble × every streaming chunk. Hot during multi-
+        // chunk replies where a 6 KB body re-renders on every chunk.
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let isLong = lines.count > collapseAbove
+        let effectiveRevealed = revealedLineCount ?? previewLineCount
+        let visibleText: String = {
+            if !isLong || effectiveRevealed >= lines.count { return text }
+            return lines.prefix(effectiveRevealed).joined(separator: "\n")
+        }()
+        let remainingLines = max(0, lines.count - effectiveRevealed)
+        return VStack(alignment: .leading, spacing: 6) {
             MarkdownView(
                 text: visibleText,
                 headerColor: isHistorical ? mutedFg : SoulColor.fg,

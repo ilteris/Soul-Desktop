@@ -410,10 +410,9 @@ struct SidebarView: View {
               let project = projects.first(where: { $0.id == pid })
         else { return }
 
-        let archivedSet = archiveStore.archivedIDs(forProject: pid)
-        let visible = mergedChatList(for: project)
-            .filter { !archivedSet.contains($0.id) }
-        guard !visible.isEmpty else { return }
+        // SOUL-SOUL_DESKTOP-270: same resolve() the sidebar uses, so the
+        // keyboard nav order matches the rendered list exactly.
+        guard let visible = resolvedRows(for: project)?.active, !visible.isEmpty else { return }
 
         if let currentIdx = visible.firstIndex(where: { $0.id == activeSessionId }) {
             let targetIdx = currentIdx + delta

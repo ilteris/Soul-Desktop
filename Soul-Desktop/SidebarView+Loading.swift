@@ -76,19 +76,21 @@ extension SidebarView {
             // means the next launch shows the right number immediately.
             recomputePersistedSessionCounts()
         }
-        // Refresh expanded projects in parallel and don't block reload()
-        // on them — the sidebar already painted from `primed` cache above.
-        // Each loadProject is a single `soul session list --json` shell-out
-        // (~500-700ms); sequentially that scales with project count
-        // (SOUL-SOUL_DESKTOP-263 made every project a CLI hop). Fire them
-        // in a TaskGroup so cold launch is bounded by max(times), not sum,
-        // and detach the whole batch so the caller (AppShell on appear)
-        // doesn't wait. RegistryWatcher will catch any in-flight mutations.
-        let expanded = projs.filter { isExpanded($0.id) }
-        if !expanded.isEmpty {
-            Task { [expanded] in
+        // Refresh expanded projects AND prime any unprimed project so the
+        // collapsed badge shows the visibility-filtered count instead of
+        // the raw on-disk number. Without the unprimed pass, brand-new
+        // projects (or ones whose cache was invalidated by mtime) display
+        // the inflated raw count until the user expands them — at which
+        // point the badge collapses to the truthful number (SOUL-270
+        // badge-on-expand bug). Each loadProject is a single `soul session
+        // list --json` shell-out (~500-700ms); fire them in parallel so the
+        // batch finishes in max(times) not sum(times). Detached so cold
+        // launch isn't blocked. RegistryWatcher catches in-flight changes.
+        let needLoad = projs.filter { isExpanded($0.id) || sessionsByProject[$0.id] == nil }
+        if !needLoad.isEmpty {
+            Task { [needLoad] in
                 await withTaskGroup(of: Void.self) { group in
-                    for p in expanded {
+                    for p in needLoad {
                         group.addTask { await self.loadProject(p.id) }
                     }
                 }
@@ -225,8 +227,8 @@ extension SidebarView {
         var updated = sessionCounts
         for project in projects {
             guard let _ = sessionsByProject[project.id] else { continue }
-            if let filtered = filteredChatCount(for: project) {
-                updated[project.id] = filtered
+            if let resolved = resolvedRows(for: project) {
+                updated[project.id] = resolved.activeCount
             }
         }
         if updated != sessionCounts {

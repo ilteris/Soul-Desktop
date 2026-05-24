@@ -171,11 +171,16 @@ if isActiveReplay {
         // the row at a stale low number, which was the "turn count keeps
         // resetting on relaunch" bug.
         let n = max(session.promptCount, session.transcriptTurns)
+        // SOUL-SOUL_DESKTOP-268: surface "no reply" when prompts landed but
+        // every AfterAgent envelope was empty AND no provider transcript
+        // rescues the session. Row stays clickable — the user decides
+        // whether to keep, archive, or trash it.
+        let reply = session.agentReplyMissing ? " · no reply" : ""
         if n > 0 {
             let label = n == 1 ? "1 turn" : "\(n) turns"
-            return "\(label) · \(ago)"
+            return "\(label) · \(ago)\(reply)"
         }
-        return ago
+        return "\(ago)\(reply)"
     }
 
     /// Humanized session length string for the row's second line. Defined

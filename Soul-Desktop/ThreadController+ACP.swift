@@ -163,6 +163,25 @@ extension ThreadController {
         if let openId = openAgentMessageId,
            let idx = items.firstIndex(where: { $0.id == openId }),
            case .agentMessage(let id, let existing, _, let ts) = items[idx] {
+            // SOUL-SOUL_DESKTOP-264 sanity probe: permanent assertion that
+            // the in-app chunk stream is clean. We chased AfterAgent
+            // content-doubling first in this accumulator, but a live trace
+            // (2026-05-23, session 82a1b676, 7547-char reply that doubled
+            // to 15379 on disk) showed THIS probe never fires — the
+            // doubling lives downstream in the kernel middleware writer
+            // (version 8.6.27-fidelity), not here. Keep the probe as a
+            // sanity check: if it ever DOES fire, the upstream stream
+            // started re-emitting content and the SOUL-264 picture has
+            // changed. Gated on soul.acp.trace so it costs nothing in
+            // normal use.
+            if UserDefaults.standard.bool(forKey: "soul.acp.trace"),
+               chunk.count >= 128,
+               existing.count >= 128 {
+                let probe = String(chunk.prefix(128))
+                if existing.range(of: probe) != nil {
+                    NSLog("[acp-chunk-sanity] WARN: incoming agent_message_chunk's first 128 chars already exist in buffer — upstream stream is re-emitting (existingLen=\(existing.count), chunkLen=\(chunk.count), bubbleId=\(id.uuidString.prefix(8))) probe=\(probe.prefix(40))…")
+                }
+            }
             items[idx] = .agentMessage(id: id, text: existing + chunk, complete: false, timestamp: ts)
             bubbleId = id
         } else {

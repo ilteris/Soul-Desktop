@@ -150,6 +150,10 @@ struct CodexRequestHandlingTests {
             "status": "completed",
             "cwd": project.path,
         ])
+        // appendHook dispatches to a serial queue. Without flushHooks() the
+        // file read below races the writer and may either find no file or
+        // a partial write.
+        SoulRegistry.flushHooks()
 
         let hooksPath = tempDir
             .appendingPathComponent(".soul/sessions/\(project.id)/\(sessionId)/hooks.jsonl")

@@ -168,7 +168,8 @@ struct WorkingIndicator: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
+        let _ = SoulSignposts.event("Flash.WorkingIndicator.body", "isWorking=\(controller.isWorking) items=\(controller.items.count)")
+        return TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
             let secondsSinceActivity = Int(ctx.date.timeIntervalSince(controller.lastActivityAt))
             // SOUL-SOUL_DESKTOP-024: stall threshold is now provider-tuned
             // (Gemini 90s default, Claude 60s, Pi 120s — see Provider

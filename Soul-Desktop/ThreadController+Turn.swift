@@ -35,6 +35,7 @@ extension ThreadController {
     /// waiting for the `Task { await send(...) }` body to be scheduled —
     /// previously perceptible as a brief freeze before the bubble appeared.
     func acceptUserPrompt(display: String, agent: String, extraBlocks: [ContentBlock] = []) -> QueuedPrompt? {
+        SoulSignposts.event("Flash.acceptUserPrompt.enter", "len=\(display.count) itemsBefore=\(items.count)")
         let trimmedDisplay = display.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAgent.isEmpty else { return nil }

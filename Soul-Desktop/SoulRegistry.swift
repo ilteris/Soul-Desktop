@@ -93,6 +93,13 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// true }`) and by the live binary scan. Drives a muted "prompts only"
     /// subtitle in the sidebar so the user knows the row will load thin.
     var partialCapture: Bool = false
+    /// SOUL-SOUL_DESKTOP-268: model fired AfterAgent envelopes but every one
+    /// carried empty content (writer-drop class), AND no provider transcript
+    /// rescues the session. Distinct from `partialCapture` which trips when
+    /// no AfterAgent envelope landed at all. Rendered as a "no model reply"
+    /// badge on the sidebar row; row stays visible so the user can decide to
+    /// trash it.
+    var agentReplyMissing: Bool = false
     /// Most recent observed activity. Kept separate from `timestamp` so
     /// sidebar rows can display freshness without reordering on every write.
     var lastActivityAt: Date? = nil
@@ -120,8 +127,20 @@ struct SoulSession: Identifiable, Hashable, Codable {
 enum SoulRegistry {
     nonisolated(unsafe) static var homePath: String = NSHomeDirectory()
     nonisolated(unsafe) static var soulPath: String = homePath + "/dotfiles/soul"
-    nonisolated(unsafe) static var soulHomePath: String = ProcessInfo.processInfo.environment["SOUL_HOME"] ?? (homePath + "/.soul")
-    /// Legacy registry root. Kept readable during the SOUL_HOME migration.
+    /// SOUL-265 (2026-05-23): SOUL_HOME default reverted from `~/.soul` to
+    /// `~/soul_registry`. The kernel middleware (gemini-cli's Soul hooks
+    /// bundle, version 8.6.27-fidelity) still writes exclusively to
+    /// `~/soul_registry/sessions/...`; the half-finished migration split the
+    /// two writers across two filesystem roots, causing every desktop hook
+    /// (UserPrompt, NativeSessionID, Title, AfterAgent) to land in
+    /// `~/.soul/sessions/...` where the sidebar's primary enumeration path
+    /// never looked. Both writers now converge on `~/soul_registry/`. The
+    /// SOUL_HOME env var still works for tests / overrides.
+    nonisolated(unsafe) static var soulHomePath: String = ProcessInfo.processInfo.environment["SOUL_HOME"] ?? (homePath + "/soul_registry")
+    /// Same path as `soulHomePath` now that the migration is reverted. Kept
+    /// as a named alias so the legacy/primary distinction in sessionRoots()
+    /// continues to work; sessionRoots() will collapse them to a single
+    /// entry when they're equal.
     nonisolated(unsafe) static var registryPath: String = homePath + "/soul_registry"
 
     static var primarySessionsRoot: String { "\(soulHomePath)/sessions" }
@@ -226,6 +245,15 @@ enum SoulRegistry {
     }
 
     static func warmCache(forProject key: String, sessions: [SoulSession]) {
+        // A transient empty scan (mid-write directory state, brief I/O hiccup,
+        // CLI race during a sweep) must not poison the persisted cache. An
+        // empty cache survives across launches and the strict-freshness check
+        // in `cachedSessions` then short-circuits the fresh CLI scan at
+        // SidebarView+Loading.swift:139, leaving the project visibly empty
+        // even though disk has dozens of sessions. Skip both in-memory and
+        // disk writes when sessions is empty — let the next non-empty scan
+        // populate the cache.
+        guard !sessions.isEmpty else { return }
         let m = projectStamp(key: key)
         cacheLock.lock()
         cache[key] = ProjectCache(dirMtime: m, sessions: sessions)

@@ -32,6 +32,11 @@ struct SessionListPayload: Decodable {
         var first_event_ts: String?
         var last_event_ts: String?
         var first_user_prompt: String?
+        /// SOUL-SOUL-090: kernel CLI returns up to 3 non-empty user prompts
+        /// so SessionTitleResolver can walk past skill expansions and find
+        /// a prose prompt to title with. Optional for back-compat with
+        /// older kernel CLI binaries that don't emit this field.
+        var first_user_prompts: [String]?
         var title: String?
         var worktree_path: String?
         var session_start_ppid: Int?
@@ -39,6 +44,15 @@ struct SessionListPayload: Decodable {
         var session_kind: String?
         var has_desktop_signature: Bool?
         var partial_capture: Bool?
+        /// SOUL-SOUL_DESKTOP-268: count of AfterAgent events with non-empty
+        /// content. Distinct from envelope count (`after_agent_count`, not
+        /// exposed) because writer-drop bugs emit empty envelopes — counting
+        /// them as "model responded" lets archive-worthy sessions slip past
+        /// the partial-capture detector. The desktop combines this with its
+        /// own `transcriptTurns` probe (provider chat file may rescue a
+        /// session whose hooks ledger is empty) to make the final visibility
+        /// call.
+        var after_agent_content_count: Int?
         var native_session_ids: [String: String]?
         var finalize: Finalize?
 
@@ -52,6 +66,36 @@ struct SessionListPayload: Decodable {
             var source: String?
             var status: String?
             var worktree_path: String?
+
+            // Post-SOUL-093: kernel sometimes emits `fixed` as an array of
+            // strings (one issue ID per entry) instead of a single string.
+            // A strict String? decode used to throw `typeMismatch` for that
+            // shape and the failure bubbled all the way up — one bad row
+            // killed the whole project's session list and the sidebar
+            // rendered zero rows. Accept either shape: arrays get joined
+            // with newlines so downstream consumers see a single string.
+            enum CodingKeys: String, CodingKey {
+                case intent, summary, rationale, fixed, next_step
+                case timestamp, source, status, worktree_path
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                intent = try c.decodeIfPresent(String.self, forKey: .intent)
+                summary = try c.decodeIfPresent(String.self, forKey: .summary)
+                rationale = try c.decodeIfPresent(String.self, forKey: .rationale)
+                next_step = try c.decodeIfPresent(String.self, forKey: .next_step)
+                timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
+                source = try c.decodeIfPresent(String.self, forKey: .source)
+                status = try c.decodeIfPresent(String.self, forKey: .status)
+                worktree_path = try c.decodeIfPresent(String.self, forKey: .worktree_path)
+                if let s = try? c.decodeIfPresent(String.self, forKey: .fixed) {
+                    fixed = s
+                } else if let arr = try? c.decodeIfPresent([String].self, forKey: .fixed) {
+                    fixed = arr.isEmpty ? nil : arr.joined(separator: "\n")
+                } else {
+                    fixed = nil
+                }
+            }
         }
     }
 }
@@ -62,10 +106,25 @@ extension SoulRegistry {
     /// on CLI failure (executable missing, non-zero exit, decode error) —
     /// callers degrade to empty. SOUL-SOUL_DESKTOP-263.
     static func loadSessionListPayload(projectKey: String) -> SessionListPayload? {
+        let trace = UserDefaults.standard.bool(forKey: "soul.sidebar.trace")
         guard let data = SoulCLI.runSync(["session", "list", "-p", projectKey, "--json"]) else {
+            if trace { NSLog("[sidebar-load] FAIL project=\(projectKey) reason=cli-returned-nil") }
             return nil
         }
-        return try? JSONDecoder().decode(SessionListPayload.self, from: data)
+        do {
+            return try JSONDecoder().decode(SessionListPayload.self, from: data)
+        } catch {
+            // Decode failures here are how SOUL-093-class shape drifts surface:
+            // a single schema mismatch nukes the whole project's payload, so
+            // we keep the diagnostic available (gated on soul.sidebar.trace)
+            // rather than swallowing it entirely. FinalizeFixedShapeTests
+            // covers the known regression — any future drift will land here.
+            if trace {
+                let head = String(data: data.prefix(500), encoding: .utf8) ?? "<non-utf8>"
+                NSLog("[sidebar-load] FAIL project=\(projectKey) bytes=\(data.count) reason=decode-failed err=\(error) head=\(head)")
+            }
+            return nil
+        }
     }
 
     // MARK: - Sessions
@@ -366,6 +425,10 @@ extension SoulRegistry {
         //     on session-row UI semantics rather than ledger truth.
         // SOUL-SOUL_DESKTOP-263.
         guard let payload = loadSessionListPayload(projectKey: key) else { return [] }
+        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+            let ids = payload.sessions.map { "\($0.session_id.prefix(8))(pc=\($0.prompt_count ?? -1))" }.joined(separator: ",")
+            SidebarRowResolver.traceWrite("CLI project=\(key) count=\(payload.sessions.count) ids=[\(ids)]")
+        }
 
         struct Shape {
             var finalizePath: String?
@@ -438,10 +501,46 @@ extension SoulRegistry {
             let delegationEventCount: Int = rec.delegation_event_count ?? 0
             let partialCapture: Bool = rec.partial_capture ?? false
             if s.worktreePath == nil { s.worktreePath = rec.worktree_path }
-            if let title = rec.title, !title.isEmpty {
-                s.intent = title
+            // SOUL-SOUL_DESKTOP-082 Phase 1: route disk-side title resolution
+            // through SessionTitleResolver so the sidebar applies the same
+            // structural classifier the live thread does. The kernel CLI
+            // only gives us the FIRST user prompt; pass it through the
+            // resolver to (a) prefer finalize.intent when present, (b)
+            // synthesize `/<skill> · <date>` when the prompt is a bare
+            // slash or skill expansion, (c) keep customTitle/title-hook
+            // text on top.
+            // SOUL-SOUL-090: prefer the kernel-CLI's first_user_prompts
+            // (up to 3) so the resolver can walk past skill expansions. Old
+            // CLI binaries that don't emit the field fall back to the
+            // single first_user_prompt.
+            let resolverPrompts: [String] = {
+                if let many = rec.first_user_prompts, !many.isEmpty {
+                    return many
+                }
+                if let fp = rec.first_user_prompt, !fp.isEmpty { return [fp] }
+                return []
+            }()
+            // finalize.intent gets considered if present AND the existing
+            // s.intent (set from `finalize.intent` at line 423 above) is
+            // exactly the finalize intent — preserve the source so the
+            // resolver can demote a finalize.intent that's itself a skill
+            // expansion. We pass s.intent as the finalizeIntent slot only
+            // when this row is actually finalized; otherwise nil.
+            let finalizeIntentForResolver: String? = (rec.finalize != nil) ? s.intent : nil
+            let inputs = SessionTitleResolver.Inputs(
+                customTitle: rec.title?.isEmpty == false ? rec.title : nil,
+                finalizeIntent: finalizeIntentForResolver,
+                prompts: resolverPrompts,
+                firstAgentLine: nil,
+                branchSummary: nil,
+                skillHint: nil
+            )
+            let resolved = SessionTitleResolver.resolve(inputs)
+            if resolved != "New chat" {
+                s.intent = resolved
             } else if s.intent == nil {
-                s.intent = rec.first_user_prompt
+                // Resolver bottomed out with nothing useful — keep prior
+                // s.intent (likely nil), let downstream display "New chat".
             }
             if s.summary == nil { s.summary = s.intent }
             if rec.has_desktop_signature == true {
@@ -559,15 +658,34 @@ extension SoulRegistry {
                 }
             }
 
-            // Persist the inputs the visibility policy needs to decide
-            // "should this row appear in the sidebar?" Single source of
-            // truth now lives in SidebarVisibilityPolicy — no `substantive`
-            // gets pre-computed and stored on disk.
-            s.hasFinalize = (shape.finalizePath != nil)
+            // Persist the inputs SidebarRowResolver.shouldShow reads. Single
+            // source of truth for the visibility decision lives in the
+            // resolver — no `substantive` gets pre-computed and stored on
+            // disk.
+            // SOUL-SOUL-092 Phase E: prefer the kernel-CLI's `has_finalize`
+            // field, which is true when EITHER a legacy <ts>_<sid>.json
+            // file exists OR a Finalize event lives in hooks.jsonl. Post-
+            // Phase-D, new finalizes only land in the ledger — the legacy
+            // file path is nil, so the old `finalizePath != nil` check
+            // would mis-classify recent finalizes as unfinalized.
+            s.hasFinalize = rec.has_finalize ?? (shape.finalizePath != nil)
             s.sessionVisibility = sessionVisibility
             s.delegationEventCount = delegationEventCount
             s.sessionStartPpid = sessionStartPpid
             s.partialCapture = partialCapture
+            // SOUL-SOUL_DESKTOP-268: model fired AfterAgent envelopes but
+            // every one carried empty content AND no provider transcript
+            // rescues the session. Kernel exposes after_agent_content_count
+            // (non-empty count). Compared to partialCapture (no envelope at
+            // all), this catches the writer-drop class where envelopes did
+            // fire but content was lost.
+            let afterAgentContent = rec.after_agent_content_count ?? -1
+            if afterAgentContent >= 0,
+               s.promptCount > 0,
+               afterAgentContent == 0,
+               s.transcriptTurns == 0 {
+                s.agentReplyMissing = true
+            }
 
             out.append(s)
         }
@@ -750,6 +868,20 @@ extension SoulRegistry {
         transcriptCountCacheLock.unlock()
     }
 
+    /// Counts both JSON formatting styles for a key/value pair: the
+    /// tight form `"key":"value"` (line-delimited JSONL emitted by stream
+    /// writers) and the spaced form `"key": "value"` (pretty-printed JSON
+    /// emitted by snapshots / migrations). Sum is safe — a file uses one
+    /// form consistently. Without both, pretty-printed transcripts return
+    /// zero matches and the row falls through to the no-conversation gate
+    /// or shows "no reply" despite having a rescuable transcript on disk
+    /// (SOUL-SOUL_DESKTOP-268 root cause for ~half of the 95 affected rows).
+    private static func countJSONField(_ key: String, _ value: String, inFileAt path: String) -> Int {
+        let tight = countNeedle(Data("\"\(key)\":\"\(value)\"".utf8), inFileAt: path)
+        let spaced = countNeedle(Data("\"\(key)\": \"\(value)\"".utf8), inFileAt: path)
+        return tight + spaced
+    }
+
     private static func countTranscriptTurns(
         sessionId sid: String,
         projectKey key: String,
@@ -771,13 +903,12 @@ extension SoulRegistry {
                 } else {
                     // SOUL-222: Claude logs every tool roundtrip as
                     // {"type":"user", ...} with a "tool_use_id" pointing at
-                    // the prior tool_use block. A raw "type":"user" count
-                    // therefore inflates turn count by every tool the agent
-                    // ran. Subtract tool_use_id occurrences as a fast
-                    // heuristic — matches what ClaudeTranscriptReader
-                    // produces post-click, so the sidebar count stays stable
-                    // before and after the user opens the session.
-                    let userRecords = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: claudePath)
+                    // the prior tool_use block. Subtract tool_use_id
+                    // occurrences as a fast heuristic — matches what
+                    // ClaudeTranscriptReader produces post-click.
+                    let userRecords = countJSONField("type", "user", inFileAt: claudePath)
+                    // The key substring `"tool_use_id"` is identical in
+                    // tight and spaced JSON forms — countNeedle once.
                     let toolResults = countNeedle(Data("\"tool_use_id\"".utf8), inFileAt: claudePath)
                     let n = max(0, userRecords - toolResults)
                     recordTranscriptCount(n, forPath: claudePath)
@@ -792,7 +923,12 @@ extension SoulRegistry {
                 if let cached = cachedTranscriptCount(forPath: path) {
                     if cached > 0 { return cached }
                 } else {
-                    let n = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: path)
+                    // SOUL-265 sibling: gemini chat records use `"type":"user"`,
+                    // not `"role":"user"`. Pretty-printed `.json` snapshots
+                    // emit the spaced form `"type": "user"`; streaming
+                    // `.jsonl` emits the tight form. countJSONField covers
+                    // both.
+                    let n = countJSONField("type", "user", inFileAt: path)
                     recordTranscriptCount(n, forPath: path)
                     if n > 0 { return n }
                 }
@@ -804,12 +940,12 @@ extension SoulRegistry {
             if let cached = cachedTranscriptCount(forPath: codexPath) {
                 if cached > 0 { return cached }
             } else {
-                let byType = countNeedle(Data("\"type\":\"user\"".utf8), inFileAt: codexPath)
+                let byType = countJSONField("type", "user", inFileAt: codexPath)
                 if byType > 0 {
                     recordTranscriptCount(byType, forPath: codexPath)
                     return byType
                 }
-                let byRole = countNeedle(Data("\"role\":\"user\"".utf8), inFileAt: codexPath)
+                let byRole = countJSONField("role", "user", inFileAt: codexPath)
                 if byRole > 0 {
                     recordTranscriptCount(byRole, forPath: codexPath)
                     return byRole

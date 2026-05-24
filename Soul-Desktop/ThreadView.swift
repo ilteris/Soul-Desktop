@@ -88,7 +88,7 @@ struct ThreadView: View {
     // surrounding ScrollViewReader / ZStack expression back under budget.
     @ViewBuilder
     private var transcriptList: some View {
-        let split = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+        let split = controller.groupedItemsSplit
         // Suppress rows that are nested under a subagent — those are rendered
         // inline under the parent's row via `nestedChildren`. Computed once
         // per body re-eval to avoid the O(N) lookup per enumerate iteration.
@@ -97,6 +97,7 @@ struct ThreadView: View {
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
         let queuedItems = split.queued
+        let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
             ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
@@ -156,6 +157,19 @@ struct ThreadView: View {
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
+        // SOUL-LAYOUT-CYCLE-2: refuse animation contexts propagated from
+        // above. AppShell attaches `.animation(sidePanelAnimation, value:
+        // showSidebar / reviewVisible / filePreviewPath)` to the
+        // NavigationSplitView root — those modifiers install an animation
+        // context on the WHOLE subtree, including this LazyVStack. When a
+        // panel toggles AND new agent rows land in the same animation
+        // window, every ForEach insert + structural `if` toggle inside the
+        // stack animates with MoveTransition, spinning the layout engine in
+        // StackLayout / _FlexFrameLayout / MoveLayout recursion. Row inserts
+        // never need parent-driven animation anyway — autoScroll() handles
+        // the visual continuity, and per-row hover/footer animations stay
+        // intact because they're scoped to their own subtrees.
+        .transaction { $0.animation = nil }
     }
 
     // Extracted to keep `body` under the Swift type-checker's budget.
@@ -374,7 +388,7 @@ struct ThreadView: View {
                     // Resolve target id once: prefer the very last visible
                     // row (queued or main). Fall back to __bottom__ only if
                     // items is somehow empty.
-                    let splitInit = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                    let splitInit = controller.groupedItemsSplit
                     let targetId: AnyHashable = {
                         if let lastQueued = splitInit.queued.last { return lastQueued.id }
                         if let lastMain = splitInit.main.last { return lastMain.id }
@@ -391,7 +405,7 @@ struct ThreadView: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                                 suppressAnchorWrites = false
                                 recentlyHydrated = false
-                                let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                                let splitNow = controller.groupedItemsSplit
                                 updateAnchor(in: splitNow.main)
                             }
                         }
@@ -477,25 +491,29 @@ struct ThreadView: View {
                     controller.scrollAnchorAtBottom = anchor.atBottom
                     controller.scrollAnchorItemId = anchor.itemId
                 }
-                // SOUL-SOUL_DESKTOP-231: skeleton renders as a peer of the
-                // ScrollView inside a ZStack, NOT as an .overlay on the
-                // ScrollView, and the cross-fade .animation(value:) is
-                // attached to the ZStack — not the ScrollView. Earlier
-                // attempt put .overlay { ... }.animation(value: isHydrating)
-                // on the ScrollView itself; that installed an animation
-                // context spanning the entire LazyVStack subtree. Combined
-                // with row-level .fixedSize markdown and concurrent
-                // items.count growth + a scroll gesture during streaming,
-                // SwiftUI's ideal-size negotiation never converged and the
-                // main thread spun in StackLayout/_FlexFrameLayout/MoveTransition
-                // recursion until the stack overflowed.
-                if controller.isHydrating {
-                    ThreadSkeletonView()
-                        .background(SoulColor.bg)
-                        .transition(.opacity)
-                }
+                // SOUL-SOUL_DESKTOP-231 / SOUL-LAYOUT-CYCLE-2: skeleton is a
+                // peer of the ScrollView inside a ZStack. Original fix moved
+                // the cross-fade .animation(value:) off the ScrollView and
+                // onto the ZStack — but `.animation(_:value:)` still installs
+                // an animation context on the WHOLE subtree (ScrollView +
+                // LazyVStack) during the value transition. If isHydrating
+                // flipped at the same instant new agent rows landed (e.g.
+                // the gemini-cli "Invalid session — re-registering" recovery
+                // mid-stream), every structural insert inside the LazyVStack
+                // during that 0.18s window animated with MoveTransition,
+                // spinning StackLayout / _FlexFrameLayout / MoveLayout.
+                // Tighten the scope to a Group that contains ONLY the
+                // conditional skeleton; the ScrollView/LazyVStack no longer
+                // sees the animation context.
+                Group {
+                    if controller.isHydrating {
+                        ThreadSkeletonView()
+                            .background(SoulColor.bg)
+                            .transition(.opacity)
+                    }
                 }
                 .animation(.easeOut(duration: 0.18), value: controller.isHydrating)
+                }
             }
 
             composerSection
@@ -586,7 +604,7 @@ struct ThreadView: View {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 suppressAnchorWrites = false
-                let splitNow = splitGroupedItems(controller.groupedItems, queuedIds: controller.queuedItemIDs)
+                let splitNow = controller.groupedItemsSplit
                 updateAnchor(in: splitNow.main)
             }
         }
@@ -639,22 +657,6 @@ struct ThreadView: View {
             return []
         }
         return controller.nestedSubagentChildren(parentToolCallId: subagentId)
-    }
-
-    private func splitGroupedItems(_ items: [ThreadItem], queuedIds: Set<UUID>) -> (main: [ThreadItem], queued: [ThreadItem]) {
-        guard !queuedIds.isEmpty else { return (items, []) }
-        var main: [ThreadItem] = []
-        var queued: [ThreadItem] = []
-        main.reserveCapacity(items.count)
-        queued.reserveCapacity(queuedIds.count)
-        for item in items {
-            if queuedIds.contains(item.id) {
-                queued.append(item)
-            } else {
-                main.append(item)
-            }
-        }
-        return (main, queued)
     }
 
 }
