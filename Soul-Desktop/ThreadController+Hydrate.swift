@@ -117,12 +117,23 @@ extension ThreadController {
                     r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
                 }
             case .pi:
-                // Try pi-acp's own chat file first (SOUL-SOUL_DESKTOP-140).
-                // Matches the Claude/Gemini happy path: rich content from
-                // the provider transcript when we have its native UUID,
-                // kernel-ledger fallback when we don't. The fallback runs
-                // in the empty-history block below.
-                r.history = PiTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
+                // SOUL-SOUL_DESKTOP-274: same SOUL-LEDGER-FIRST rationale
+                // as Claude (lines 78-95) and Gemini (above). pi-acp
+                // cold-spawns mint a fresh NativeSessionID per relaunch
+                // (real-disk audit: multiple Pi sessions have 2-4 native
+                // rotations). The empty-history fallback at line ~150
+                // doesn't fire when the latest pi-acp chat file is
+                // non-empty but content-collapsed. Trust the kernel
+                // ledger when it has both kinds; fall back to
+                // PiTranscriptReader only when the ledger is partial.
+                let ledger = HooksReader.events(forSession: sid, project: proj).map { $0.item }
+                let hasUser = ledger.contains { if case .userMessage = $0 { return true } else { return false } }
+                let hasAgent = ledger.contains { if case .agentMessage = $0 { return true } else { return false } }
+                if hasUser && hasAgent {
+                    r.history = ledger
+                } else {
+                    r.history = PiTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
+                }
             case .codex:
                 // Codex has no off-disk transcript file we can read (no
                 // rollout reader yet), but the kernel hooks ledger carries
