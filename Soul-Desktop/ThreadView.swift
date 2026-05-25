@@ -373,25 +373,25 @@ struct ThreadView: View {
                     // bottom — that's where the conclusion of the conversation
                     // is, and that's what the user came to see.
                     //
-                    // The earlier fix scrolled to "__bottom__" (a trailing
-                    // Color.clear marker AFTER the ForEach). On long
-                    // transcripts this landed in the middle because LazyVStack
-                    // hadn't materialized the bottom rows yet, so SwiftUI's
-                    // position estimate for the marker was wrong. Scrolling
-                    // to the LAST REAL ITEM's id instead is reliable —
-                    // LazyVStack materializes it on demand and lands precisely
-                    // because the item's own height anchors the calculation.
+                    // SOUL-SOUL_DESKTOP-276: prefer the last non-tool-call item so the user lands
+                    // on the most recent agent reply rather than a noisy tool block.
                     guard !nowHydrating else { return }
                     anchor.atBottom = true
                     scrollFollow.userDetachedFromBottom = false
                     recentlyHydrated = true
-                    // Resolve target id once: prefer the very last visible
-                    // row (queued or main). Fall back to __bottom__ only if
-                    // items is somehow empty.
+
                     let splitInit = controller.groupedItemsSplit
+                    let suppressedIds = controller.nestedSubagentChildItemIds
+                    let mainItems = suppressedIds.isEmpty
+                        ? splitInit.main
+                        : splitInit.main.filter { !suppressedIds.contains($0.id) }
+                    let queuedItems = splitInit.queued
+
                     let targetId: AnyHashable = {
-                        if let lastQueued = splitInit.queued.last { return lastQueued.id }
-                        if let lastMain = splitInit.main.last { return lastMain.id }
+                        if let lastQueued = queuedItems.last(where: { !$0.isToolOrNoise }) { return lastQueued.id }
+                        if let lastMain = mainItems.last(where: { !$0.isToolOrNoise }) { return lastMain.id }
+                        if let lastQueued = queuedItems.last { return lastQueued.id }
+                        if let lastMain = mainItems.last { return lastMain.id }
                         return "__bottom__"
                     }()
                     // Two passes: first warms the LazyVStack to materialize
@@ -838,4 +838,15 @@ struct ThreadItemRow: View {
         }
     }
 
+}
+
+private extension ThreadItem {
+    var isToolOrNoise: Bool {
+        switch self {
+        case .toolCall, .toolCallGroup, .plan, .agentThought, .status, .error:
+            return true
+        default:
+            return false
+        }
+    }
 }

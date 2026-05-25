@@ -6,76 +6,149 @@ CONTRACT: {}
 </active_persona>
 
 <project_manifest>
-# Soul Kernel
+# Soul Desktop
 
-The local agent runtime: project resolution, session ledger, persona-scoped hydration, audit trail. Used by Claude Code, Gemini-CLI, and Pi against a shared file-based registry.
+A native macOS chat client for coding agents — Claude Code, Gemini-CLI, OpenAI Codex, and Pi — all in one window, backed by a local session ledger.
 
-## The `soul` CLI (Unified Interface)
+Soul Desktop talks to each agent over the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) (ACP) and writes every prompt and reply to a project-keyed JSONL ledger on disk. Open the app, click a session from six weeks ago, and pick up where you left off — same context, same agent, same project root. No cloud, no account.
 
-The `soul` CLI is the authoritative orchestration layer for the kernel. It provides a harness-agnostic interface for session lifecycle management, registry state manipulation, and architectural auditing.
+## Why
 
-- **`soul finalize`**: Converges transient work into persistent memory. Executes the Gate S15 integrity audit, synthesizes the "Golden Quad" from background decisions, commits the session, and signals a context reset (`[[SOUL_CONTEXT_RESET]]`).
-- **`soul pulse`**: The system's heartbeat. Scans the registry for situational awareness and performs opportunistic trace Garbage Collection (GC).
-- **`soul decision`**: The implicit background critic. Fired automatically after every turn to extract high-signal intent and rationale without blocking the user loop.
-- **`soul view`**: Interactive TUI for browsing sessions, tasks, and the project graph.
-- **`soul task`**: Canonical management for project-sharded tasks.
+I switch between Claude, Gemini, Codex, and Pi depending on the task. Every one of them ships a CLI with its own session-resume model, its own transcript file format, and its own quirks. I built Soul Desktop so I can:
 
-## What's in the box
+- See every conversation across every agent in one sidebar, sorted by recency, filtered by project.
+- Resume any of them by clicking — no copy-pasting prompts into a fresh terminal, no `--resume <some-uuid>`.
+- Replay any session top-to-bottom from the on-disk ledger, even if the agent's own transcript got rotated or corrupted.
+- Run slash commands (`/pulse`, `/finalize`, …) that expand into project-aware prompts before they hit the agent.
 
-1. **`PROJECTS.json`** is the canonical project manifest. Path → project key → harness config → specialist roster.
-2. **`soul_hydrate.py`** assembles provider-agnostic system prompts from project config, registry state, active task, recent sessions, and (when `--agent <name>` is passed) a specialist's skills and instructions.
-3. **`soul_trace_commit.py`** writes provider events into `hooks.jsonl` and computes lightweight predictive-alignment rewards.
-4. **`soul_decision.py`** runs a background LLM pass (via `soul_critic_llm.py`) after every turn to populate the ledger with high-density architectural decisions.
-5. **`soul_index.py`** maintains a session index for O(1) lookups during hydration.
-6. **`soul_env.py`** centralizes paths and project-key resolution.
+The kernel ledger is the authoritative source. Provider transcripts are caches.
 
-## Implicit Turn Audit
+## Status
 
-The kernel enforces the **Golden Pattern** via an implicit, non-blocking audit loop.
-- **Trigger**: Every assistant response triggers `soul decision` in the background.
-- **Extraction**: The system extracts the authoritative **Golden Quad** (Intent, Rationale, Next Step) for every turn.
-- **Benefit**: Manual finalization is now a "Low-Stakes" event because the registry has been incrementally groomed throughout the session.
+Single-user side project. Built for my own daily workflow on macOS 26.x. Not packaged for distribution. The Xcode scheme `Soul-Desktop Dev` is what I run.
 
-## Unified Agent Protocol (App Server)
+## Build
 
-The App Server is the **protocol master** for all agents in the Soul ecosystem. Whether an agent is terminal-resident (Pi, Gemini-CLI) or app-native (Codex), it must adhere to the Soul JSON-RPC schema defined in `app_server/protocol.py`.
+Requires:
+- Xcode 16+ on macOS 26.3 or newer (Apple Silicon)
+- The agents themselves on `PATH`:
+  - `claude` via `npx @agentclientprotocol/claude-agent-acp`
+  - `gemini` (Google's gemini-cli)
+  - `codex` (OpenAI's `codex app-server`)
+  - `pi` via `npx pi-acp`
 
-- **Transport Parity**: The system provides two primary entry points:
-    - `daemon.py` (Unix Socket): Used by **Codex** and Soul Desktop for high-performance, real-time event streaming and reasoning capture.
-    - `server.py` (Stdio): Used by **Pi** and legacy bridges to wrap closed-source or terminal-bound binaries.
-- **Audit Parity**: By centralizing the turn-completion logic in the App Server, the system enforces the **Triple-Anchor Audit** pipeline across all providers. When *any* agent (Pi, Codex, or Gemini) completes a turn through the server with high confidence (`>= 1.0`), the **Shadow Auditor** (`soul_shadow_audit.py`) fires automatically in the background to perform an independent epistemic review.
-- **Derived Views**: The daemon is the single writer for `transcript.jsonl`, a chat-optimized view of the raw `hooks.jsonl` ledger used for sidebar rendering and replay.
+Open `Soul-Desktop.xcodeproj` in Xcode, pick the `Soul-Desktop Dev` scheme, hit run.
 
-## Specialist model
+For a watch-and-rebuild dev loop:
 
-Specialists are personas, not enforced roles. The kernel uses them for two things:
+```
+brew install fswatch
+./scripts/dev.sh
+```
 
-- **Prevention**: when you hydrate as `--agent creative_technologist`, the prompt lists only that persona's skills. The model sees fewer options and picks more accurately.
-- **Audit**: every tool call records the active persona. When persona ≠ the skill's owner, the kernel writes a `contract_drift` field on the trace. This is instrumentation, not interception — the call runs either way.
+This rebuilds and relaunches the app on every save to `Soul-Desktop/*.swift`.
 
-There is no tool-call blocking, no cross-provider spawning bridge, no path-ownership enforcement. Single-actor scope doesn't justify that engineering; see SPEC-050 for the reframe.
+## How it's wired
 
-## Key files
+```
+┌──────────────────┐   ACP / JSON-RPC over stdio   ┌─────────────┐
+│   Soul Desktop   │ ←──────────────────────────→  │  Agent CLI  │
+│   (SwiftUI)      │                               │  (claude,   │
+│                  │                               │   gemini,   │
+│  ThreadController│                               │   codex,    │
+│        ↓         │                               │   pi-acp)   │
+│   ACPClient      │                               └─────────────┘
+│        ↓         │
+│  ACPTransport    │                               ┌─────────────┐
+└────────┬─────────┘                               │   Kernel    │
+         │                                         │   ledger    │
+         └────── hooks.jsonl writes ─────────────→ │  per project│
+                                                   └─────────────┘
+```
 
-| File | Role |
-| :--- | :--- |
-| `bin/soul` | The unified CLI entry point. |
-| `kernel/commands/soul_finalize.py` | CLI orchestrator; verify gate, session persist, harness regen, registry hygiene, context-reset signal. |
-| `kernel/commands/soul_finalize_hook.py` | Claude Stop-hook handler; parses transcript, commits state. |
-| `kernel/soul_decision.py` | Background decision worker (implicit audit). |
-| `kernel/resolve_project_key.py` | Canonical project resolver. |
-| `kernel/soul_env.py` | Shared path constants. |
-| `kernel/soul_hydrate.py` | Builds the system prompt for Claude, Gemini, Pi, or shell. |
-| `kernel/core/soul_registry_io.py` | Locked JSON helpers. |
-| `kernel/core/soul_trace_commit.py` | Provider hook entrypoint; writes `hooks.jsonl`. |
-| `kernel/soul_index.py` | Session index used by hydration. |
-| `app_server/daemon.py` | Local daemon for event fanout and replay. |
+Three layers, top to bottom:
 
-## Status notes
+- **SwiftUI surface** — `AppShell.swift`, `SidebarView.swift`, `ThreadView.swift`, `ComposerView.swift`. Everything you see.
+- **Controller** — `ThreadController.swift` owns the per-thread state machine: spawn, resume, prompt, cancel, tool-call rendering, queue-on-busy, stall watchdog, slash-command expansion.
+- **ACP layer** — `Soul-Desktop/ACP/`. `ACPTransport` is the stdio framer, `ACPClient` is the JSON-RPC client, `ACPProtocol` is the type-checked notification decoder, `ACPProviderSpawn` resolves the right CLI invocation per provider.
 
-- The `contract_drift` instrumentation is live. The blocking enforcement described in earlier drafts of SPEC-050 is intentionally not implemented.
-- `soul-spawn` and the cross-provider bridge are non-goals. Hydration produces provider-agnostic prompts; each provider's native sub-agent mechanism is what spawns.
-- Specs in `specs/` describe what the kernel *does*; CLAUDE.md governs behavior; this README is the orientation surface.
+### Session resume
+
+Each provider has a different resume story; the desktop normalizes them through ACP's `session/load`:
+
+| Provider | Resume path | Notes |
+|---|---|---|
+| Claude | ACP `session/load` | First-class. Streams prior transcript via user/agent message chunks. |
+| Gemini-CLI | ACP `session/load` | First-class. Files chats under `~/.gemini/tmp/<basename>(-N)/chats/`. |
+| Codex | `hydrateFromDisk` + ACP `session/load` | Codex doesn't speak `session/load` over RPC; rendered from kernel ledger, lazy spawn on first send. |
+| Pi | ACP `session/load` | First-class as of pi-acp 0.0.27. Earlier code used a `--resume` CLI flag that pi-acp doesn't parse; that's gone. |
+
+### Sources of truth
+
+- **`~/soul_registry/sessions/<project>/<sid>/hooks.jsonl`** — the kernel ledger. Every prompt, every assistant turn, every tool call. Replay reads from this.
+- **`~/soul_registry/sessions/<project>/<sid>.json`** — finalize summary written by `/finalize`.
+- **`~/dotfiles/soul/config/PROJECTS.json`** — the project manifest. Adds a path/name/pillar entry for every project the sidebar should know about.
+
+Provider-specific transcripts (`~/.claude/projects/...`, `~/.gemini/tmp/...`, `~/.pi/agent/sessions/...`) are treated as caches. If they're missing or corrupt, the kernel ledger is enough to render a Replay.
+
+## Directory map
+
+```
+Soul-Desktop/
+├── Soul_DesktopApp.swift        SwiftUI App entry
+├── AppShell.swift               Three-pane shell: sidebar, canvas, optional right panel
+├── SidebarView.swift            Projects + sessions list, filters, archive disclosure
+├── ThreadView.swift             Per-thread canvas: transcript + tool rows + composer
+├── ComposerView.swift           Bottom input, slash palette, file chips, harness/permission pickers
+├── ThreadController.swift       Per-thread state machine; the heart of the app
+├── SoulRegistry.swift           Reads ~/soul_registry, builds sidebar rows, caches scans
+├── Providers.swift              Provider enum + per-provider stall budgets + icons
+├── ACP/
+│   ├── ACPTransport.swift       stdio framer, length-prefixed JSON-RPC
+│   ├── ACPClient.swift          JSON-RPC client, pending request map, event stream
+│   ├── ACPProtocol.swift        Codable types for ACP requests/notifications
+│   ├── ACPProviderSpawn.swift   Per-provider executable resolution + argv
+│   └── CodexClient.swift        Codex-specific app-server JSON-RPC variant
+├── ReplayController.swift       Read-only playback of a finalized session
+├── ReplayView.swift             Replay UI + scrubber
+├── HooksReader.swift            Streaming hooks.jsonl reader
+├── ClaudeTranscriptReader.swift Off-disk Claude transcript → ThreadItems
+├── GeminiTranscriptReader.swift Off-disk Gemini chat → ThreadItems
+├── SessionLoadability.swift     Per-row "is this resumable?" probe
+├── ArchiveStore.swift           Per-project archived-session set
+├── ActiveTaskStore.swift        Pulls the active SOUL-* task from the registry
+├── DesignSystem.swift           Fonts, colors, metrics, SoulIcon
+├── TypographyLab.swift          Standalone window (⌘⌥T) for tuning fonts live
+└── ...
+```
+
+## Slash commands
+
+The composer expands `/cmd` into a project-aware prompt before sending. Built-ins live in `SkillsRegistry.swift`; user-defined skills are read from `~/.claude/skills/<name>/SKILL.md`.
+
+Claude reads `~/.claude/skills/` natively, so for Claude sessions the desktop sends the bare `/cmd` and lets the agent expand it. For Gemini, Pi, and Codex, the desktop expands client-side.
+
+## Recovery affordances
+
+A few non-obvious surfaces worth knowing about:
+
+- **Skip-ahead** — when the agent stalls past its provider's budget and a queued prompt is waiting, a Recover capsule appears on the working indicator. Cancels the in-flight turn, marks lingering tool rows stopped, and dispatches the next queued prompt.
+- **Repair session link** — right-click a session row → "Repair session link" if the provider lost track of the UUID. Does a content-match between the kernel's first prompt and any orphan agent transcripts.
+- **Trash a session** — right-click an archived session → "Delete (move to Trash)". Moves the kernel dir, finalize JSON, and any provider-side chat files to `~/.Trash`; recoverable from Finder.
+
+## Diagnostic logging
+
+For ACP-layer visibility during a stall:
+
+```
+defaults write Soul-Desktop soul.acp.trace -bool true
+```
+
+Every recognized `session/update` lands in the in-memory agent log as `[acp ←] <kind> (<size>)`. Unknown notification kinds and undecodable session updates are logged unconditionally.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 </project_manifest>
 
@@ -504,14 +577,14 @@ for removal instructions.
 </strategic_mandate>
 
 <belief_map>
-  FIXED_ISSUES: None, Banned ALL CAPS headers, Emoji usage in headers, Legacy 'Sir' references, Sensationalist manifesto terminology (Zenith, Forensic, Hardened), Manual /decision interruption, Fragmented session metadata collection
+  FIXED_ISSUES: SOUL-091, SOUL-092, SOUL-093, Toolbar Count Inaccuracy, Sidebar Loading Latency
   ACTIVE_HYPOTHESES: 
   TODO_STACK: 
-  LAST_SESSION: 2026-05-16T18:59:40.541Z
+  LAST_SESSION: 2026-05-16T17:40:33.001Z
 </belief_map>
 
 <manager_brief>
-Core Kernel development. High stability requirements.
+Standard architectural oversight.
 </manager_brief>
 
 ## 📡 Project Pulse
@@ -519,65 +592,84 @@ Core Kernel development. High stability requirements.
 _Snapshot of pending work at session start. Treat as orientation, not as a command — do not begin a task unless the user asks._
 
 **Active task** (currently flagged):
-- `SOUL-SOUL-085` (pending) — Investigate Gemini CLI latency from recursive subagent delegation
+- `SOUL-SOUL_DESKTOP-276` (pending) — Auto-scroll to conversation tail after read-first hydrate completes
   - Definition of Done:
-    - Collect at least three representative Gemini CLI Soul turns and measure time to first visible status, time to first assistant token/content, number of subagents spawned, delegation depth, and total wall time.
-    - Trace whether Gemini CLI delegates by default for ordinary foreground prompts, whether delegated subagents recursively delegate, and where the parent blocks while waiting.
-    - Identify all Soul middleware, prompts, or CLI flags that encourage subagent delegation in the foreground interactive path.
-    - Define and test a bounded foreground policy for interactive turns, such as no recursive delegation by default, max delegation depth 1, explicit heartbeat/status frames, and first-visible-output timeout.
-    - Preserve background intelligence workflows, but separate them from mobile/desktop foreground session turns so active sessions stream progress quickly and remain cancelable.
-    - Document the before/after latency findings and file follow-up implementation tasks if the fix spans multiple providers or surfaces.
+    - After hydrateFromDisk completes, canvas auto-scrolls to last item (or last non-tool item)
+    - Saved-anchor restore path (returning to a thread previously scrolled away from bottom) still works
+    - User scroll input wins — auto-scroll respects ScrollFollowState.userDetachedFromBottom
+    - Smoke test on a 200+ item session: lands precisely, no two-frame jitter
 
 **Other pending:**
-- `SOUL-APP-007` — App Server Intelligence: Phase 3 Diffs & Cross-Host Sync
-- `SOUL-SOUL-084` — Prevent Desktop UI truth from outrunning hooks.jsonl ledger truth
-- `SOUL-SOUL-083` — Mac mini always-on Soul App Server host migration
-- `SOUL-SOUL-082` — Unify SOUL_HOME vs SOUL_REGISTRY session-root contract
-- `SOUL-SOUL-079` — Canonical thread.json metadata contract for cross-surface sessions
-- `SOUL-SOUL-078` — Mobile active-turn continuity across navigation
-- `SOUL-SOUL-052` — Implement Real-Time WebSocket Output & Event Streaming
-- `SOUL-SOUL-051` — Implement Asynchronous Subagent Execution & Process Mapping
-- `SOUL-SOUL-050` — Implement Mobile File Explorer & Secure Workspace Guard
-- `SOUL-SOUL-048` — Kernel hook writers: emit UTC ISO8601 with Z suffix, not naive datetime
-- `SOUL-SOUL-032` — /finalize UX revisit: rename or internalize the session-reset surface
-- `SOUL-PULSE-001` — pulse.py reports closed tasks as pending — completed/ subdir or status field not filtered
+- `SOUL-SOUL_DESKTOP-269` — Replace archive+delete with trash-with-restore
+- `SOUL-SOUL_DESKTOP-268` — Strengthen partial_capture detector to flag tool-only sessions
+- `SOUL-SOUL_DESKTOP-082` — Sidebar title-collision: near-identical auto-generated session titles are indistinguishable
+- `SOUL-SOUL_DESKTOP-267` — Sidebar hides 1 of 3 visibility-eligible sessions in stock-activity (ac7724d2 missing despite promptCount=17)
+- `SOUL-SOUL_DESKTOP-049` — Per-provider quota / usage chip (Codex API, Claude/Gemini transcript scan, Pi unknown)
+- `SOUL-SOUL_DESKTOP-050` — Codex Phase 3: render tool-call / file-change / reasoning / plan items in canvas
+- `SOUL-SOUL_DESKTOP-002` — Thread header menu: Fork into same/new worktree
+- `SOUL-SOUL_DESKTOP-259` — Task creation must allocate IDs atomically in the kernel
+- `SOUL-SOUL_DESKTOP-255` — V2 control panel: centralize Soul CLI execution layer
+- `SOUL-SOUL_DESKTOP-258` — V2 control panel: split prototype shell into focused modules
+- `SOUL-SOUL_DESKTOP-257` — V2 control panel: make tasks the primary work surface
+- `SOUL-SOUL_DESKTOP-256` — V2 control panel: replace stdout readout with live operation cards
 
 ## Manager Brief
 
-Core Kernel development. High stability requirements.
+Standard architectural oversight.
 
 ## Last Session
-_2026-05-22 12:49_
-**Intent:** Finalize current Codex/Soul session
-**Summary:** User requested an explicit Soul finalization after the prior Soul delegation and Codex ledger work. No additional code changes were made in this turn.
-**Rationale:** Manual finalization was explicitly requested in the current turn, satisfying the Soul finalization gate. Using --codex and explicit fields avoids an empty-ledger failure while the Codex Desktop live ledger bridge still awaits new-thread validation.
+_2026-05-25 01:56_
+**Intent:** Eliminate SOUL-247-class data-integrity drift across kernel writers, fix multiple desktop hydration and counter bugs, and centralize hook-event construction behind a canonical chokepoint with CI enforcement
+**Summary:** Shipped 15 closed tasks across two repos in one session. Collapsed sidebar/hydrate race fixes: title rename persistence (SOUL-272), kernel SessionOwner recognition for desktop signature (SOUL-094), Gemini ledger-first hydration (SOUL-273), Pi ledger-first hydration (SOUL-274), default-true isHydrating to eliminate blank-flash on session click. Eliminated empty-text UserPrompt pollution from kernel+desktop writers (SOUL-096) and amplified-counter inflation in sidebar (SOUL-275). Renamed Codex bridge AfterUser→UserPrompt event name and added consecutive-only dedupe of role==user replay echoes (SOUL-095, refined post-audit to single-slot last-seen rather than set-based). Reimported the one affected Codex rollout (SOUL-098). Deleted ~218 lines of dead readHooksMetadata code (SOUL-277). Most importantly built kernel/event_writer.py as the single chokepoint for every hook event construction (UserPrompt/AfterAgent/AfterModel/AfterTool/NativeSessionID/SessionMeta/SessionOwner/SESSION_START/Title/Delegation/TurnSteered/AutoCompactFired/AutoCompactToast/HookCaptureDropped/Finalize) plus a CI grep contract test that rejects ad-hoc literal {event: X} dicts outside the module (SOUL-097), then migrated all 17 known writers behind it (SOUL-099) so the transitional allowlist is now empty. Two rounds of adversarial subagent verification caught real regressions I had introduced — silent reasoning-only AfterAgent drop in prompt_driver, fail-soft or{} fragility in codex_bridge and trace_commit — fixed and pinned with regression tests. CI now passes 5 contract tests including test_finalize_preserves_none_fields and test_after_agent_admits_reasoning_only. Also stamped 23 legacy FRICTION EXTRACTION RUBRIC sessions with session_visibility=machine via promoted backfill script in dotfiles/soul/scripts/. Filed SOUL-098 done, SOUL-276 (auto-scroll polish), SOUL-278 (HooksReader AfterUser→UserPrompt alias) as follow-ups.
+**Rationale:** SOUL-247 family bugs kept recurring because N writers constructed event dicts independently and drifted from canonical schema — structural fix is single-source schema construction enforced by CI; multiple adversarial verifications were intentional because solo coding misses regressions
 
 ## Recent Arc
 _Last 10 sessions (past 3 days)_
 
-### 2026-05-22 (5 sessions)
-- **22:01** [?] Subagent systems_architect completed finding.
-- **21:02** [?] Subagent systems_architect completed finding.
-- **16:34** [?] Subagent general-purpose completed finding.
-- **12:49** [codex] Committed the isolated keep-awake change in `/Users/ilteris/Code/Soul-Desktop`.
+### 2026-05-24
+- **19:38** [Claude] Fixed empty sidebar rows traced to two bugs: SessionListPayload.Finalize.fixed strict String? decode threw typeMismatch on the post-SOUL-093 [String] shape and nuked entire proj...
 
-Commit: `c7fc5a8 Add keep-awake setting`
+### 2026-05-22
+- **12:53** [codex] No, it should not affect desktop/local modes.
 
-It includes only:
-- `Soul-Desktop/SoulPowerAssertion.s...
-- **00:12** [Claude] Cleaned a dirty index spanning two repos and shipped it: 9 logical commits to dotfiles (SOUL-SOUL-064 ACP execution layer with 10 test files, SOUL-SOUL-062 mobile sidecar API + ...
+Mobile mode just adds a TCP listener on `0.0.0.0:4720`. The Unix socket stays active:
 
-### 2026-05-21 (5 sessions)
-- **22:38** [?] Subagent adversarial_judge completed finding.
-- **22:28** [?] Subagent adversarial_judge completed finding.
-- **09:06** [?] Subagent code_archaeologist completed finding.
-- **08:53** [?] Subagent code_archaeologist completed finding.
-- **01:50** [?] Subagent registry_guardian completed finding.
+```text
+unix socket: present
+tcp :4720: lis...
 
-## Carry-Over Note
-_From last session — references `SOUL-SOUL-046`, not the active task (`SOUL-SOUL-085`). Treat as background, not the imperative._
+### 2026-05-17 (2 sessions)
+- **09:13** [Gemini] Moved handleACPRequest and its compactJSONString helper from ThreadController+Codex.swift to ThreadController+ACP.swift. Verified that handleACPRequest remains accessible to the...
+- **07:00** [Gemini] Sampled live beachball #1 → GitReview.swift run() was deadlocking on Process+Pipe (waitUntilExit before draining stdout); shipped -117 to drain first, killed 4 stuck git-diff zo...
 
-Open a new Codex Desktop thread and validate SOUL-SOUL-046 by checking /Users/ilteris/soul_registry/sessions/soul/<CODEX_THREAD_ID>/hooks.jsonl.
+### 2026-05-16 (2 sessions)
+- **22:06** [Gemini] Continued the stability/perf push past the first finalize. Investigated soul-1 reincarnation root cause: traced through gemini-cli source (claimNewSlug + findExistingSlugForPath...
+- **20:13** [Gemini] Shipped SOUL-FINALIZE-PARITY-001 unifying /finalize across Claude/Gemini/Pi/Codex by routing through the soul finalize CLI, regenerating CLAUDE.md/GEMINI.md/AGENTS.md presence-g...
+
+### 2026-05-14
+- **23:51** [Claude] Bumped every sidebar font size +1pt and fixed the file-preview path resolver to handle agent-prefixed paths (project-basename dedup) and bare filenames in subdirectories (bounde...
+
+### 2026-05-10 (2 sessions)
+- **12:48** [Claude] Closed -007 and shipped -008. Built NewProjectWizard (kebab key, display name, path, pillar, tier picker with hint text, git-init checkbox) — writes PROJECTS.json + mkdir + git ...
+- **01:48** [Claude] Big polish + stability pass on Soul-Desktop. Hardened ACP layer (loadSession capability gating + UUID pre-check + broad rpcError fallback; SIGPIPE ignored process-wide; enriched...
+
+### 2026-05-09
+- **23:07** [Claude] Shipped Phases 0/0b/0c/0d/1 end-to-end: SwiftUI design system + JetBrainsMono shell, ACP JSON-RPC client over stdio (NDJSON, request correlation, notification stream, permission...
+
+## Next Step
+User relaunches Soul-Desktop to verify cascaded fixes; SOUL-278 (HooksReader AfterUser → UserPrompt read-side alias) is the only blocker for pre-SOUL-095 Codex sessions to render correctly in canvas
+
+## Fixed — Do Not Repeat
+- Modified: SidebarView.swift
+- Modified: AppShell.swift
+- Modified: TypographyLab.swift
+- Modified: Soul_DesktopApp.swift
+- Modified: SoulRegistry.swift
+- Modified: ThreadController.swift
+- Modified: Providers.swift
+- Modified: ACPProviderSpawn.swift
+- Modified: ComposerView.swift
+- Modified: ThreadView.swift
 
 ## Active Specialists
 `@systems_architect`
@@ -585,548 +677,154 @@ Open a new Codex Desktop thread and validate SOUL-SOUL-046 by checking /Users/il
 
 <agent_findings>
 ### Agent: SYSTEMS_ARCHITECT
+**Mission**: Work this Soul task.
+
+Task ID: SOUL-SOUL_DESKTOP-051
+Project: soul-desktop
+Status: in_progress
+Priority: medium
+Subject: Native ACP image content blocks for image attachments
+
+Definition of Done:
+- ACP ContentBlock enum extended with .image(mimeType, base64) encoding branch
+- Composer attachment chips serialize images to image content blocks when provider.capabilities.image is true
+- Per-provider capability gating: capability map populated from initialize() response
+- File size cap (e.g. 5MB) with user-visible reject if larger
+- Non-image attachments still send as markdown link (no change)
+
+Return a concise finding with blockers, changed files, and the next concrete action.
+**Finding**: _107 tool calls — run_shell_command×107_
+
+I have implemented the native ACP image content block encoding for image attachments. The task is complete.
+
+**Blockers:** None.
+
+**Changed Files:**
+- `Soul-Desktop/ACP/ACPProtocol.swift` (made `ContentBlock` Hashable/Equatable for queued prompts)
+- `Soul-Desktop/ThreadController.swift` (added `extraBlocks` array to `QueuedPrompt`)
+- `Soul-Desktop/ThreadController+Turn.swift` (propagated `extraBlocks` payload into `client.prompt()`)
+- `Soul-Desktop/ComposerView.swift` (updated `onSend` boundary to generate `.image(mimeType, base64)` content blocks synchronously from path drops if capabilities permit, preserving markdown link fallback)
+- `Soul-Desktop/ThreadView.swift` / `Soul-Desktop/AppShell+Canvas.swift` / `Soul-Desktop/AppShell+SessionFlow.swift` / `Soul-Desktop/HeroEmptyState.swift` (propagated the prompt builder capability flags across the composition roots)
+- `Soul-Desktop/DropAttachmentHandler.swift` (enforced 5MB size limit via OS `NSAlert` on drop, filtering oversize images from inclusion entirely)
+
+<soul_trace>{"intent":"Implement native ACP image content block encoding","next_step":"Awaiting user verification of attachment workflow in Soul-Desktop Dev","rationale":"Updated ACP serialization and drop handler to support provider.capabilities.image with graceful 5MB OS rejection and markdown fallback."}</soul_trace>
+
+### Agent: SYSTEMS_ARCHITECT
 **Mission**: Run exactly one shell command: pwd. Then report the output in one sentence.
 **Finding**: _1 tool calls — run_shell_command×1_
 
 The current working directory is `/Users/ilteris/Code/Soul-Desktop`.
 
-<soul_trace>{"intent":"retrieve current working directory","next_step":"none","rationale":"executed pwd to confirm the workspace root location"}</soul_trace>
-
-### Agent: SYSTEMS_ARCHITECT
-**Mission**: Work this Soul task.
-
-Task ID: SOUL-APP-007
-Project: soul
-Status: pending
-Priority: medium
-Subject: App Server Intelligence: Phase 3 Diffs & Cross-Host Sync
-
-Return a concise finding with blockers, changed files, and the next concrete action.
-**Finding**: _25 tool calls — run_shell_command×25_
-
-I have reviewed the task and repository state. Here is the finding:
-
-### Finding: SOUL-APP-007 (App Server Intelligence: Phase 3)
-
-* **Blockers:** None. Prerequisite tasks Phase 1.5 and Phase 2 (`SOUL-APP-005`, `SOUL-APP-006`) are successfully completed, establishing the Session Event Bus, Network Transport, and Ownership State Machine in the daemon.
-* **Changed Files:** `0` files currently modified. Work has not yet begun on this phase. 
-* **Next Concrete Action:** Draft `soul/docs/specs/SOUL_APP_SERVER_PHASE3.md` to define the architectural approach for `before/after` diff snapshotting, real-time task heartbeat monitoring, and the cross-host registry syncing mechanism.
-
-*(The task history in the registry has been updated to reflect this review).*
+<soul_trace>{"intent":"run pwd command","next_step":"await next user instruction","rationale":"executed pwd to report the current working directory as requested"}</soul_trace>
 
 ### Agent: GENERAL-PURPOSE
-**Mission**: Read /Users/ilteris/dotfiles/soul/app_server/acp/event_map.py, /Users/ilteris/dotfiles/soul/app_server/event_mapper.py, and /Users/ilteris/dotfiles/soul/kernel/commands/soul_audit_hooks.py. Analyze how event_map.py emits summary/content/tool events, how event_mapper.py reads and parses them, and how soul_audit_hooks.py validates them.
-**Finding**: _5 tool calls — run_shell_command×4, read_file×1_
+**Mission**: Read three random files in the workspace (such as README.md, LICENSE, or AGENTS.md) and report their names and line counts.
+**Finding**: _1 tool calls — run_shell_command×1_
 
-I have analyzed the interaction between [event_map.py](file:///Users/ilteris/dotfiles/soul/app_server/acp/event_map.py), [event_mapper.py](file:///Users/ilteris/dotfiles/soul/app_server/event_mapper.py), and [soul_audit_hooks.py](file:///Users/ilteris/dotfiles/soul/kernel/commands/soul_audit_hooks.py). Here is the architectural summary:
+The line counts for the requested files in the workspace are:
 
-### 1. Event Emission — [event_map.py](file:///Users/ilteris/dotfiles/soul/app_server/acp/event_map.py)
-This module acts as the translator for ACP `session/update` JSON-RPC notifications into database entries in `hooks.jsonl`:
-* **`AfterAgent` (Agent Output)**: Maps `agent_message_chunk` and `agent_thought_chunk`. It extracts text via `_content_text` but outputs it using the non-canonical **`summary`** key rather than **`content`**.
-* **`UserPrompt`**: Maps user input at turn-initiation, also utilizing the **`summary`** key instead of the canonical **`text`** key.
-* **Tool lifecycle**:
-  * `tool_call` map produces **`BeforeTool`** (initializes with `tool_call_id`, `tool_name`/`tool_kind`, `input`, and state `in_progress`).
-  * `tool_call_update` map produces **`AfterTool`** (records execution with `status`, `output`, and `content`).
+* **[README.md](file:///Users/ilteris/Code/Soul-Desktop/README.md)**: 143 lines
+* **[LICENSE](file:///Users/ilteris/Code/Soul-Desktop/LICENSE)**: 21 lines
+* **[AGENTS.md](file:///Users/ilteris/Code/Soul-Desktop/AGENTS.md)**: 1,137 lines
 
-### 2. Event Reading & Classification — [event_mapper.py](file:///Users/ilteris/dotfiles/soul/app_server/event_mapper.py)
-This reads raw event lines from the ledger and exposes a typed stream to the client applications:
-* **Compensating Fallbacks**: Because writers historically drifted, the parser implements "or-merge" fallback chains to normalize payloads:
-  * **`UserPrompt`** → extracts from `text` OR `prompt` OR `summary`.
-  * **`AfterAgent`** → extracts from `summary` OR `content` OR `text`.
-* Classified events are then dispatched via structured protocol notifications (`NOTIFY_USER_MESSAGE`, `NOTIFY_ASSISTANT_DONE`, and `NOTIFY_TOOL_UPDATE`).
+<soul_trace>{"intent":"read and report line counts of README.md, LICENSE, and AGENTS.md","next_step":"none","rationale":"retrieved line counts of the three requested workspace files using wc command"}</soul_trace>
 
-### 3. Schema Verification & Drift Auditing — [soul_audit_hooks.py](file:///Users/ilteris/dotfiles/soul/kernel/commands/soul_audit_hooks.py)
-This serves as th…
+### Agent: GENERAL-PURPOSE
+**Mission**: Read three random files in the workspace (for example, README.md, LICENSE, and AGENTS.md) and report their names and line counts.
+**Finding**: _1 tool calls — run_shell_command×1_
 
-### Agent: ADVERSARIAL_JUDGE
-**Mission**: Verify the four fixes from your prior audit (2026-05-21) landed cleanly in /Users/ilteris/dotfiles/soul/app_server/acp/. (1) Subscription leak: client.py now has unsubscribe_session(); prompt_driver.py drive_prompt calls it in finally. (2) Ledger append race: prompt_driver.py uses a per-session asyncio.Lock around every hooks.jsonl write in both drive_prompt drain and cancel_turn. (3) I/O batching: _append_events() writes a list of events in one open/write call. (4) Permission lock: permission.py now releases the lock before awaiting the 60s future. Run all 10 ACP test files. Then diff the four points against the source and confirm each fix is correct AND complete (no lingering single-event writes, no other paths bypassing the lock, no other subscribe_session calls without unsubscribe). Report PASS/FAIL per fix + any new concerns. Under 500 words.
-**Finding**: _24 tool calls — run_shell_command×24_
+The line counts for the selected files in the workspace are:
 
-# Audit: ACP Fix Verification
+* **[README.md](file:///Users/ilteris/Code/Soul-Desktop/README.md)**: 143 lines
+* **[LICENSE](file:///Users/ilteris/Code/Soul-Desktop/LICENSE)**: 21 lines
+* **[AGENTS.md](file:///Users/ilteris/Code/Soul-Desktop/AGENTS.md)**: 1,137 lines
 
-Acting as **@adversarial_judge**. Scope: Verification of the four issues flagged on 2026-05-21 in `app_server/acp/`. All 10 ACP test files were executed directly within the project environment and ran successfully.
+<soul_trace>{"intent":"report line counts of three workspace files","next_step":"completed verification","rationale":"retrieved exact line counts of README.md, LICENSE, and AGENTS.md using wc shell command"}</soul_trace>
 
-| # | Check | Verdict | Evidence |
-|---|---|---|---|
-| 1 | Subscription Leak | **PASS** | `client.py:251` implements `unsubscribe_session()`. `prompt_driver.py:346` invokes it in the `finally` block of `drive_prompt`, guaranteeing cleanup of the session subscription even on an exception or child termination. |
-| 2 | Ledger Append Race | **PASS** | `prompt_driver.py` manages a per-session `asyncio.Lock` via `_ledger_lock_for()`. Writes are effectively serialized using `async with ledger_lock:` around `asyncio.to_thread(_append_events...)` in three critical places: the initial `UserPrompt`, the drain loop for `session/update`, and the `TurnCancelled` marker in `cancel_turn`. No bypass paths were found. |
-| 3 | I/O Batching | **PASS** | `_append_events` takes a `list[dict]` of events, aggregates them into a single UTF-8 payload in memory, and writes them with a single `path.open("ab")` call. In `drain_updates`, `event_map.map_session_update` correctly yields a list which is batched atomically per iteration. |
-| 4 | Permission Lock | **PASS** | `permission.py:123-138` scopes `async with lock:` exclusively around `_PendingPermission` registration and `_broadcast()`. The lock is released *before* the 60-second `await asyncio.wait_for(future, timeout=self._timeout)`, resolving the UI blocking issue. |
+### Agent: GENERAL-PURPOSE
+**Mission**: Read three random files in the workspace (for example, README.md, LICENSE, and AGENTS.md) and report their names and line counts to verify the delegation interface.
+**Finding**: _1 tool calls — run_shell_command×1_
 
-### New Concerns / Observations
+The line counts for the selected files are:
+* [README.md](file:///Users/ilteris/Code/Soul-Desktop/README.md) has 143 lines.
+* [LICENSE](file:///Users/ilteris/Code/Soul-Desktop/LICENSE) has 21 lines.
+* [AGENTS.md](file:///Users/ilteris/Code/Soul-Desktop/AGENTS.md) has 1,137 lines.
 
-- **Provider Error Ledger Gaps**: In `prompt_driver.py`, provider errors (e.g., `RPCError`, `ChildTerminated`) bypass `_append_events` for emitting an explicit error into the `hooks.jsonl` file. While `drive_prompt` correctly returns a `"nack"` payload to the caller, there is no corresponding `ErrorEvent` appended to the ledger by the driver itself. Consider explicitly persisting these failures to th…
+<soul_trace>{"intent":"verify delegation interface line counts","next_step":"none","rationale":"retrieved line counts for README.md, LICENSE, and AGENTS.md to confirm environment access"}</soul_trace>
 
-### Agent: ADVERSARIAL_JUDGE
-**Mission**: Smoke-test the new ACP submodule under /Users/ilteris/dotfiles/soul/app_server/acp/ (shipped in this session: SOUL-SOUL-064 epic, slices 067-077). Run all 9 ACP test files: test_acp_transport.py, test_acp_client.py, test_acp_event_map.py, test_acp_pool.py, test_acp_prompt_driver.py, test_acp_cancel.py, test_acp_binding.py, test_acp_auth.py, test_acp_permission.py, test_acp_integration.py. Report PASS/FAIL per file. Then read app_server/acp/{transport,client,pool,prompt_driver,permission}.py and flag any architectural concerns I missed: race conditions, resource leaks on error paths, missing cleanup, contract gaps. Under 600 words.
-**Finding**: _11 tool calls — run_shell_command×11_
+### Agent: GENERAL-PURPOSE
+**Mission**: Read three random files in the workspace (for example, README.md, LICENSE, and AGENTS.md) and report their names and line counts to verify the delegation interface.
+**Finding**: _1 tool calls — run_shell_command×1_
 
-# ACP Submodule Smoke Test & Architectural Audit (SOUL-SOUL-064)
+The line counts for the three requested workspace files are:
 
-## Test Suite Execution
+* **[README.md](file:///Users/ilteris/Code/Soul-Desktop/README.md)**: 143 lines
+* **[LICENSE](file:///Users/ilteris/Code/Soul-Desktop/LICENSE)**: 21 lines
+* **[AGENTS.md](file:///Users/ilteris/Code/Soul-Desktop/AGENTS.md)**: 1,137 lines
 
-| Test File | Status |
-| :--- | :--- |
-| `test_acp_transport.py` | **PASS** |
-| `test_acp_client.py` | **PASS** |
-| `test_acp_event_map.py` | **PASS** |
-| `test_acp_pool.py` | **PASS** |
-| `test_acp_prompt_driver.py` | **PASS** |
-| `test_acp_cancel.py` | **PASS** |
-| `test_acp_binding.py` | **PASS** |
-| `test_acp_auth.py` | **PASS** |
-| `test_acp_permission.py` | **PASS** |
-| `test_acp_integration.py` | **PASS** |
+<soul_trace>{"intent":"verify delegation interface by counting file lines","next_step":"completed verification","rationale":"line counts retrieved via shell wc command for README.md, LICENSE, and AGENTS.md"}</soul_trace>
 
-*All 10 ACP tests passed cleanly when executed directly via the module path (`python3 -m unittest ...`).*
+### Agent: TERRAIN_MAPPER
+**Mission**: Locate three files in /Users/ilteris/Code/Soul-Desktop/Soul-Desktop/ related to replay or playback, and return a clear architectural summary of each and how they are related.
+**Finding**: _5 tool calls — Read×3, Glob×1, Grep×1_
 
-## Architectural Concerns
+Three core replay files identified. Here's the architectural summary:
 
-While the tests are green, a structural review of `app_server/acp/` reveals critical contract gaps and resource leaks that must be addressed:
+## Replay Subsystem — `Soul-Desktop/`
 
-### 1. Subscription Memory Leak (`client.py` & `prompt_driver.py`)
-`ACPPromptDriver.drive_prompt()` calls `client.subscribe_session(acp_sid)` on every turn to capture stream events. However, `ACPClient` provides **no `unsubscribe` method**, and the new queue is permanently appended to `client._sessions[session_id]`.
-*   **Impact:** A long-lived session will accumulate a dead `SessionSubscription` queue for every turn taken. Future turns will fan out their updates to *all* dead queues from past turns, rapidly hitting the 512-item limit and spamming `client.session_queue_overflow` logs. This leaks memory and wastes CPU over the lifetime of the client.
-*   **Fix:** Add `client.unsubscribe_session(sid, sub)` and ensure `drive_prompt` calls it in a `finally` block when the turn completes.
+### 1. `HooksReader.swift` — Data layer
+The on-disk reader. Defines `ReplayEvent` (timestamp + `ThreadItem` + tool metadata + kernel reward/rationale) and exposes `HooksReader.events(forSession:project:)`, which merges the kernel's `~/soul_registry/.../hooks.jsonl` (tool calls, agent metadata) with the provider's own transcript (user prompts, agent text) into a single time-sorted timeline — the same shape as `kernel/soul_view.py`'s `_merge_with_prompts`. Hardened with `enumerateJSONLines` (streaming, 1 MB chunks, 32 MB per-line hard cap, 5 MB warn cap) after the SOUL-161 incident where a 2.17 GB Gemini chat file OOM'd `String(contentsOf:)`.
 
-### 2. Concurrency Race in Ledger Appends (`prompt_driver.py`)
-`cancel_turn` and `drive_prompt` both use `await asyncio.to_thread(_append_event, hooks_path, ...)` to write to `hooks.jsonl` concurrently. 
-*   **Impact:** Because both methods open the file independently in `"a"` mode, `TurnCancelled` markers can race with `SessionUpdate` chunks. If the JSON payloads exceed the POSIX `PIPE_BUF` (usually 4KB on macOS)…
+### 2. `ReplayController.swift` — State machine
+`@MainActor @Observable` controller that drives chronological playback. On `init`, spawns a detached task to call `HooksReader.events(...)` off-main (multi-MB transcripts beach-ball the main actor), then `applyLoad` hands results back. Pacing is derived from real wall-clock gaps between events, divided by a compression factor (`speed=1.0` → 4× faster than real) so long pauses stay long and tool bursts stay fast. Tracks `visible: [ThreadItem]`, `index`, `isPaused`, `finished`, `isLoading`, and accumulates a recency-sorted `workingSet` of file touches (mirrors `soul_view`).
+
+### 3. `ReplayView.swift` — Presentation layer
+Read-only SwiftUI surface: no composer, no ACP. Renders `PlaybackBar` on top + a scrollable column of `ReplayChapter`s built from `controller.visible`. Honors a persisted `soul.replay.readingMode` toggle that strips tool calls / plans / status / agent thoughts for long-form transcript reading. Has its own auto-follow scroll gate (`ScrollFollowState`) that detaches on upward scroll and re-arms at bottom — same pattern as the live `ThreadView`.
+
+### How they relate
+```
+hooks.jsonl + provider transcript
+        │
+        ▼  (off-main, detached)
+HooksReader.event…
 
 ### Agent: CODE_ARCHAEOLOGIST
-**Mission**: Round-2 architectural smoke of SOUL-SOUL-049 after audit follow-ups.
+**Mission**: Analyze the structure, purpose, and relationship between ActiveTaskStore.swift, AppSessionCoordinator.swift, and SessionLoadability.swift in /Users/ilteris/Code/Soul-Desktop/Soul-Desktop/
+**Finding**: _5 tool calls — Read×3, Grep×2_
 
-PRIOR AUDIT (your round 1) found 3 critical and 3 lower-priority issues. All 6 have now been addressed. Verify the fixes are sound and surface anything still loose.
+Here's the archaeology — three files, three independent axes of the AppShell composition root, with no direct coupling between them.
 
-NEW COMMIT CHAIN (read each, in order):
-- 33ec9061: fail-closed on PROJECTS.json load failure (projects=None vs {} distinction); stale ~/dotfiles/.soul_project rewritten dotfiles→soul; regression test test_malformed_projects_json_does_not_trust_markers added
-- cc2405cf: soul_codex_notify._project_key now imports resolve_key in-process (no subprocess); test_child_project_key_refuses_to_guess_on_ambiguity added; resolver layer-2 worktree ordering documented inline
+## Purpose, in one line each
 
-FILES IN SCOPE (re-read):
-- /Users/ilteris/dotfiles/soul/kernel/resolve_project_key.py
-- /Users/ilteris/dotfiles/soul/kernel/commands/soul_codex_notify.py
-- /Users/ilteris/dotfiles/soul/kernel/tests/test_resolver_no_fabrication.py
-- /Users/ilteris/dotfiles/.soul_project (was the data trap)
+- **`ActiveTaskStore.swift`** — a 4s-poll, project-scoped `ObservableObject` that reads `~/soul_registry/tasks/<project>/.soul_task` + the `<id>.json` task record and exposes it as a Definition-of-Done checklist for the canvas overlay (`SOUL-SOUL_DESKTOP-055`).
+- **`AppSessionCoordinator.swift`** — an `@Observable` actor-on-MainActor that owns the dictionary of mounted `ThreadController`s, the active-thread key, the draft session, and an LRU cap of 3 mounted threads.
+- **`SessionLoadability.swift`** — a stateless `enum` namespace that answers two questions about a session UUID: *"can this row render from disk?"* (fast, project-bounded — used by sidebar enrichment) and *"where on disk does this UUID actually live, across every provider?"* (slow, global — used on click as a cross-project fallback).
 
-MISSION:
-1. Run both test suites: test_resolver_no_fabrication.py (now 7 cases) and test_directory_first_resolver.py. Report PASS/FAIL.
-2. Re-attempt the load-failure exploit you found in round 1: temporarily replace ~/dotfiles/soul/config/PROJECTS.json with malformed JSON, call resolver with cwd=~/dotfiles, confirm result is "soul" not "dotfiles". RESTORE the file after. Confirm fix.
-3. Verify the subprocess-removal actually works in practice: simulate a Codex notify call by importing soul_codex_notify._project_key and checking it does NOT spawn a child process (e.g. via grep for subprocess.run in the new _project_key body, or by stracing/inspecting code path).
-4. Stress-test the sibling-ambiguity contract: construct 5+ fake projects under one cwd via the in-memory projects dict and confirm _child_project_key returns None.
-5. Look at projects=None handling in resolve_key paths 3 (.soul_project), 4 (env), 5 (default). Confirm layer 4 (env) and 5 (default fallback) still fire correctly when projects is None (load failure). Layer 3 must be skipped.
-6. NEW round-2 findings only — anything the round-1 audit missed because the code shape was different? Specifically:
-   a. Race or partial-write window if PROJECTS.json is being edited mid-resolve (does json.load see a half-written file?).
-   b. Does the in-process resolve_key call mutate sys.path in a way that could leak into the long-lived parent process (Codex Desktop's notify isn't long-lived but other consumers might be)?
-   c. Is _known_projects cwd-independent enough to be safely cached at module level (lru_cache or constant) without breaking tests that mutate SOUL_PATH env?
-   d. Has the new "projects is not None" guard introduced any new TypeError or None-deref surfaces in callers?
+## Lifecycle layer they each occupy
 
-Short PASS/FAIL table per check + new findings with file:line. Under 500 words. Be skeptical.
-**Finding**: _7 tool calls — Bash×5, Read×2_
-
-# Round-2 Architectural Smoke: SOUL-SOUL-049
-
-| # | Check | Verdict | Evidence |
-|---|---|---|---|
-| 1 | test_resolver_no_fabrication (7 cases) | **PASS** | All 7 named tests pass, incl. new `malformed_projects_json_does_not_trust_markers` + `child_project_key_refuses_to_guess` |
-| 1b | test_directory_first_resolver | **PASS** | 4/4 |
-| 2 | Load-failure exploit (R1 #1 regression) | **PASS** | malformed PROJECTS.json via SOUL_PATH redirect + cwd=~/dotfiles → `'soul'`. The R1 reproduction (`'dotfiles'`) is gone |
-| 3 | Subprocess removed from `_project_key` | **PASS** | `soul_codex_notify.py:97-118`: only an in-process `from resolve_project_key import resolve_key`. Module still imports `subprocess` but only for `_call_downstream` (line 49) — orthogonal |
-| 4 | Sibling-ambiguity contract (5+ siblings) | **PASS** | 7 descendants → None; single-match → key; zero-match → None |
-| 5 | projects=None layering | **PASS** | Layer 3 skipped via `if projects is not None:` (line 125); layer 4 env override fires; layer 5 'soul' default fires |
-| 6 | Stale `.soul_project` data trap | **PASS** | `/Users/ilteris/dotfiles/.soul_project` now declares `project_key: "soul"` — defused |
-
-## New round-2 findings
-
-**1. `_known_projects` silently swallows PROJECTS.json load errors** — `soul_codex_notify.py:60-72`. Round-1 recommended a stderr breadcrumb. The resolver got one (resolve_project_key.py:96); notify did not. Returning `{}` instead of distinguishing None vs {} is fine *here* because the caller's `if resolved and projects and resolved in projects` (line 112) reads False either way, but the divergence from the resolver's new contract is a fragility. If a future caller relies on `_known_projects()` returning None-on-failure (matching resolver), it'll silently regress.
-
-**2. PROJECTS.json read twice per notify turn** — `_project_key` calls `_known_projects()` (line 101) AND the in-process `resolve_key(cwd)` (line 109), and resolver re-reads the same file (resolve_project_key.py:91-94).…
-
-### Agent: CODE_ARCHAEOLOGIST
-**Mission**: Architectural smoke test of SOUL-SOUL-046 and SOUL-SOUL-049, both shipped this session.
-
-COMMIT CHAIN (read each):
-- 49a19e57: SOUL-SOUL-046 initial fix — soul_codex_notify _project_key validates resolver output against PROJECTS.json + walks cwd children
-- a30ea1af: longest-prefix tiebreak attempt (later replaced)
-- 34e6a508: refuse-to-guess single-match in _child_project_key
-- d23cd24e: SOUL-SOUL-049 — resolve_project_key.py removed VCS-dir + dirname fallbacks; .soul_project markers validated against PROJECTS.json; soul_distill.py 'dotfiles' fallback → 'soul'; soul_env.py docstring; new test_resolver_no_fabrication.py
-
-FILES IN SCOPE:
-- /Users/ilteris/dotfiles/soul/kernel/resolve_project_key.py
-- /Users/ilteris/dotfiles/soul/kernel/commands/soul_codex_notify.py
-- /Users/ilteris/dotfiles/soul/kernel/commands/soul_distill.py
-- /Users/ilteris/dotfiles/soul/kernel/soul_env.py
-- /Users/ilteris/dotfiles/soul/kernel/tests/test_resolver_no_fabrication.py
-- /Users/ilteris/dotfiles/soul/kernel/tests/test_directory_first_resolver.py
-
-CONTEXT: The orphan-sessions root cause was that resolver returned empty string for cwd=/, and Path("sessions")/""/sid collapses to sessions/sid/. 33 UUID-shaped orphans (Claude title-gen subprocesses) migrated into sessions/soul/. 7 directory-shaped orphans (gm3-vue, ilteris, kommodore, pi-monitor, soul-registry, tmp, work-soul) left for SOUL-SOUL-053 disposition.
-
-MISSION — architectural smoke, not just routing matrix:
-1. Re-run both test suites and report PASS/FAIL.
-2. Live-call resolver across realistic cwds; confirm output is always a PROJECTS.json key or "soul" default.
-3. Read all 4 source files (resolve_project_key, soul_codex_notify, soul_distill, soul_env). Flag any of these architectural issues you find:
-   a. Inconsistent contract: does any code path still synthesize keys from cwd or trust unvalidated markers?
-   b. Race conditions: PROJECTS.json is loaded inline in both resolver and soul_codex_notify per call — any window where stale data misroutes?
-   c. Symlink/git-worktree edge cases: does Path.resolve() in either layer mis-handle worktrees?
-   d. Spec drift: does soul_env.py docstring match actual behavior? Does the resolver still honor the original 6-layer documented contract (now 4 layers) anywhere in code or docs?
-   e. Test coverage gaps: anything the new test should cover but doesn't? E.g. concurrent writes, malformed PROJECTS.json, malformed .soul_project, SOUL_PATH override edge.
-   f. Caller assumptions: are there hidden consumers that still expect old fabrication behavior? (Not just the 42 grep matches I already scanned — anywhere reading or parsing session paths.)
-4. Spot-check 5 random session dirs under ~/soul_registry/sessions/soul/ — confirm none are missing project segments (e.g. cwd field shows "/" with sessions/sid/... structure).
-
-Report as a short table (check / verdict / 1-line evidence) plus flagged architectural issues with file:line. Under 600 words.
-**Finding**: _18 tool calls — Bash×16, Read×2_
-
-I have enough. Compiling report.
-
-# Architectural Smoke: SOUL-SOUL-046 + SOUL-SOUL-049
-
-| Check | Verdict | Evidence |
-|---|---|---|
-| test_resolver_no_fabrication suite | **PASS** | 5/5 (cwd=/, /tmp, ~/dotfiles, ~/dotfiles/soul, env override) |
-| test_directory_first_resolver suite | **PASS** | 4/4 (admin override, PROJECTS.json, .soul_project walk-up, env fallback) |
-| Routing matrix (8 cwds) | **PASS** | all → registered key or 'soul'; no empty string, no fabricated basename. cwd=/, ~/dotfiles, /tmp, /Users/ilteris, gemini-cli all → 'soul' |
-| Spot-check 5 sessions/soul/ ledgers | **PASS** | all parse; first events have valid event types; `1731db41-…` (cwd=/) lives correctly under sessions/soul/ (was the orphan symptom) |
-| No residual fabrication outside archive/ | **PASS** | only `kernel/archive/acp_server.py:152` synthesizes from basename; archive is unimported by bin/kernel/api/app_server |
-| soul_env docstring matches behavior | **PASS** | `soul_env.py:24-30` accurately describes 4-layer contract; SOUL-SOUL-049 callout present |
-| soul_distill 'dotfiles' → 'soul' default | **PASS** | `soul_distill.py:350` has the callout comment + default |
-
-## Flagged architectural issues
-
-**1. PROJECTS.json-load-failure escape hatch — reintroduces fabrication.** `resolve_project_key.py:119` reads `if project_id and (not projects or project_id in projects):`. When PROJECTS.json fails to load (malformed JSON, IO error, transient permission), `projects = {}`, the `not projects` clause is True, and the **stale `/Users/ilteris/.soul_project` marker declaring `project_key: "dotfiles"` is trusted**. Reproduced live: with a malformed PROJECTS.json + cwd=~/dotfiles, resolver returns `'dotfiles'`. The exact failure SOUL-SOUL-049 was designed to eliminate. **Fix**: if PROJECTS.json fails to load, refuse to validate any marker — fall straight to env/'soul'. The bare-except at `resolve_project_key.py:95` also swallows the error silently; add a stderr breadcrumb.
-
-**2. Stale marker is l…
+```
+┌────────────────────────────────────────────────────────────┐
+│ AppShell (composition root)                                │
+│                                                            │
+│  ├── @State sessions: AppSessionCoordinator   ← runtime    │
+│  │     • holds N×ThreadController, active key, LRU         │
+│  │     • drives the visible canvas                         │
+│  │                                                         │
+│  ├── CanvasInfoOverlay                                     │
+│  │     └── @StateObject taskStore: ActiveTaskStore         │
+│  │           • bound to the active project key             │
+│  │           • polls task DoD every 4s                     │
+│  │                                                         │
+│  └── AppShell+SessionFlow.openSession(...)                 │
+│        └── SessionLoadability.discover(sid:)               │
+│              • pure function, no state                     │
+│              • returns LoadableLocation…
 
 ### Agent: REGISTRY_GUARDIAN
-**Mission**: run mock validation
-**Finding**: --- Subagent @registry_guardian (ID: 2ebf62e8-8a85-45d8-b41d-a644943f7164, Provider: gemini) Started ---
-STDOUT_LINE_1
-STDOUT_LINE_2
+**Mission**: Smoke test the delegate_to_specialist MCP bridge only. Reply with one sentence confirming the bridge reached a subagent; do not inspect files or run tools.
+**Finding**: _1 tool calls — registry_guardian×1_
 
-### Agent: REGISTRY_GUARDIAN
-**Mission**: run mock validation
-**Finding**: --- Subagent @registry_guardian (ID: 8d6318f1-89c2-44d6-9c3a-b1e981628c72, Provider: gemini) Started ---
-STDOUT_LINE_1
-STDOUT_LINE_2
-
-### Agent: ADVERSARIAL_JUDGE
-**Mission**: Smoke-test the SOUL-SOUL-046 fix (commit 49a19e57 in ~/dotfiles).
-
-TARGET: /Users/ilteris/dotfiles/soul/kernel/commands/soul_codex_notify.py — specifically the new _known_projects(), _child_project_key(), and rewritten _project_key() functions.
-
-CONTEXT: Codex Desktop's notify hook was writing hooks.jsonl to sessions/dotfiles/<TID>/ because the resolver synthesized "dotfiles" from cwd=/Users/ilteris/dotfiles. The fix validates the resolver's output against PROJECTS.json keys and, if invalid, walks cwd children for a known project root. Fallback default changed from "dotfiles" to "soul" (via SOUL_PROJECT env).
-
-MISSION (be terse, report PASS/FAIL per check):
-1. Re-run the routing matrix independently. Import _project_key and call with these cwds: '/Users/ilteris/dotfiles', '/Users/ilteris/dotfiles/soul', '/Users/ilteris/Code/cc', '/tmp', None, '/Users/ilteris', '/'. Confirm every result is a key present in /Users/ilteris/dotfiles/soul/config/PROJECTS.json OR equals 'soul' (the env default).
-2. Confirm no new directories have appeared under ~/soul_registry/sessions/dotfiles/ since the commit (the dir should not exist; if it does, list contents).
-3. Read the diff yourself (cd ~/dotfiles && git show 49a19e57 -- soul/kernel/commands/soul_codex_notify.py) and flag any edge cases I missed: race conditions, exception swallowing, symlink resolution issues, or cases where _child_project_key picks the wrong sibling project.
-4. Verify the live thread's ledger at ~/soul_registry/sessions/soul/019e4885-6eac-79d0-befe-fbf660f72f24/hooks.jsonl exists, parses as valid JSONL, and contains at least one SESSION_SUMMARY event.
-
-Do not modify files. Report findings as a short PASS/FAIL table plus any flagged regressions. Under 400 words.
-**Finding**: _6 tool calls — Bash×4, Agent×1, Read×1_
-
-## Smoke Report: SOUL-SOUL-046 (49a19e57)
-
-| # | Check | Result |
-|---|---|---|
-| 1 | Routing matrix | **PASS (literal) / FAIL (semantic)** |
-| 2 | `sessions/dotfiles/` absent | **PASS** |
-| 3 | Diff edge-case review | **PARTIAL FAIL** |
-| 4 | Live ledger `019e4885…` parses + has SESSION_SUMMARY | **PASS** (18/18 valid JSON, 17 SESSION_SUMMARY) |
-
-### Regressions flagged
-
-1. **Order-dependent sibling routing.** `_child_project_key` returns the first dict-order project whose root is `relative_to(cwd)`. `cwd=/Users/ilteris` and `cwd=/` both route to `608lorimer` (first key in PROJECTS.json). Codex threads launched from `~` or `/` will silently land in the wrong project; adding a new project could re-route stray threads. **Fix**: sort candidates by descending `len(root.parts)` (longest-prefix wins) or require exact match.
-
-2. **PROJECTS.json-load-failure escape hatch.** In `_project_key`, `if resolved and (not projects or resolved in projects)` — when PROJECTS.json fails to load, `projects` is empty and the resolver is trusted unconditionally, reintroducing the original `dotfiles` fabrication under that failure mode. **Fix**: invert — if load fails, fall back to env default, don't trust resolver.
-
-3. **Silent exception swallowing** in `_known_projects`, `_child_project_key`, resolver subprocess. Intentional (notify must not break Codex), but combine with #2 and corrupt config = invisible data drift. Add a single stderr breadcrumb on first failure per process.
-
-Neither #1 nor #2 blocks SOUL-SOUL-046's DoD — both belong on SOUL-SOUL-049's resolver rewrite. The headline bug (cwd=`~/dotfiles` → `dotfiles` key) is fixed and the live ledger confirms it.
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: 044-codex
-**Finding**: 044-codex
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: 044-pi
-**Finding**: 044-pi
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: 044-claude
-**Finding**: 044-claude
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: regression-smoke-ok
-**Finding**: regression-smoke-ok
-
-### Agent: CODE_ARCHAEOLOGIST
-**Mission**: Reply with exactly one word: hello
-**Finding**: hello
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello
-**Finding**: hello
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello
-**Finding**: hello
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello
-**Finding**: hello
-
-<soul_trace>{"intent":"Respond with exactly 'hello' as requested by the subagent task.","next_step":"done","rationale":"The task specified an exact string response with no further actions required."}</soul_trace>
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello
-**Finding**: Subagent information_retriever completed finding.
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello
-**Finding**: hello
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello claude
-**Finding**: --- Subagent @information_retriever (ID: 67ee8196, Provider: claude) Started ---
-hello claude
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello codex
-**Finding**: --- Subagent @information_retriever (ID: 93836a22, Provider: codex) Started ---
-Reading additional input from stdin...
-OpenAI Codex v0.130.0
---------
-[1mworkdir:[0m /Users/ilteris/dotfiles/soul
-[1mmodel:[0m gpt-5.5
-[1mprovider:[0m openai
-[1mapproval:[0m never
-[1msandbox:[0m danger-full-access
-[1mreasoning effort:[0m low
-[1mreasoning summaries:[0m none
-[1msession id:[0m 019e47be-67b2-70f2-b780-e9e37a0e7f83
---------
-[36muser[0m
-ACT AS @information_retriever. TASK: Reply with exactly: hello codex
-[35m[3mcodex[0m[0m
-hello codex
-[2mtokens used[0m
-7,843
-hello codex
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello pi
-**Finding**: --- Subagent @information_retriever (ID: 3cc685e3, Provider: pi) Started ---
-
-[1;34m◢ SOUL OS | @SOUL ◣[0m
-[1;30mKERNEL:[0m Zenith v8.7.2  [1;30m| STATUS:[0m [1;32mONLINE[0m  [1;30m| LENS:[0m Native TS
-[1;34m────────────────────────────────────────────────────────────[0m
-[1;34m➤  BACKLOG[0m
-   [1;30m○[0m           [SOUL-APP-007] App Server Intelligence: Phase 3 Diffs & Cross-Host Sync [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-APP-CROSSHOST-001] Cross-host session liveness model (Phase 3 candidate) [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-APP-HEARTBEAT-001] Heartbeat hook for session liveness (resolve long-tool false-stale) [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-APP-RELAY-001] Phase 3 spike: external-input relay between Soul-Desktop and terminal-resident CLI agents [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-OUTCOME-INTEGRITY-002] Structured machine-checkable done_criteria (Option C, future) [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-PORTABILITY-001] Harden hydrators against case-sensitive filesystems (Linux portability) [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-PULSE-001] pulse.py reports closed tasks as pending — completed/ subdir or status field not filtered [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-SKILL-EVO-REDESIGN-001] Redesign skill-evolution: trigger-based reflect loop, cross-runtime, local-only [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-SOUL-018] soul_task create should reject duplicate task IDs (prevent ID collisions like SOUL-APP-005/006 sharing one filename across two semantically distinct tasks) [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-SOUL-019] Migrate tasks/soul_desktop/ (underscore) into tasks/soul-desktop/ (dash); enforce single canonical project-key spelling [1;30m(PENDING)[0m
-   [1;30m○[0m           [SOUL-SOUL-022] Claude Stop hook fires ~2× per user turn — implicit /decision now writes duplicate DECISION rows [1;30m(WITHDRAWN)…
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Reply with exactly: hello soul
-**Finding**: --- Subagent @information_retriever (ID: 30c32c7b, Provider: claude) Started ---
-hello soul
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Say hello in 5 words. No tool calls.
-**Finding**: Hello, I am information retriever.
-
-### Agent: CODE_ARCHAEOLOGIST
-**Mission**: do an audit
-**Finding**: --- Subagent @code_archaeologist (ID: d1af0005, Provider: claude) Started ---
-# Audit: SPEC-061 Multi-Provider Subagent Dispatch
-
-Acting as **@code_archaeologist**. Scope: kernel/commands/soul_subagent.py + adapters + caller surfaces + bin/soul, audited against SPEC-061 §3–§8 and the active task SOUL-SOUL-025-F.
-
-## Status by child task
-
-| ID | Spec scope | Status | Evidence |
-|---|---|---|---|
-| 025-A | `provider` field in PROJECTS.json team[] + migration + teams/ fallback default | **unverified** | dispatcher reads `member["provider"]` (soul_subagent.py:85), but migration script & PROJECTS.json contents not inspected here |
-| 025-B | Neutral specialist schema `provider:` | **partial** | dispatcher reads `provider:` from agent .md frontmatter (line 76), not from a neutral schema — pre-ADAPTERS-001 shape. Spec §1.1 says this must wait. Code shipped ahead of its hard blocker. |
-| 025-C | `resolve_provider` + `build_command` + `--provider` flag + BINARY map | **shipped** | soul_subagent.py:70, 107, 277; BINARY covers all 4 providers (line 25) |
-| 025-D1 | New envelope shape | **shipped, with deprecation tail** | save_finding writes `id/specialist/provider/model/events/streams` (line 248); keeps legacy `finding: stdout` for back-compat |
-| 025-D2 | Gemini adapter | **shipped** | parse_gemini_stream handles message/tool_use/tool_result/error with seq + ts (adapters.py:10–105) |
-| 025-D3 | Claude adapter | **stub** | parse_claude_stream falls through to plain-text fallback (adapters.py:113). 025-F cannot pass for claude. |
-| 025-D4 | Pi adapter | **stub** | parse_pi_stream falls through to plain-text fallback (adapters.py:121) |
-| 025-D5 | Codex adapter | **stub** | parse_codex_stream falls through to plain-text fallback (adapters.py:129) |
-| 025-G | `soul delegate` verb | **shipped** | bin/soul:42 routes `delegate` to soul_subagent.py |
-| 025-E | Caller surfaces use `soul delegate` + `--provider` | **shipped** | gemini delegate.toml, claude soul_delegate.js, pi SKILL.md…
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: say hello to soul os
-**Finding**: _1 tool calls — information_retriever×1_
-
-The `information_retriever` agent has successfully completed the task:
-
-> Hello, Soul OS! I am online and fully integrated with your workspace. I can see the Soul ecosystem—from the kernel CLI and middleware hub to the registry guardian and adaptive harnesses. I am ready to explore the Soul OS unified runtime, search through your active projects, or retrieve any specific architectural insights you need. 
-> 
-> How can I assist you with your search and knowledge discovery today?
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Find the absolute path of soul_env.py
-**Finding**: --- Subagent @information_retriever (ID: d0852dd9) Started ---
-(node:38520) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Warning: True color (24-bit) support not detected. Using a terminal with true color enabled will result in a better visual experience.
-[AgentRegistry] Error loading user agent: Failed to load agent from /Users/ilteris/.gemini/agents/information_retriever.md: Validation failed: Agent Definition:
-Unrecognized key(s) in object: 'color'
-Agent loading error: Failed to load agent from /Users/ilteris/.gemini/agents/information_retriever.md: Validation failed: Agent Definition:
-Unrecognized key(s) in object: 'color'
-Ripgrep is not available. Falling back to GrepTool.
-[ERROR] [ImportProcessor] Failed to import information_retriever: ENOENT: no such file or directory, access '/Users/ilteris/dotfiles/soul/information_retriever'
-{
-  "session_id": "962b8336-be88-4b60-9f07-d0c6f8edf2df",
-  "response": "The absolute path of `soul_env.py` is:\n[/Users/ilteris/dotfiles/soul/kernel/soul_env.py](file:///Users/ilteris/dotfiles/soul/kernel/soul_env.py)\n\n<soul_trace>{\"intent\":\"Find absolute path of soul_env.py\",\"next_step\":\"done\",\"rationale\":\"Located via find in the kernel directory.\"}</soul_trace>",
-  "stats": {
-    "models": {
-      "gemini-3-flash-preview": {
-        "api": {
-          "totalRequests": 2,
-          "totalErrors": 0,
-          "totalLatencyMs": 2844
-        },
-        "tokens": {
-          "input": 10233,
-          "prompt": 75682,
-          "candidates": 154,
-          "total": 75836,
-          "cached": 65449,
-          "thoughts": 0,
-          "tool": 0
-        },
-        "roles": {
-          "main": {
-            "totalRequests": 2,
-            "totalErrors": 0,
-            "totalLatencyMs": 2844,
-            "tokens": {
-              "input": 10233,
-              "prompt": 75682,…
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Find the absolute path of soul_env.py
-**Finding**: --- Subagent @information_retriever (ID: 6f98412f) Started ---
-(node:36541) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
-(Use `node --trace-deprecation ...` to show where the warning was created)
-Warning: True color (24-bit) support not detected. Using a terminal with true color enabled will result in a better visual experience.
-[AgentRegistry] Error loading user agent: Failed to load agent from /Users/ilteris/.gemini/agents/information_retriever.md: Validation failed: Agent Definition:
-Unrecognized key(s) in object: 'color'
-Agent loading error: Failed to load agent from /Users/ilteris/.gemini/agents/information_retriever.md: Validation failed: Agent Definition:
-Unrecognized key(s) in object: 'color'
-Ripgrep is not available. Falling back to GrepTool.
-[ERROR] [ImportProcessor] Failed to import information_retriever: ENOENT: no such file or directory, access '/Users/ilteris/dotfiles/soul/information_retriever'
-{
-  "session_id": "d3f604e7-c1a1-4ea3-8637-0a04bd1e1dc8",
-  "response": "The absolute path of `soul_env.py` is:\n[/Users/ilteris/dotfiles/soul/kernel/soul_env.py](file:///Users/ilteris/dotfiles/soul/kernel/soul_env.py)\n\n<soul_trace>{\"intent\":\"Find absolute path of soul_env.py\",\"next_step\":\"done\",\"rationale\":\"Located via find in the kernel directory.\"}</soul_trace>",
-  "stats": {
-    "models": {
-      "gemini-3-flash-preview": {
-        "api": {
-          "totalRequests": 2,
-          "totalErrors": 0,
-          "totalLatencyMs": 3170
-        },
-        "tokens": {
-          "input": 34779,
-          "prompt": 75681,
-          "candidates": 153,
-          "total": 75834,
-          "cached": 40902,
-          "thoughts": 0,
-          "tool": 0
-        },
-        "roles": {
-          "main": {
-            "totalRequests": 2,
-            "totalErrors": 0,
-            "totalLatencyMs": 3170,
-            "tokens": {
-              "input": 34779,
-              "prompt": 75681,…
-
-### Agent: INFORMATION_RETRIEVER
-**Mission**: Find the absolute path of soul_env.py
-**Finding**: {
-  "session_id": "ea8d3912-ddca-49eb-a9cb-42e4bd274aa1",
-  "response": "The absolute path of `soul_env.py` is:\n[/Users/ilteris/dotfiles/soul/kernel/soul_env.py](file:///Users/ilteris/dotfiles/soul/kernel/soul_env.py)\n\n<soul_trace>{\"intent\":\"Find absolute path of soul_env.py\",\"next_step\":\"done\",\"rationale\":\"Located via find in the kernel directory.\"}</soul_trace>",
-  "stats": {
-    "models": {
-      "gemini-3-flash-preview": {
-        "api": {
-          "totalRequests": 2,
-          "totalErrors": 0,
-          "totalLatencyMs": 3190
-        },
-        "tokens": {
-          "input": 32696,
-          "prompt": 73596,
-          "candidates": 148,
-          "total": 73744,
-          "cached": 40900,
-          "thoughts": 0,
-          "tool": 0
-        },
-        "roles": {
-          "main": {
-            "totalRequests": 2,
-            "totalErrors": 0,
-            "totalLatencyMs": 3190,
-            "tokens": {
-              "input": 32696,
-              "prompt": 73596,
-              "candidates": 148,
-              "total": 73744,
-              "cached": 40900,
-              "thoughts": 0,
-              "tool": 0
-            }
-          }
-        }
-      }
-    },
-    "tools": {
-      "totalCalls": 1,
-      "totalSuccess": 1,
-      "totalFail": 0,
-      "totalDurationMs": 342,
-      "totalDecisions": {
-        "accept": 1,
-        "reject": 0,
-        "modify": 0,
-        "auto_accept": 0
-      },
-      "byName": {
-        "run_shell_command": {
-          "count": 1,
-          "success": 1,
-          "fail": 0,
-          "durationMs": 342,
-          "decisions": {
-            "accept": 1,
-            "reject": 0,
-            "modify": 0,
-            "auto_accept": 0
-          }
-        }
-      }
-    },
-    "files": {
-      "totalLinesAdded": 0,
-      "totalLinesRemoved": 0
-    }
-  }
-}
+The delegate_to_specialist MCP bridge has successfully reached the Registry Guardian subagent.
 </agent_findings>
 
 <identity>
@@ -1222,7 +920,7 @@ The operational guide for Soul OS is maintained in `~/dotfiles/soul/docs/PLAYBOO
 State is decoupled from the dotfiles repository to ensure atomic persistence and precise trace performance. ENV: `SOUL_REGISTRY` (default: `~/soul_registry`). Project manifest authority: `~/dotfiles/soul/config/PROJECTS.json` (centralized 2026-05-03; the older `~/soul_registry/PROJECTS.json` location is legacy and being phased out — see SOUL-AUDIT-002).
 
 *   **`/tasks/`**: Project-specific task nodes (JSON).
-*   **`/sessions/`**: Finalized session commits (`<session_id>.json`) plus live per-session JSONL ledger under `<session_id>/hooks.jsonl`. Reward + alignment ride inline on each hooks entry (Phase 2A, 2026-05-03 — see `migrate_phase2a.py`); the prior `trajectory.jsonl` self-loop file is removed.
+*   **`/sessions/`**: Per-session JSONL ledger under `<session_id>/hooks.jsonl` — the **single source of truth** for everything that happened in a session: prompts, tool calls, agent replies, and finalize commits. Finalize is a `{"event":"Finalize", ...}` event in the ledger (SOUL-SOUL-092, 2026-05-24); re-finalize appends another event, latest by file position wins, full chronology surfaces in `soul session list` as `finalize_history`. Reward + alignment ride inline on each hooks entry (Phase 2A, 2026-05-03 — see `migrate_phase2a.py`); the prior `trajectory.jsonl` self-loop file is removed. **Legacy `<ts>_<session_id>.json` sibling files** (pre-SOUL-092) are tolerated by readers via the `finalize_events` fallback path but no longer written; `soul registry sweep --category legacy-finalize-json` reaps them. End-to-end flow: see `docs/FINALIZE_FLOW.md`.
 *   **`/patterns/`**: Golden Patterns — triple-anchor-validated trajectories emitted by `soul_distill_patterns.py`. Per-machine (gitignored at the registry level) until promoted. See `docs/PLAYBOOK.md §5`.
 *   **`/specs/`**: Machine-readable capability and constraint specs.
 *   **`/teams/`**: Legacy specialist config; canonical source is `PROJECTS.json.projects.<key>.harness_config.team[]` (see SOUL-HARNESS-CONSOLIDATE-001). Readers fall back to `teams/<key>/main.json` for unmigrated projects; tree retires in SOUL-TEAMS-RETIRE-001.
@@ -1506,23 +1204,30 @@ One line: `Decision logged: {target}`
 - For bulk-inject at finalize time (catching up decisions not logged in-flight), use `/finalize` with `--decisions_events '[{...}]'` via `soul_finalize.py` instead.
 
 ### /delegate
-You are spawning a **Subagent Delegation (/delegate)**.
+You are spawning a **Subagent Delegation**.
 
-1. **Specialist Selection** — pick from: information_retriever, code_archaeologist, terrain_mapper, registry_guardian, adversarial_judge, systems_architect, general-purpose (etc., see ~/dotfiles/soul/agents/).
+1. **Specialist Selection** — pick the persona that matches the task:
+   - `information_retriever` — multi-source research, lookups
+   - `code_archaeologist` — legacy code, deep architectural analysis
+   - `terrain_mapper` — dependency graphs, system mapping
+   - `registry_guardian` — kernel, registry, session persistence
+   - `adversarial_judge` — second opinions, audits, skeptical review
+   - `systems_architect` — PRDs, specs, technical writing
+   - `creative_technologist`, `product_shaper`, `cloud_architect`, `monorepo_architect`, `narrative_taxonomist`, `visual_auditor` — see ~/dotfiles/soul/agents/
 
-2. **Invoke the native `delegate_to_specialist` tool. ONLY this tool.**
-   - Args: `specialist` (required), `task` (required), `provider` (optional).
-   - Example call:
+2. **Invoke the native `invoke_agent` tool.** Gemini-CLI auto-routes any soul persona through `soul delegate` (see agent-tool.ts SOUL_DELEGATED_AGENT_NAMES). No MCP server, no slash-command magic — the native tool is the canonical path.
+   - Args: `agent_name` (required), `prompt` (required).
+   - Example:
      ```
-     delegate_to_specialist(
-       specialist="general-purpose",
-       task="Read README.md, LICENSE, AGENTS.md and report line counts.",
-       provider="gemini"
+     invoke_agent(
+       agent_name="adversarial_judge",
+       prompt="Audit the new auth flow in src/auth/. Flag race conditions and missing error paths. Report under 400 words."
      )
      ```
-   - Do **NOT** shell out to `soul delegate`, `run_shell_command`, or any other path. The native tool exists in this build; if you can't see it in your declared tool list, say so explicitly and stop — do not invent a workaround.
 
-3. **Synthesis** — the tool returns the subagent's finding inline. Summarize and integrate. No extra read_file roundtrip.
+3. **If the tool isn't visible** — say so explicitly and stop. Don't shell out to `soul delegate` directly, don't fall back to MCP. That's a config bug to surface, not work around.
+
+4. **Synthesis** — the tool returns the subagent's structured envelope inline. Summarize and integrate. The full envelope lives at ~/soul_registry/sessions/<project>/del_<specialist>_<ts>.json.
 
 ### /digest
 Run a shell command to concatenate relevant source files (excluding lockfiles, node_modules, dist) into a single context block.
@@ -1552,7 +1257,7 @@ You are performing a **Finalization**. This session is being committed to the Re
    - Flag any tasks that appear stalled (in_progress with no recent session activity).
 
 4. **Restart** (automatic):
-   - Write the restart sentinel: `touch /tmp/soul_restart_soul`
+   - Write the restart sentinel: `touch /tmp/soul_restart_soul-desktop`
    - Report: "Finalization complete. Exiting for automatic re-hydration."
    - Then exit the session (the shell wrapper will detect the sentinel and restart automatically).
 
@@ -1942,7 +1647,7 @@ You are Teddy, the Systems Architect. The user wants to recall knowledge from th
    python3 ~/dotfiles/soul/kernel/soul_recall.py "<query>" --project <active_project>
    ```
    - Omit `"<query>"` if no search term was given (returns most recent entries).
-   - Use `soul` or resolve from CWD for `--project`.
+   - Use `soul-desktop` or resolve from CWD for `--project`.
 
 3. **Report**:
    - Present results clearly: timestamp, confidence score, epistemic mode, intent, rationale, and fixed issues.
@@ -2101,4 +1806,4 @@ Keep the whole block under 240 chars. Skip on trivial conversational turns (gree
 _Schema violations cause "undefined" in dashboards and API responses._
 
 
-<!-- Teddy Hydration Stamp: 2026-05-23 07:52:29 | Project: soul -->
+<!-- Teddy Hydration Stamp: 2026-05-25 01:56:15 | Project: soul-desktop -->
