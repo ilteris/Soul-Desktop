@@ -928,7 +928,16 @@ extension SoulRegistry {
                     // emit the spaced form `"type": "user"`; streaming
                     // `.jsonl` emits the tight form. countJSONField covers
                     // both.
-                    let n = countJSONField("type", "user", inFileAt: path)
+                    //
+                    // SOUL-222 parallel for Gemini: every tool roundtrip is
+                    // persisted as a synthetic `{type:"user"}` record whose
+                    // content text is `{"functionResponse":{...}}`. Without
+                    // subtracting these, a 7-real-turn chat with 59 tool
+                    // calls shows as "66 turns" in the sidebar. Same shape
+                    // as the Claude tool_use_id subtraction above.
+                    let userRecords = countJSONField("type", "user", inFileAt: path)
+                    let toolResults = countNeedle(Data("\"functionResponse\"".utf8), inFileAt: path)
+                    let n = max(0, userRecords - toolResults)
                     recordTranscriptCount(n, forPath: path)
                     if n > 0 { return n }
                 }
