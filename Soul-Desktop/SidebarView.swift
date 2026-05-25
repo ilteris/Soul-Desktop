@@ -97,11 +97,16 @@ struct SidebarView: View {
     struct DeleteConfirmation: Identifiable {
         let id = UUID()
         let session: SoulSession
+        let permanently: Bool
     }
     /// Per-project session count for the sidebar badge. Persisted to
     /// UserDefaults so subsequent launches paint instantly; the fresh scan
     /// then runs in the background and overwrites stale entries.
     @State var sessionCounts: [String: Int] = Self.cachedSessionCounts()
+    /// Cached sidebar projection. Views read this prepared model; loading,
+    /// filtering, and live-thread changes rebuild it outside SwiftUI body
+    /// evaluation so layout/resize invalidations don't redo merge/filter/sort work.
+    @State var sidebarRowsProjection = SidebarRowsProjection()
 
     private static let sessionCountsCacheKey = "soul.sidebar.sessionCounts.v1"
     private static func cachedSessionCounts() -> [String: Int] {
@@ -327,10 +332,16 @@ struct SidebarView: View {
         }
         .alert(item: $pendingDelete) { ctx in
             Alert(
-                title: Text("Move chat to Trash?"),
-                message: Text("Trashes the kernel ledger, finalize summary, and the provider's chat file. Files appear in ~/.Trash and can be restored from Finder."),
-                primaryButton: .destructive(Text("Move to Trash")) {
-                    deleteSessionToTrash(ctx.session)
+                title: Text(ctx.permanently ? "Delete chat permanently?" : "Move chat to Trash?"),
+                message: Text(ctx.permanently
+                    ? "Permanently deletes the kernel session and its indexed artifacts. This cannot be undone."
+                    : "Moves the session into the kernel trash lifecycle state so it can be restored."),
+                primaryButton: .destructive(Text(ctx.permanently ? "Delete Permanently" : "Move to Trash")) {
+                    if ctx.permanently {
+                        deleteSessionPermanently(ctx.session)
+                    } else {
+                        moveSessionToKernelTrash(ctx.session)
+                    }
                 },
                 secondaryButton: .cancel()
             )
@@ -355,6 +366,18 @@ struct SidebarView: View {
             // Harness change → re-filter live rows. A row that's valid under
             // Claude isn't valid under Gemini-CLI (and vice-versa).
             Task { await reload() }
+        }
+        .onChange(of: sidebarProjectionInputSignature) { _, _ in
+            rebuildResolvedRows()
+        }
+        .onChange(of: chatSourceFilter) { _, _ in
+            rebuildResolvedRows()
+        }
+        .onChange(of: hideUntitled) { _, _ in
+            rebuildResolvedRows()
+        }
+        .onChange(of: showUnreadable) { _, _ in
+            rebuildResolvedRows()
         }
         .onChange(of: selectedProject) { _, newKey in
             if let key = newKey {
@@ -407,12 +430,12 @@ struct SidebarView: View {
                 return false
             })?.id
         guard let pid = projectId,
-              let project = projects.first(where: { $0.id == pid })
+              projects.first(where: { $0.id == pid }) != nil
         else { return }
 
         // SOUL-SOUL_DESKTOP-270: same resolve() the sidebar uses, so the
         // keyboard nav order matches the rendered list exactly.
-        guard let visible = resolvedRows(for: project)?.active, !visible.isEmpty else { return }
+        guard let visible = sidebarRowsProjection.rowsByProject[pid]?.active, !visible.isEmpty else { return }
 
         if let currentIdx = visible.firstIndex(where: { $0.id == activeSessionId }) {
             let targetIdx = currentIdx + delta

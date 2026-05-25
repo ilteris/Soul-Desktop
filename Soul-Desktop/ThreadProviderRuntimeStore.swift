@@ -1,4 +1,5 @@
 import Foundation
+import SoulRuntime
 
 final class ThreadProviderRuntimeStore {
     var acp: ACPProviderRuntimeAdapter?

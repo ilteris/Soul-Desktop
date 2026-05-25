@@ -44,7 +44,10 @@ final class AppSessionCoordinator {
 
     func setActiveThread(_ key: String?) {
         activeThreadKey = key
-        if let key { bumpThreadRecency(key) }
+        if let key {
+            threads[key]?.activationNonce &+= 1
+            bumpThreadRecency(key)
+        }
         evictOverflowThreads()
     }
 

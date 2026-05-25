@@ -82,19 +82,29 @@ enum SidebarRowResolver {
         currentTraceProject = inputs.projectKey
         defer { currentTraceProject = "" }
 
-        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+        if verboseTraceEnabled {
             traceWrite("RESOLVE project=\(inputs.projectKey) diskSessions=\(inputs.diskSessions.count) active=\(inputs.activeControllers.count) draft=\(inputs.draft != nil)")
         }
 
-        // 1. Visibility filter (rules inlined below; see shouldShow).
+        // 1. Collapse duplicate disk candidates before visibility. The
+        // kernel CLI can surface more than one physical artifact for the
+        // same logical session id (for example a live dir plus a finalized
+        // summary, or primary+legacy roots during migrations). Filtering
+        // first made traces contradict themselves for one sid: an empty
+        // artifact logged DROP while the content-bearing artifact logged
+        // PASS. Resolve one authoritative row, then make one visibility
+        // decision.
+        let diskSessions = mergedDiskSessions(inputs.diskSessions)
+
+        // 2. Visibility filter (rules inlined below; see shouldShow).
         var byId: [String: SoulSession] = [:]
-        byId.reserveCapacity(inputs.diskSessions.count)
-        for s in inputs.diskSessions {
+        byId.reserveCapacity(diskSessions.count)
+        for s in diskSessions {
             guard shouldShow(s, in: ctx) else { continue }
             byId[s.id] = s
         }
 
-        // 2. Overlay / inject live ThreadControllers. Contract preserved
+        // 3. Overlay / inject live ThreadControllers. Contract preserved
         // from the old mergedChatList: don't surface a naked controller
         // shell — it must have a session id, items, or queued prompts.
         // Otherwise an empty new-chat shell would show up as a ghost row.
@@ -133,7 +143,7 @@ enum SidebarRowResolver {
                     id: sid,
                     project: ctrl.project.id,
                     timestamp: ctrl.startedAt,
-                    intent: ctrl.displayTitle,
+                    title: ctrl.displayTitle,
                     source: ctrl.provider.rawValue,
                     isLive: true,
                     writer: .soulDesktop,
@@ -146,19 +156,26 @@ enum SidebarRowResolver {
             }
         }
 
-        // 3. Draft (user hit "New chat", no first send yet). Always active.
+        // 4. Draft (user hit "New chat", no first send yet). Always active.
         if let draft = inputs.draft {
             byId[draft.id] = draft
         }
 
-        // 4. Partition active vs archived in one pass; sort each with the
+        // 5. Partition active vs archived in one pass; sort each with the
         // same comparator (starred float, then recency descending).
         let starred = inputs.starredIds
         var active: [SoulSession] = []
         var archived: [SoulSession] = []
         active.reserveCapacity(byId.count)
         for s in byId.values {
-            if inputs.archivedIds.contains(s.id) {
+            if s.lifecycle == "deleted" || s.lifecycle == "purged" {
+                continue
+            }
+
+            let hasKernelLifecycle = !(s.lifecycle ?? "").isEmpty
+            if s.lifecycle == "archived" || s.lifecycle == "trashed" {
+                archived.append(s)
+            } else if !hasKernelLifecycle && inputs.archivedIds.contains(s.id) {
                 archived.append(s)
             } else {
                 active.append(s)
@@ -176,6 +193,81 @@ enum SidebarRowResolver {
         )
     }
 
+    private static func mergedDiskSessions(_ sessions: [SoulSession]) -> [SoulSession] {
+        var byId: [String: SoulSession] = [:]
+        byId.reserveCapacity(sessions.count)
+        for session in sessions {
+            if let existing = byId[session.id] {
+                byId[session.id] = mergedDiskSession(existing, session)
+            } else {
+                byId[session.id] = session
+            }
+        }
+        return Array(byId.values)
+    }
+
+    private static func mergedDiskSession(_ a: SoulSession, _ b: SoulSession) -> SoulSession {
+        func score(_ s: SoulSession) -> Int {
+            (s.promptCount > 0 ? 1_000_000 : 0)
+            + (s.transcriptTurns > 0 ? 100_000 : 0)
+            + (s.hasFinalize ? 10_000 : 0)
+            + s.eventCount
+        }
+
+        var out = score(b) > score(a) ? b : a
+        let other = out.id == a.id && out == a ? b : a
+
+        out.promptCount = max(a.promptCount, b.promptCount)
+        out.assistantTurnCount = max(a.assistantTurnCount, b.assistantTurnCount)
+        out.toolCallCount = max(a.toolCallCount, b.toolCallCount)
+        out.visibleTurnCount = max(a.visibleTurnCount, b.visibleTurnCount)
+        out.transcriptTurns = max(a.transcriptTurns, b.transcriptTurns)
+        out.eventCount = max(a.eventCount, b.eventCount)
+        out.delegationEventCount = max(a.delegationEventCount, b.delegationEventCount)
+        out.hasFinalize = a.hasFinalize || b.hasFinalize
+        out.loadable = a.loadable || b.loadable
+        out.replayable = a.replayable || b.replayable
+        out.isLive = a.isLive || b.isLive
+        out.isDirty = a.isDirty || b.isDirty
+        out.isWorking = a.isWorking || b.isWorking
+        out.isStale = a.isStale && b.isStale
+        out.partialCapture = a.partialCapture && b.partialCapture
+        out.agentReplyMissing = a.agentReplyMissing && b.agentReplyMissing
+        out.lastActivityAt = max(a.lastActivityAt ?? .distantPast, b.lastActivityAt ?? .distantPast)
+        out.startedAt = min(a.startedAt ?? .distantFuture, b.startedAt ?? .distantFuture)
+        if out.lastActivityAt == .distantPast { out.lastActivityAt = other.lastActivityAt }
+        if out.startedAt == .distantFuture { out.startedAt = other.startedAt }
+        if out.title == nil || out.title?.isEmpty == true { out.title = other.title }
+        if out.intent == nil || out.intent?.isEmpty == true { out.intent = other.intent }
+        if out.summary == nil || out.summary?.isEmpty == true { out.summary = other.summary }
+        if out.source == nil { out.source = other.source }
+        if out.provider == nil { out.provider = other.provider }
+        if out.origin == nil { out.origin = other.origin }
+        if out.rawTitle == nil { out.rawTitle = other.rawTitle }
+        if out.titleSource == nil { out.titleSource = other.titleSource }
+        if out.titleStatus == nil { out.titleStatus = other.titleStatus }
+        if out.liveProvider == nil { out.liveProvider = other.liveProvider }
+        if out.worktreePath == nil { out.worktreePath = other.worktreePath }
+        if out.sessionVisibility == nil { out.sessionVisibility = other.sessionVisibility }
+        if out.sessionKind == nil { out.sessionKind = other.sessionKind }
+        if out.visibilityReason == nil { out.visibilityReason = other.visibilityReason }
+        if out.hasConversation == nil { out.hasConversation = other.hasConversation }
+        if out.resumeStrategy == nil { out.resumeStrategy = other.resumeStrategy }
+        if out.resumeTarget == nil { out.resumeTarget = other.resumeTarget }
+        if out.loadabilityReason == nil { out.loadabilityReason = other.loadabilityReason }
+        if out.health == nil { out.health = other.health }
+        if out.healthReasons.isEmpty { out.healthReasons = other.healthReasons }
+        if out.lifecycle == nil { out.lifecycle = other.lifecycle }
+        if out.trashedAt == nil { out.trashedAt = other.trashedAt }
+        if out.slashSemantics.isEmpty { out.slashSemantics = other.slashSemantics }
+        if out.taskId == nil { out.taskId = other.taskId }
+        if out.taskStatus == nil { out.taskStatus = other.taskStatus }
+        if out.taskSubject == nil { out.taskSubject = other.taskSubject }
+        if out.sessionStartPpid == nil { out.sessionStartPpid = other.sessionStartPpid }
+        if out.writer == .unknown, other.writer != .unknown { out.writer = other.writer }
+        return out
+    }
+
     // MARK: - Visibility (formerly SidebarVisibilityPolicy)
 
     /// True when the row should appear in the project's list (either active
@@ -183,21 +275,39 @@ enum SidebarRowResolver {
     /// resolver partitions on archivedIds separately so the disclosure can
     /// still show them.
     static func shouldShow(_ session: SoulSession, in ctx: VisibilityContext) -> Bool {
-        // 1. Writer stamp wins. Title-generation, subagent, and other
-        // machine-driven sessions ship with `session_visibility = "machine"`.
-        if session.sessionVisibility == "machine" { return traceDrop("1-machine-visibility", session.id) }
+        // Kernel contract path. When the kernel has classified visibility,
+        // Desktop consumes that field instead of re-interpreting ledger
+        // semantics from counts/titles/provider artifacts.
+        if let visibility = session.sessionVisibility {
+            if visibility == "machine" || visibility == "hidden" {
+                return traceDrop("1-kernel-visibility-\(visibility)", session.id)
+            }
+
+            if !ctx.showUnreadable, !(session.loadable || session.replayable) {
+                return traceDrop("5-not-loadable-not-replayable", session.id)
+            }
+
+            if let filter = ctx.chatSourceFilter,
+               (session.provider ?? session.source ?? session.liveProvider ?? "") != filter {
+                return traceDrop("6-source-filter want=\(filter) got=\(session.source ?? session.provider ?? session.liveProvider ?? "nil")", session.id)
+            }
+
+            if ctx.hideUntitled {
+                let title = (session.title ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.isEmpty { return traceDrop("7-hide-untitled", session.id) }
+            }
+
+            if verboseTraceEnabled {
+                NSLog("[sidebar-trace] PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) pc=\(session.promptCount) tt=\(session.transcriptTurns)")
+                traceWrite("PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) visibility=\(visibility) kind=\(session.sessionKind ?? "nil") reason=\(session.visibilityReason ?? "nil") writer=\(session.writer.rawValue) loadable=\(session.loadable) replayable=\(session.replayable)")
+            }
+            return true
+        }
 
         // 1a. Partial-capture sessions. UserPrompt events landed but writer
         // never persisted AfterAgent — the row opens onto an empty canvas.
         if session.partialCapture { return traceDrop("1a-partial-capture", session.id) }
-
-        // 1b. Defense-in-depth for synthetic rows whose machine stamp never
-        // landed (kernel spawn paths, echoed prior_session_context blocks).
-        if let title = (session.intent ?? session.summary)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           isMachineTitlePattern(title) {
-            return traceDrop("1b-machine-title-pattern title=\(title.prefix(40))", session.id)
-        }
 
         // 2. Launchd-started rows with no prompts are daemon residue.
         if !session.hasFinalize, session.sessionStartPpid == 1, session.promptCount == 0 {
@@ -237,12 +347,12 @@ enum SidebarRowResolver {
 
         // 7. Untitled toggle.
         if ctx.hideUntitled {
-            let title = (session.intent ?? session.summary ?? "")
+            let title = (session.title ?? session.intent ?? session.summary ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if title.isEmpty { return traceDrop("7-hide-untitled", session.id) }
         }
 
-        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+        if verboseTraceEnabled {
             NSLog("[sidebar-trace] PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) pc=\(session.promptCount) tt=\(session.transcriptTurns)")
             traceWrite("PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) pc=\(session.promptCount) tt=\(session.transcriptTurns) writer=\(session.writer.rawValue) loadable=\(session.loadable) replayable=\(session.replayable)")
         }
@@ -253,36 +363,13 @@ enum SidebarRowResolver {
     // resolve() entry; cleared on exit. Read by traceDrop/PASS sites.
     nonisolated(unsafe) static var currentTraceProject: String = ""
 
-    /// Title prefixes marking a row as machine-only, used as defense in
-    /// depth when `session_visibility=machine` didn't land.
-    ///
-    /// **Transitional.** These patterns exist because some kernel spawn
-    /// paths historically forgot to set `SOUL_SESSION_VISIBILITY=machine`.
-    /// Every leak we find should be fixed at the spawn site in the kernel
-    /// (env var → middleware stamps `SessionMeta` → rule 1 catches it),
-    /// NOT by adding another pattern here. Defense-in-depth at this layer
-    /// is what produced the SOUL-267 bug class — multiple filter logics
-    /// that disagree. When all known machine spawners stamp properly,
-    /// delete this function and rule 1b.
-    private static func isMachineTitlePattern(_ title: String) -> Bool {
-        let upper = title.uppercased()
-        if upper.hasPrefix("ACT AS @") { return true }
-        if upper.hasPrefix("ACT AS ") { return true }
-        if upper.hasPrefix("PRODUCE A CONCISE 3-5 WORD TITLE FOR THE FOLLOWING CHAT") {
-            return true
-        }
-        if title.hasPrefix("<prior_session_context>") { return true }
-        if title.hasPrefix("</prior_session_context>") { return true }
-        return false
-    }
-
     // MARK: - Diagnostic trace
 
     /// When `defaults write com.test.Soul-Desktop.dev soul.sidebar.trace
     /// -bool true` is set, every visibility decision is logged with rule +
     /// sid. File-based because NSLog routinely gets lost in log stream.
     private static func traceDrop(_ rule: String, _ sid: String) -> Bool {
-        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+        if verboseTraceEnabled {
             NSLog("[sidebar-trace] DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(rule)")
             traceWrite("DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(rule)")
         }
@@ -291,8 +378,19 @@ enum SidebarRowResolver {
 
     private static let tracePath = NSString(string: "~/tmp/soul-sidebar-trace.log").expandingTildeInPath
     private static let traceQueue = DispatchQueue(label: "soul.sidebar.trace.file")
+    private static var traceEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "soul.sidebar.trace")
+    }
+
+    /// Per-row resolver traces are intentionally louder than scan traces and
+    /// run from SwiftUI render paths. Keep them opt-in so resize/drag invalidations
+    /// don't flood Console or the file trace during normal diagnostics.
+    private static var verboseTraceEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "soul.sidebar.trace.verbose")
+    }
 
     static func traceWrite(_ line: String) {
+        guard traceEnabled else { return }
         traceQueue.async {
             let ts = ISO8601DateFormatter().string(from: Date())
             let row = "\(ts) \(line)\n"

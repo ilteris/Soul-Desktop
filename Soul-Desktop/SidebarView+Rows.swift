@@ -69,7 +69,7 @@ struct ChatRow: View {
                             .font(.system(size: 9))
                             .foregroundStyle(.yellow)
                     }
-                    Text(isDraft ? "New chat" : cleanTitle(session.intent ?? session.summary))
+                    Text(isDraft ? "New chat" : cleanTitle(session.title ?? session.intent ?? session.summary))
                         .font(SoulFont.ui(14, weight: isSelected ? .medium : .regular))
                         .italic(isDraft)
                         .foregroundStyle(
@@ -78,6 +78,29 @@ struct ChatRow: View {
                         )
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if let taskBadgeText {
+                        Text(taskBadgeText)
+                            .font(SoulFont.ui(9, weight: .medium))
+                            .foregroundStyle(isSelected ? SoulColor.accent : SoulColor.fgSubtle)
+                            .lineLimit(1)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                SoulColor.surface.opacity(isSelected ? 0.65 : 0.9),
+                                in: Capsule()
+                            )
+                            .help(taskHelpText)
+                    }
+                    if let slashBadgeText {
+                        Text(slashBadgeText)
+                            .font(SoulFont.ui(9, weight: .medium))
+                            .foregroundStyle(SoulColor.fgSubtle)
+                            .lineLimit(1)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(SoulColor.surface.opacity(0.75), in: Capsule())
+                            .help(slashHelpText)
+                    }
                 }
                 Text(isDraft ? "Draft · not sent yet" : metaLine(session))
                     .font(SoulFont.ui(11))
@@ -161,26 +184,74 @@ if isActiveReplay {
         // back to `timestamp` (the pinned sort key) when no first-hook
         // event is recorded.
         let ago = relative(session.startedAt ?? session.timestamp)
-        // Pick the larger of the two counts. Either source can be partial:
-        // - kernel hooks (`promptCount`) under-counts terminal-origin or
-        //   SOUL-247 payload-drop sessions
-        // - provider transcript (`transcriptTurns`) is missing entirely
-        //   when the user only ever drove the session via Soul-Desktop
-        //   (no native chat file) — promptCount is the real value there
-        // max() is robust to either being zero / partial without freezing
-        // the row at a stale low number, which was the "turn count keeps
-        // resetting on relaunch" bug.
-        let n = max(session.promptCount, session.transcriptTurns)
+        let n = session.visibleTurnCount > 0
+            ? session.visibleTurnCount
+            : max(session.promptCount, session.transcriptTurns)
         // SOUL-SOUL_DESKTOP-268: surface "no reply" when prompts landed but
         // every AfterAgent envelope was empty AND no provider transcript
         // rescues the session. Row stays clickable — the user decides
         // whether to keep, archive, or trash it.
+        let slash = slashMetaSuffix(session)
         let reply = session.agentReplyMissing ? " · no reply" : ""
         if n > 0 {
             let label = n == 1 ? "1 turn" : "\(n) turns"
-            return "\(label) · \(ago)\(reply)"
+            return "\(label) · \(ago)\(slash)\(reply)"
         }
-        return "\(ago)\(reply)"
+        return "\(ago)\(slash)\(reply)"
+    }
+
+    private var taskBadgeText: String? {
+        guard let taskId = normalizedTaskId else { return nil }
+        return taskId.replacingOccurrences(of: "SOUL-", with: "")
+    }
+
+    private var taskHelpText: String {
+        var parts: [String] = []
+        if let taskId = normalizedTaskId { parts.append(taskId) }
+        if let status = trimmed(session.taskStatus) { parts.append(status) }
+        if let subject = trimmed(session.taskSubject) { parts.append(subject) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var normalizedTaskId: String? {
+        trimmed(session.taskId)
+    }
+
+    private var slashBadgeText: String? {
+        guard !session.slashSemantics.isEmpty else { return nil }
+        if session.slashSemantics.values.contains(where: { $0.taskAffecting == true }) {
+            return "task"
+        }
+        if session.slashSemantics.values.allSatisfy({ ($0.localOnly == true) || ($0.conversationWorthy == false) }) {
+            return "local"
+        }
+        return nil
+    }
+
+    private var slashHelpText: String {
+        let commands = session.slashSemantics.keys.sorted().map { "/\($0)" }.joined(separator: ", ")
+        if let slashBadgeText {
+            return "\(slashBadgeText.capitalized) slash command: \(commands)"
+        }
+        return "Slash command: \(commands)"
+    }
+
+    private func slashMetaSuffix(_ session: SoulSession) -> String {
+        guard !session.slashSemantics.isEmpty else { return "" }
+        if session.slashSemantics.values.contains(where: { $0.taskAffecting == true }) {
+            return " · task command"
+        }
+        if session.slashSemantics.values.allSatisfy({ ($0.localOnly == true) || ($0.conversationWorthy == false) }) {
+            return " · local command"
+        }
+        return ""
+    }
+
+    private func trimmed(_ value: String?) -> String? {
+        guard let text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            return nil
+        }
+        return text
     }
 
     /// Humanized session length string for the row's second line. Defined
@@ -524,7 +595,7 @@ private struct LiveSessionRow: View {
     }
 
     private var title: String {
-        let s = (session.intent ?? session.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let s = (session.title ?? session.intent ?? session.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !s.isEmpty { return s }
         return "live · \(session.id.prefix(8))…"
     }

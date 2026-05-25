@@ -2,35 +2,37 @@ import Foundation
 import SoulACP
 import SoulCore
 
-actor CodexProviderRuntimeAdapter: ProviderRuntime {
-    typealias PromptAttachment = ContentBlock
+public actor CodexProviderRuntimeAdapter: ProviderRuntime {
+    public typealias PromptAttachment = ContentBlock
 
     private let projectKey: String
+    private let spawnResolver: RuntimeSpawnResolver
     private var client: CodexClient?
     private var currentTurnID: String?
 
-    init(projectKey: String) {
+    public init(projectKey: String, spawnResolver: @escaping RuntimeSpawnResolver) {
         self.projectKey = projectKey
+        self.spawnResolver = spawnResolver
     }
 
-    var isStarted: Bool {
+    public var isStarted: Bool {
         client != nil
     }
 
-    var activeTurnID: String? {
+    public var activeTurnID: String? {
         currentTurnID
     }
 
-    func eventStream() async -> AsyncStream<CodexClient.Event>? {
+    public func eventStream() async -> AsyncStream<CodexClient.Event>? {
         await client?.events
     }
 
-    func start(_ request: ProviderRuntimeStartRequest) async throws -> ProviderRuntimeStartResult {
+    public func start(_ request: ProviderRuntimeStartRequest) async throws -> ProviderRuntimeStartResult {
         if let client {
             let threadID = try await client.threadStart(cwd: request.session.projectPath)
             return ProviderRuntimeStartResult(nativeSessionID: threadID)
         }
-        guard var spawn = ACPProviderSpawn.resolve(.codex) else {
+        guard var spawn = spawnResolver(.codex, nil) else {
             throw NSError(domain: "Soul-Desktop", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "codex binary not found on PATH"])
         }
@@ -51,12 +53,12 @@ actor CodexProviderRuntimeAdapter: ProviderRuntime {
         return ProviderRuntimeStartResult(nativeSessionID: threadID)
     }
 
-    func loadSession(_ request: ProviderRuntimeLoadRequest) async throws {
+    public func loadSession(_ request: ProviderRuntimeLoadRequest) async throws {
         throw NSError(domain: "Soul-Desktop", code: 1,
                       userInfo: [NSLocalizedDescriptionKey: "codex runtime does not support session/load"])
     }
 
-    func startNewSession(_ request: ProviderRuntimeNewSessionRequest) async throws -> ProviderRuntimeNewSessionResult {
+    public func startNewSession(_ request: ProviderRuntimeNewSessionRequest) async throws -> ProviderRuntimeNewSessionResult {
         guard let client else {
             throw NSError(domain: "Soul-Desktop", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "codex client not initialized"])
@@ -65,7 +67,7 @@ actor CodexProviderRuntimeAdapter: ProviderRuntime {
         return ProviderRuntimeNewSessionResult(nativeSessionID: threadID)
     }
 
-    func prompt(_ request: ProviderRuntimePromptRequest<ContentBlock>) async throws {
+    public func prompt(_ request: ProviderRuntimePromptRequest<ContentBlock>) async throws {
         guard let client,
               let threadID = request.session.rpcSessionID,
               request.canDispatch else {
@@ -76,24 +78,24 @@ actor CodexProviderRuntimeAdapter: ProviderRuntime {
         currentTurnID = turnID
     }
 
-    func cancel(_ request: ProviderRuntimeCancelRequest) async {
+    public func cancel(_ request: ProviderRuntimeCancelRequest) async {
         guard let client,
               let threadID = request.session.rpcSessionID,
               let turnID = request.activeTurnID ?? currentTurnID else { return }
         try? await client.turnInterrupt(threadId: threadID, turnId: turnID)
     }
 
-    func stop() async {
+    public func stop() async {
         await client?.stop()
         client = nil
         currentTurnID = nil
     }
 
-    func clearActiveTurn() {
+    public func clearActiveTurn() {
         currentTurnID = nil
     }
 
-    func respond(id: JSONRPCID, result: JSONValue) async {
+    public func respond(id: JSONRPCID, result: JSONValue) async {
         try? await client?.respond(id: id, result: result)
     }
 }

@@ -109,6 +109,24 @@ struct ThreadControllerTests {
         #expect(controller._testTrackedToolCallCount == 0)
     }
 
+    @Test func testSetActiveThreadBumpsActivationNonceOnlyForSelectedThread() async throws {
+        let project = Self.testProject()
+        let first = ThreadController(provider: .geminiCLI, project: project)
+        let second = ThreadController(provider: .codex, project: project)
+        let sessions = AppSessionCoordinator()
+
+        sessions.mount(first)
+        let firstNonceAfterMount = first.activationNonce
+
+        sessions.mount(second)
+        let secondNonceAfterMount = second.activationNonce
+
+        sessions.setActiveThread(first.id)
+
+        #expect(first.activationNonce == firstNonceAfterMount + 1)
+        #expect(second.activationNonce == secondNonceAfterMount)
+    }
+
     private static func testProject() -> SoulProject {
         SoulProject(
             id: "test",

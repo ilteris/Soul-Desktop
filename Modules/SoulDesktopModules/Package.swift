@@ -10,36 +10,39 @@ let package = Package(
     products: [
         .library(name: "SoulCore", targets: ["SoulCore"]),
         .library(name: "SoulACP", targets: ["SoulACP"]),
-        .library(name: "SoulLedger", targets: ["SoulLedger"])
+        .library(name: "SoulLedger", targets: ["SoulLedger"]),
+        .library(name: "SoulRuntime", targets: ["SoulRuntime"])
     ],
     targets: [
         .target(
-            name: "SoulCore",
-            path: "Sources/SoulCore"
+            name: "SoulCore"
         ),
         .target(
             name: "SoulACP",
-            dependencies: ["SoulCore"],
-            path: "Sources/SoulACP"
+            dependencies: ["SoulCore"]
         ),
         .target(
-            name: "SoulLedger",
-            path: "Sources/SoulLedger"
+            name: "SoulLedger"
+        ),
+        .target(
+            name: "SoulRuntime",
+            dependencies: ["SoulCore", "SoulACP"]
         ),
         .testTarget(
             name: "SoulACPTests",
-            dependencies: ["SoulACP"],
-            path: "Tests/SoulACPTests"
+            dependencies: ["SoulACP"]
         ),
         .testTarget(
             name: "SoulCoreTests",
-            dependencies: ["SoulCore"],
-            path: "Tests/SoulCoreTests"
+            dependencies: ["SoulCore"]
         ),
         .testTarget(
             name: "SoulLedgerTests",
-            dependencies: ["SoulLedger"],
-            path: "Tests/SoulLedgerTests"
+            dependencies: ["SoulLedger"]
+        ),
+        .testTarget(
+            name: "SoulRuntimeTests",
+            dependencies: ["SoulRuntime"]
         )
     ]
 )

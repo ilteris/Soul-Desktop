@@ -64,13 +64,21 @@ enum SessionTitleResolver {
     // MARK: - Public API
 
     static func resolve(_ inputs: Inputs) -> String {
-        // 1. Explicit customTitle wins.
-        if let t = inputs.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
-            return truncate(t)
+        // 1. Explicit customTitle wins, unless it is a harness/resume
+        // scaffold. Those can leak into Title hooks on resume/hydrate and
+        // must not replace the user's sidebar title.
+        if let t = inputs.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !t.isEmpty,
+           !isPlaceholderTitle(t) {
+            if case .prose = classify(t) {
+                return truncate(t)
+            }
         }
 
         // 2. finalize.intent if it's prose (skill-expansion intents are noise).
-        if let intent = inputs.finalizeIntent?.trimmingCharacters(in: .whitespacesAndNewlines), !intent.isEmpty {
+        if let intent = inputs.finalizeIntent?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !intent.isEmpty,
+           !isPlaceholderTitle(intent) {
             if case .prose = classify(intent) {
                 return truncate(intent)
             }
@@ -122,6 +130,17 @@ enum SessionTitleResolver {
             return .skillExpansion
         }
 
+        // Resume/environment preambles are injected by Soul Desktop/kernel
+        // to give a freshly spawned provider session prior context. They
+        // are not user intent, and showing them as titles makes sidebar
+        // rows look like raw harness XML instead of conversations.
+        if isMachineScaffold(trimmed) {
+            return .skillExpansion
+        }
+        if looksLikeAbsolutePathOutput(trimmed) {
+            return .skillExpansion
+        }
+
         // Structural skill expansion. Two signals, either qualifies:
         //
         // (a) Obvious: long structured doc (≥500 chars) with markdown bold
@@ -164,6 +183,32 @@ enum SessionTitleResolver {
         return String(oneLine.prefix(titleMaxChars)) + "…"
     }
 
+    private static func looksLikeAbsolutePathOutput(_ text: String) -> Bool {
+        guard text.hasPrefix("/") || text.hasPrefix("~/") else { return false }
+        if text.contains("\n") { return true }
+        if text.contains(":") { return true }
+        if text.count > 20 && !text.contains(where: { $0.isWhitespace }) { return true }
+        return false
+    }
+
+    static func isPlaceholderTitle(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "untitled"
+            || normalized == "untitled session"
+            || normalized == "new chat"
+    }
+
+    private static func isMachineScaffold(_ text: String) -> Bool {
+        text.hasPrefix("<prior_session_context>")
+            || text.hasPrefix("</prior_session_context>")
+            || (text.contains("<prior_session_context>") && text.contains("</prior_session_context>"))
+            || text.hasPrefix("<environment_context>")
+            || text.hasPrefix("</environment_context>")
+            || (text.contains("<environment_context>") && text.contains("</environment_context>"))
+            || text.hasPrefix("<cwd>")
+            || text.contains("<cwd>")
+    }
+
     /// Try to lift a short descriptor from the first prompt that classifies
     /// as bareSlash or skillExpansion. For bareSlash the name is the slash
     /// command itself. For skillExpansion we return the shortest non-trivial
@@ -176,6 +221,10 @@ enum SessionTitleResolver {
             case .bareSlash(let name):
                 return name
             case .skillExpansion:
+                let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if isMachineScaffold(trimmed) || looksLikeAbsolutePathOutput(trimmed) {
+                    continue
+                }
                 if let stub = shortestSentenceInFirstParagraph(prompt) {
                     return stub
                 }

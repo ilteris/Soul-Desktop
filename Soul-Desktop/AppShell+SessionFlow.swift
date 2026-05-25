@@ -62,12 +62,16 @@ extension AppShell {
 
         if let existing = sessions.existingThread(sessionId: session.id) {
             harness = existing.provider
+            existing.scrollAnchorAtBottom = true
+            existing.scrollAnchorItemId = nil
             sessions.setActiveThread(existing.id)
             return
         }
         if session.id.hasPrefix("thread-") {
             if let existing = sessions.existingThread(syntheticSessionId: session.id) {
                 harness = existing.provider
+                existing.scrollAnchorAtBottom = true
+                existing.scrollAnchorItemId = nil
                 sessions.setActiveThread(existing.id)
                 sessions.pendingActiveId = nil
                 return
@@ -130,7 +134,7 @@ extension AppShell {
         } else {
             controller.startedAt = session.timestamp
         }
-        if let seed = (session.intent ?? session.summary)?
+        if let seed = (session.title ?? session.intent ?? session.summary)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !seed.isEmpty {
             controller.customTitle = seed
         }
@@ -278,7 +282,7 @@ extension AppShell {
                 id: "draft-\(UUID().uuidString)",
                 project: project.id,
                 timestamp: Date(),
-                intent: "New chat",
+                title: "New chat",
                 summary: nil,
                 source: nil,
                 status: nil,
@@ -339,6 +343,15 @@ extension AppShell {
     }
 
     private func providerForSession(_ session: SoulSession) -> Provider {
+        if let provider = session.provider {
+            switch provider {
+            case "claude":    return .claude
+            case "gemini", "geminiCLI": return .geminiCLI
+            case "pi", "pi-native": return .pi
+            case "codex":     return .codex
+            default: break
+            }
+        }
         // SOUL-SOUL_DESKTOP-237: defensive provider inference. The kernel
         // ledger's first NativeSessionID event is the most authoritative
         // signal of who CREATED this kernel sid. Prefer it over

@@ -669,7 +669,7 @@ struct AppShellV2: View {
                 kind: .session,
                 icon: "bubble.left.and.bubble.right",
                 tint: SoulColor.fgMuted,
-                title: session.intent ?? session.summary ?? "Untitled session",
+                title: session.title ?? session.intent ?? session.summary ?? "Untitled session",
                 detail: "\(session.source ?? session.liveProvider ?? "unknown") · \(session.eventCount) events",
                 timestamp: session.lastActivityAt ?? session.timestamp,
                 badge: "session"
@@ -1200,7 +1200,7 @@ struct AppShellV2: View {
                                 .frame(width: 18)
                                 .padding(.top, 2)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(session.intent ?? session.summary ?? "Untitled session")
+                                Text(session.title ?? session.intent ?? session.summary ?? "Untitled session")
                                     .font(SoulFont.ui(12, weight: .medium))
                                     .foregroundStyle(SoulColor.fg)
                                     .lineLimit(2)

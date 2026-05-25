@@ -2,6 +2,7 @@ import Foundation
 import SoulACP
 import SoulCore
 import SoulLedger
+import SoulRuntime
 
 /// Session-resume + spawn + teardown lifecycle methods lifted out of
 /// ThreadController. `loadSession(id:)` handles click-on-existing-row
@@ -499,9 +500,11 @@ extension ThreadController {
             sessionId = Self.looksLikeUUID(id) ? id : UUID().uuidString.lowercased()
         }
         let runtime = runtimes.acp ?? ACPProviderRuntimeAdapter(
-            provider: provider,
+            provider: provider.agentProvider,
             projectKey: project.id,
-            provisionalSessionID: id
+            provisionalSessionID: id,
+            spawnResolver: runtimeSpawnResolver(),
+            hydrationPreparer: runtimeHydrationPreparer()
         )
         runtimes.acp = runtime
         let startResult = try await runtime.start(runtimeStartRequest(

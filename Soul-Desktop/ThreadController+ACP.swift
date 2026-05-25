@@ -1,6 +1,7 @@
 import Foundation
 import SoulACP
 import SoulLedger
+import SoulRuntime
 
 /// ACP `SessionUpdate` dispatch + per-update helpers, lifted out of
 /// ThreadController. The big `apply(_:)` switch and its accompanying
@@ -40,15 +41,15 @@ extension ThreadController {
         // rendered those items from the on-disk transcript, so re-applying
         // them here would double everything. Let only non-content updates
         // (availableCommandsUpdate populates the slash picker) through.
-        let input = ACPEventRenderingInput(update: update)
+        let action = ACPRuntimeRenderingAction(update: update)
         if suppressLoadReplay {
-            if case .availableCommandsUpdate(let payload) = input {
+            if case .updateAvailableCommands(let payload) = action {
                 updateCommands(payload)
             }
             return
         }
-        switch input {
-        case .agentMessageChunk(let chunk):
+        switch action {
+        case .appendAgentText(let chunk):
             // SOUL-SOUL_DESKTOP-108: skip empty-text chunks so they don't
             // ghost-append a bubble with no body. Most empty chunks come
             // from non-text ACP content types the old decoder collapsed
@@ -60,7 +61,7 @@ extension ThreadController {
             } else {
                 appendAgentChunk(chunk)
             }
-        case .agentThoughtChunk(let text):
+        case .appendAgentThought(let text):
             // Render the agent's reasoning stream so the user sees what's
             // happening during long turns instead of staring at a spinner.
             // Same coalescing pattern as agentMessageChunk: append to the
@@ -71,17 +72,17 @@ extension ThreadController {
             if !text.isEmpty {
                 appendAgentThoughtChunk(text)
             }
-        case .toolCall(let payload):
+        case .renderToolCall(let payload, isUpdate: false):
             if silentCapture != nil { break }
             insertToolCall(payload, isUpdate: false)
-        case .toolCallUpdate(let payload):
+        case .renderToolCall(let payload, isUpdate: true):
             if silentCapture != nil { break }
             insertToolCall(payload, isUpdate: true)
-        case .plan(let payload):
+        case .renderPlan(let payload):
             insertPlan(payload)
-        case .availableCommandsUpdate(let payload):
+        case .updateAvailableCommands(let payload):
             updateCommands(payload)
-        case .userMessageChunk(let text):
+        case .replayUserText(let text):
             // The agent replays prior user turns through this stream during
             // `session/load`. Each chunk is the full text of one turn (not a
             // partial stream). Closing the open agent bubble ensures turn
@@ -112,9 +113,9 @@ extension ThreadController {
                     items.append(.userMessage(id: id, text: stripped, timestamp: Date()))
                 }
             }
-        case .currentModeUpdate:
+        case .clearCurrentMode:
             break
-        case .unknown(let kind, let payload):
+        case .handleUnknown(let kind, let payload):
             // pi-acp emits `session_info_update` as queue/running telemetry
             // on every turn (depth + running flag). Useful diagnostic data
             // but emitted at high frequency — silently drop so the agent

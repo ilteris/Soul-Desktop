@@ -2,6 +2,7 @@ import Foundation
 import SoulACP
 import SoulCore
 import SoulLedger
+import SoulRuntime
 
 /// Queue and interruption helpers for ThreadController turn flow.
 /// Keeps prompt parking, bubble relocation, steer, and process-reset logic

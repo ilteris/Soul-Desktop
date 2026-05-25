@@ -411,6 +411,16 @@ struct ThreadView: View {
                         }
                     }
                 }
+                .onChange(of: controller.activationNonce) { _, _ in
+                    guard !controller.isHydrating else { return }
+                    suppressAnchorWrites = true
+                    anchor.atBottom = controller.scrollAnchorAtBottom
+                    anchor.itemId = controller.scrollAnchorItemId
+                    if anchor.atBottom {
+                        scrollFollow.userDetachedFromBottom = false
+                    }
+                    performScrollRestore(proxy: proxy)
+                }
                 .onChange(of: controller.items.count) { _, _ in
                     // Only follow until the user explicitly scrolls upward.
                     // The send-start snap (onChange of isWorking below) gets

@@ -216,63 +216,45 @@ extension SoulRegistry {
             // soul_session_view.py's own scanner semantics.
             s.eventCount = rec.event_count ?? 0
             s.promptCount = rec.prompt_count ?? 0
+            s.assistantTurnCount = rec.assistant_turn_count ?? 0
+            s.toolCallCount = rec.tool_call_count ?? 0
+            s.visibleTurnCount = rec.visible_turn_count ?? 0
+            s.hasConversation = rec.has_conversation
+            s.rawTitle = rec.raw_title
+            s.titleSource = rec.title_source
+            s.titleStatus = rec.title_status
+            s.provider = normalizedProviderName(rec.provider)
+            s.origin = rec.origin
+            s.resumeStrategy = rec.resume_strategy
+            s.resumeTarget = rec.resume_target
+            s.loadabilityReason = rec.loadability_reason
+            s.health = rec.health
+            s.healthReasons = rec.health_reasons ?? []
+            s.lifecycle = rec.lifecycle
+            s.trashedAt = parseTimestamp(rec.trashed_at)
+            s.slashSemantics = (rec.slash_semantics ?? [:]).mapValues { sem in
+                SoulSlashCommandSemantics(
+                    localOnly: sem.local_only,
+                    conversationWorthy: sem.conversation_worthy,
+                    taskAffecting: sem.task_affecting,
+                    titleWorthy: sem.title_worthy,
+                    expansionStrategy: sem.expansion_strategy
+                )
+            }
+            s.taskId = rec.task_id
+            s.taskStatus = rec.task_status
+            s.taskSubject = rec.task_subject
             let sessionStartPpid: Int? = rec.session_start_ppid
             let nativeSessionIDs: [String: String] = rec.native_session_ids ?? [:]
             let sessionVisibility: String? = rec.session_visibility
+            let sessionKind: String? = rec.session_kind
+            let visibilityReason: String? = rec.visibility_reason
             let delegationEventCount: Int = rec.delegation_event_count ?? 0
             let partialCapture: Bool = rec.partial_capture ?? false
             if s.worktreePath == nil { s.worktreePath = rec.worktree_path }
-            // SOUL-SOUL_DESKTOP-082 Phase 1: route disk-side title resolution
-            // through SessionTitleResolver so the sidebar applies the same
-            // structural classifier the live thread does. The kernel CLI
-            // only gives us the FIRST user prompt; pass it through the
-            // resolver to (a) prefer finalize.intent when present, (b)
-            // synthesize `/<skill> · <date>` when the prompt is a bare
-            // slash or skill expansion, (c) keep customTitle/title-hook
-            // text on top.
-            // SOUL-SOUL-090: prefer the kernel-CLI's first_user_prompts
-            // (up to 3) so the resolver can walk past skill expansions. Old
-            // CLI binaries that don't emit the field fall back to the
-            // single first_user_prompt.
-            let resolverPrompts: [String] = {
-                if let many = rec.first_user_prompts, !many.isEmpty {
-                    return many
-                }
-                if let fp = rec.first_user_prompt, !fp.isEmpty { return [fp] }
-                return []
-            }()
-            // finalize.intent gets considered if present AND the existing
-            // s.intent (set from `finalize.intent` at line 423 above) is
-            // exactly the finalize intent — preserve the source so the
-            // resolver can demote a finalize.intent that's itself a skill
-            // expansion. We pass s.intent as the finalizeIntent slot only
-            // when this row is actually finalized; otherwise nil.
-            let finalizeIntentForResolver: String? = (rec.finalize != nil) ? s.intent : nil
-            let inputs = SessionTitleResolver.Inputs(
-                customTitle: rec.title?.isEmpty == false ? rec.title : nil,
-                finalizeIntent: finalizeIntentForResolver,
-                prompts: resolverPrompts,
-                firstAgentLine: nil,
-                branchSummary: nil,
-                skillHint: nil
-            )
-            let resolved = SessionTitleResolver.resolve(inputs)
-            if resolved != "New chat" {
-                s.intent = resolved
-            } else if s.intent == nil {
-                // Resolver bottomed out with nothing useful — keep prior
-                // s.intent (likely nil), let downstream display "New chat".
-            }
-            if s.summary == nil { s.summary = s.intent }
-            if rec.has_desktop_signature == true {
-                s.writer = .soulDesktop
-            } else if shape.hooksPath != nil {
-                // No desktop signature but we have a ledger → external
-                // terminal-side writer.
-                s.writer = .external
-            } else {
-                s.writer = .unknown
-            }
+            s.title = rec.title?.isEmpty == false ? rec.title : nil
+            if s.summary == nil { s.summary = s.title ?? s.intent }
+            s.writer = sessionWriter(from: rec.writer, hasDesktopSignature: rec.has_desktop_signature, hooksPath: shape.hooksPath)
             s.startedAt = parseTimestamp(rec.first_event_ts)
             if let last = parseTimestamp(rec.last_event_ts) {
                 s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, last)
@@ -324,7 +306,11 @@ extension SoulRegistry {
                shape.finalizePath != nil, h.timeIntervalSince(j) < 60 {
                 s.isDirty = false
             }
-            s.replayable = (shape.hooksPath != nil)
+            s.replayable = rec.replayable ?? (shape.hooksPath != nil)
+            if let provider = s.provider, provider != "unknown" {
+                s.source = provider
+                s.liveProvider = provider
+            }
             if s.source == nil {
                 if let live = agentMatchCached(sessionId: id, projectPath: projectPath, cache: dirCache, nativeSessionIDs: nativeSessionIDs) {
                     s.liveProvider = live
@@ -336,33 +322,28 @@ extension SoulRegistry {
                 }
             }
 
-            if let path = projectPath {
+            if let loadable = rec.loadable {
+                s.loadable = loadable
+            } else if let path = projectPath {
                 s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
             } else {
                 s.loadable = false
             }
 
-            // Always compute the provider-transcript turn count. Previously
-            // gated on `promptCount == 0` as a perf optimization, but the
-            // kernel hooks ledger frequently under-counts (terminal-origin
-            // sessions, SOUL-247 payload-drop, hooks-disabled providers) —
-            // a partial promptCount of 5 would freeze the sidebar at
-            // "5 turns" forever on a session that actually had 90+ turns
-            // in the provider transcript. metaLine picks max(promptCount,
-            // transcriptTurns), which is robust to either source being
-            // partial. Per-project scan is gated through cachedSessions
-            // (projectStamp mtime), so this cost is paid once per project
-            // dir change, not per sidebar body render.
-            s.transcriptTurns = countTranscriptTurns(
-                sessionId: id,
-                projectKey: key,
-                projectPath: projectPath,
-                sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
-                cache: dirCache,
-                nativeSessionIDs: nativeSessionIDs
-            )
+            if let visible = rec.visible_turn_count {
+                s.transcriptTurns = visible
+            } else {
+                s.transcriptTurns = countTranscriptTurns(
+                    sessionId: id,
+                    projectKey: key,
+                    projectPath: projectPath,
+                    sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
+                    cache: dirCache,
+                    nativeSessionIDs: nativeSessionIDs
+                )
+            }
 
-            if s.promptCount == 0 {
+            if s.promptCount == 0, rec.title_status == nil, rec.title_source == nil {
                 // Title fallback for terminal-origin sessions. If the kernel
                 // ledger has no UserPrompt events, s.intent will be nil (no
                 // Title hook). reach into the native transcript to sniff the
@@ -391,6 +372,8 @@ extension SoulRegistry {
             // would mis-classify recent finalizes as unfinalized.
             s.hasFinalize = rec.has_finalize ?? (shape.finalizePath != nil)
             s.sessionVisibility = sessionVisibility
+            s.sessionKind = sessionKind
+            s.visibilityReason = visibilityReason
             s.delegationEventCount = delegationEventCount
             s.sessionStartPpid = sessionStartPpid
             s.partialCapture = partialCapture
@@ -401,6 +384,10 @@ extension SoulRegistry {
             // all), this catches the writer-drop class where envelopes did
             // fire but content was lost.
             let afterAgentContent = rec.after_agent_content_count ?? -1
+            if rec.health_reasons?.contains("agent_reply_missing") == true
+                || rec.health_reasons?.contains("empty_after_agent") == true {
+                s.agentReplyMissing = true
+            }
             if afterAgentContent >= 0,
                s.promptCount > 0,
                afterAgentContent == 0,
@@ -415,6 +402,29 @@ extension SoulRegistry {
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(limit)
             .map { $0 }
+    }
+
+    private static func normalizedProviderName(_ raw: String?) -> String? {
+        switch raw {
+        case "gemini", "gemini-cli", "geminiCLI": return Provider.geminiCLI.rawValue
+        case "claude": return Provider.claude.rawValue
+        case "pi", "pi-native": return Provider.pi.rawValue
+        case "codex": return Provider.codex.rawValue
+        case .some(let value) where !value.isEmpty: return value
+        default: return nil
+        }
+    }
+
+    private static func sessionWriter(from raw: String?, hasDesktopSignature: Bool?, hooksPath: String?) -> SessionWriter {
+        switch raw {
+        case "soulDesktop", "desktop": return .soulDesktop
+        case "external", "terminal", "daemon", "subagent": return .external
+        case "unknown": return .unknown
+        default:
+            if hasDesktopSignature == true { return .soulDesktop }
+            if hooksPath != nil { return .external }
+            return .unknown
+        }
     }
 
     private static func agentMatchCached(sessionId: String, projectPath: String?, cache: GeminiDirCache, nativeSessionIDs: [String: String]) -> String? {

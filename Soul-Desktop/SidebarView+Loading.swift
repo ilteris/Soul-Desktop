@@ -74,7 +74,7 @@ extension SidebarView {
             // expands the project — at which point filteredChatCount kicks
             // in and the badge collapses. Persisting the filtered count
             // means the next launch shows the right number immediately.
-            recomputePersistedSessionCounts()
+            rebuildResolvedRows()
         }
         // Refresh expanded projects AND prime any unprimed project so the
         // collapsed badge shows the visibility-filtered count instead of
@@ -129,7 +129,7 @@ extension SidebarView {
            let stale = registryStore.cachedSessionsStaleOK(forProject: projectId),
            !stale.isEmpty {
             self.sessionsByProject[projectId] = stale
-            recomputePersistedSessionCounts()
+            rebuildResolvedRows(projectIds: Set([projectId]))
         }
 
         // Skip the CLI scan if the strict cache is fresh (in-memory or
@@ -158,7 +158,7 @@ extension SidebarView {
             // row count is known to be zero.
             guard !rows.isEmpty else { return }
             self.sessionsByProject[projectId] = rows
-            recomputePersistedSessionCounts()
+            rebuildResolvedRows(projectIds: Set([projectId]))
         }
     }
 
@@ -206,10 +206,13 @@ extension SidebarView {
                 if fresh.transcriptTurns == 0 && old.transcriptTurns > 0 {
                     out.transcriptTurns = old.transcriptTurns
                 }
+                if fresh.visibleTurnCount == 0 && old.visibleTurnCount > 0 {
+                    out.visibleTurnCount = old.visibleTurnCount
+                }
                 return out
             }
             self.sessionsByProject[key] = merged
-            recomputePersistedSessionCounts()
+            rebuildResolvedRows(projectIds: Set([key]))
         }
     }
 
@@ -224,17 +227,7 @@ extension SidebarView {
     /// their existing entry (either the raw initial-discovery count or the
     /// previously-persisted filtered count) so we never blank a badge.
     func recomputePersistedSessionCounts() {
-        var updated = sessionCounts
-        for project in projects {
-            guard let _ = sessionsByProject[project.id] else { continue }
-            if let resolved = resolvedRows(for: project) {
-                updated[project.id] = resolved.activeCount
-            }
-        }
-        if updated != sessionCounts {
-            sessionCounts = updated
-            Self.writeSessionCountsCache(updated)
-        }
+        rebuildResolvedRows()
     }
 
 }

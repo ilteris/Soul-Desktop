@@ -119,10 +119,10 @@ native Codex execution plan as follows:
 
 | Soul task | Codex task | Verification |
 | --- | --- | --- |
-| `SOUL-SOUL_DESKTOP-284` | Extract ACP core domain dependencies into `SoulCore`: provider identity and permission policy first. | `swift build`, Xcode tests, verifier subagent. |
-| `SOUL-SOUL_DESKTOP-283` | Move `ACPClient.swift` into `SoulACP` after its dependencies are module-safe. | `swift build`, Xcode tests, verifier subagent. |
-| `SOUL-SOUL_DESKTOP-286` | Move `CodexClient.swift` into `SoulACP` and keep omitted-`jsonrpc` behavior explicit. | `swift build`, Codex request tests, verifier subagent. |
-| `SOUL-SOUL_DESKTOP-285` | Add SwiftPM tests for the extracted ACP boundary. | `swift test`, Xcode tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-284` | Extract ACP core domain dependencies into `SoulCore`: provider identity and permission policy first. | `swift build --package-path Modules/SoulDesktopModules`, Xcode tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-283` | Move `ACPClient.swift` into `SoulACP` after its dependencies are module-safe. | `swift build --package-path Modules/SoulDesktopModules`, Xcode tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-286` | Move `CodexClient.swift` into `SoulACP` and keep omitted-`jsonrpc` behavior explicit. | `swift build --package-path Modules/SoulDesktopModules`, Codex request tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-285` | Add SwiftPM tests for the extracted ACP boundary. | `swift test --package-path Modules/SoulDesktopModules`, Xcode tests, verifier subagent. |
 | `SOUL-SOUL_DESKTOP-292` | Rewire the Xcode app target to consume `SoulCore` and `SoulACP` as local package products instead of compiling extracted sources directly. | Xcode package dependency inspection, Xcode tests, verifier subagent. |
 | `SOUL-SOUL_DESKTOP-295` | Create `SoulLedger` and move only UI-free ledger models/read helpers first. | `swift build`, Xcode tests, verifier subagent. |
 | `SOUL-SOUL_DESKTOP-297` | Move `HooksReader` and replay ledger parsing behind `SoulLedger`. | Ledger/replay tests, Xcode tests, verifier subagent. |
@@ -172,8 +172,8 @@ the package type.
 
 | Soul task | Codex task | Verification |
 | --- | --- | --- |
-| `SOUL-SOUL_DESKTOP-294` | Include `CodexClient.swift` in the `SoulACP` target after confirming its dependencies are already package-safe. | `swift build --target SoulACP`, Xcode tests, verifier subagent. |
-| `SOUL-SOUL_DESKTOP-293` | Pin Codex app-server's omitted-`jsonrpc` envelope behavior with SwiftPM tests. | `swift test`, Codex request tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-294` | Include `CodexClient.swift` in the `SoulACP` target after confirming its dependencies are already package-safe. | `swift build --package-path Modules/SoulDesktopModules --target SoulACP`, Xcode tests, verifier subagent. |
+| `SOUL-SOUL_DESKTOP-293` | Pin Codex app-server's omitted-`jsonrpc` envelope behavior with SwiftPM tests. | `swift test --package-path Modules/SoulDesktopModules`, Codex request tests, verifier subagent. |
 
 ## Remaining Boundary Order
 

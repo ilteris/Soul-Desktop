@@ -2,6 +2,7 @@ import Foundation
 import SoulACP
 import SoulCore
 import SoulLedger
+import SoulRuntime
 
 /// Turn-lifecycle send loop for ThreadController.
 /// Queue mechanics live in ThreadController+Queue.swift; stall and per-tool
@@ -361,10 +362,27 @@ extension ThreadController {
                 // without having to re-open the session from the sidebar.
                 injectFinalizeSummaryIfFresh(sessionId: sid)
 
-                // Post-turn title generation only on the very first user turn
-                // of a fresh chat. Skip when draining queued prompts.
-                let userPrompts = items.filter { if case .userMessage = $0 { return true } else { return false } }.count
-                if userPrompts == 1 && customTitle == nil {
+                // Post-turn title generation only on the first substantive
+                // user turn. Harness scaffolds can be ledgered as user
+                // messages before the user's actual prompt, so raw count is
+                // not a safe trigger.
+                let substantiveUserPrompts = items.compactMap { item -> String? in
+                    guard case .userMessage(_, let text, _) = item else { return nil }
+                    let cleaned = SoulRegistry.stripCommandTags(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard case .prose = SessionTitleResolver.classify(cleaned),
+                          !SessionTitleResolver.isPlaceholderTitle(cleaned)
+                    else { return nil }
+                    return cleaned
+                }.count
+                let hasUsableCustomTitle: Bool = {
+                    guard let title = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !title.isEmpty,
+                          !SessionTitleResolver.isPlaceholderTitle(title),
+                          case .prose = SessionTitleResolver.classify(title)
+                    else { return false }
+                    return true
+                }()
+                if substantiveUserPrompts == 1 && !hasUsableCustomTitle {
                     Task { await generateTitle() }
                 }
 

@@ -2,6 +2,7 @@ import Foundation
 import SoulACP
 import SoulCore
 import SoulLedger
+import SoulRuntime
 
 /// Codex-provider event/RPC handling lifted out of ThreadController. The
 /// methods stay private to the extension so existing call sites in
@@ -17,7 +18,10 @@ extension ThreadController {
     func spawnAndInitializeCodex() async throws {
         let startRequest = runtimeStartRequest(skipNewSession: false)
         if await runtimes.codex?.isStarted == true { return }
-        let runtime = runtimes.codex ?? CodexProviderRuntimeAdapter(projectKey: project.id)
+        let runtime = runtimes.codex ?? CodexProviderRuntimeAdapter(
+            projectKey: project.id,
+            spawnResolver: runtimeSpawnResolver()
+        )
         runtimes.codex = runtime
         let startResult = try await runtime.start(startRequest)
         guard let stream = await runtime.eventStream() else {
@@ -112,19 +116,19 @@ extension ThreadController {
             // reasoning streams that we don't render yet but still indicate
             // forward motion.
             lastActivityAt = Date()
-            switch CodexEventRenderingInput(method: method, params: params) {
-            case .itemStarted(let itemType, let codexId, let item):
+            switch CodexRuntimeRenderingAction(method: method, params: params) {
+            case .startItem(let itemType, let codexId, let item):
                 appendCodexItem(itemType: itemType, codexId: codexId, item: item, terminal: false)
-            case .agentMessageDelta(let itemId, let delta):
+            case .appendAgentText(let itemId, let delta):
                 guard let uuid = codexItemMap[itemId] else { return }
                 if let idx = items.firstIndex(where: { $0.id == uuid }),
                    case .agentMessage(let id, let prior, _, let ts) = items[idx] {
                     items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
                 }
                 lastActivityAt = Date()
-            case .itemCompleted(let itemType, let codexId, let item):
+            case .completeItem(let itemType, let codexId, let item):
                 completeCodexItem(itemType: itemType, codexId: codexId, item: item)
-            case .turnCompleted(let turnId, let status, let errorMessage):
+            case .completeTurn(let turnId, let status, let errorMessage):
                 let turnIdMatches: Bool = {
                     if let turnId, let active = codexActiveTurnId {
                         return turnId == active
@@ -141,7 +145,7 @@ extension ThreadController {
                         cont.resume(returning: ())
                     }
                 }
-            case .reasoningDelta(let itemId, let delta):
+            case .appendReasoning(let itemId, let delta):
                 // Codex's reasoning stream. Append each delta into the open
                 // agent-thought bubble so the user sees what the agent is
                 // reasoning through. Without this the `item/started` event
@@ -151,16 +155,16 @@ extension ThreadController {
                    case .agentThought(let id, let prior, _, let ts) = items[idx] {
                     items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
                 }
-            case .outputDelta:
+            case .markOutputActivity:
                 // Stream-level deltas for other item types — keep
                 // `lastActivityAt` fresh (already done above) and rely on
                 // `item/completed` to render the final state. Wiring
                 // per-row live streaming for these is a follow-up.
                 break
-            case .tokenUsage(let lastTotalTokens, let modelContextWindow):
+            case .updateTokenUsage(let lastTotalTokens, let modelContextWindow):
                 if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
                 if let modelContextWindow { codexContextWindow = modelContextWindow }
-            case .ignored:
+            case .noop:
                 break  // ignore lifecycle / mcp / remoteControl chatter
             }
         case .stderr(let line):

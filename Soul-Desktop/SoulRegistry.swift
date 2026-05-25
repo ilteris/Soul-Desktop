@@ -34,12 +34,25 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// Stable sidebar sort timestamp. For ledgers with hook events this is
     /// the session creation/start time, not the latest file activity.
     var timestamp: Date
+    /// Canonical UI title. Generated once into the ledger's Title hook and
+    /// decoded through the session-list model. `intent` remains the finalize
+    /// intent; sidebar/header code should not derive display labels from it.
+    var title: String?
+    var rawTitle: String? = nil
+    var titleSource: String? = nil
+    var titleStatus: String? = nil
     var intent: String?
     var summary: String?
     var source: String?            // "claude" | "gemini" | "pi-native"
+    var provider: String? = nil
+    var origin: String? = nil
     var status: String?
     var eventCount: Int = 0        // hooks.jsonl line count (kernel events)
     var promptCount: Int = 0       // Claude transcript "type":"user" count
+    var assistantTurnCount: Int = 0
+    var toolCallCount: Int = 0
+    var visibleTurnCount: Int = 0
+    var hasConversation: Bool? = nil
     /// Fallback turn count derived from the provider's transcript when the
     /// kernel ledger has no UserPrompt events. Rendered with a `~` prefix
     /// in the sidebar so users can still gauge session length on rows the
@@ -70,6 +83,17 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// "is this row resumable?" filter — non-loadable rows can still appear
     /// when `replayable`, just with a Replay-only affordance.
     var loadable: Bool = true
+    var resumeStrategy: String? = nil
+    var resumeTarget: String? = nil
+    var loadabilityReason: String? = nil
+    var health: String? = nil
+    var healthReasons: [String] = []
+    var lifecycle: String? = nil
+    var trashedAt: Date? = nil
+    var slashSemantics: [String: SoulSlashCommandSemantics] = [:]
+    var taskId: String? = nil
+    var taskStatus: String? = nil
+    var taskSubject: String? = nil
     /// True iff `<uuid>/hooks.jsonl` exists. The replay surface only needs
     /// the kernel ledger, so finalized rows whose provider transcript has
     /// rotated out are still replay-able.
@@ -78,6 +102,8 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// (title generation, subagent, finalize summary). Read by the sidebar
     /// visibility policy as the primary "hide from humans" signal.
     var sessionVisibility: String? = nil
+    var sessionKind: String? = nil
+    var visibilityReason: String? = nil
     /// Count of `Delegation{Started,Completed,Failed}` events. The visibility
     /// policy subtracts these from `eventCount` so delegation-only stub
     /// sessions don't look like real conversations.
@@ -123,6 +149,14 @@ struct SoulSession: Identifiable, Hashable, Codable {
     var canSafelyResume: Bool {
         !isLive || isStale || writer == .soulDesktop
     }
+}
+
+struct SoulSlashCommandSemantics: Hashable, Codable {
+    var localOnly: Bool?
+    var conversationWorthy: Bool?
+    var taskAffecting: Bool?
+    var titleWorthy: Bool?
+    var expansionStrategy: String?
 }
 
 enum SoulRegistry {

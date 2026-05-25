@@ -35,6 +35,44 @@ public enum ACPEventRenderingInput: Equatable, Sendable {
     }
 }
 
+public enum ACPRuntimeRenderingAction: Equatable, Sendable {
+    case appendAgentText(String)
+    case appendAgentThought(String)
+    case replayUserText(String)
+    case renderToolCall(JSONValue, isUpdate: Bool)
+    case renderPlan(JSONValue)
+    case updateAvailableCommands(JSONValue)
+    case clearCurrentMode
+    case handleUnknown(kind: String, payload: JSONValue)
+
+    public init(input: ACPEventRenderingInput) {
+        switch input {
+        case .agentMessageChunk(let text):
+            self = .appendAgentText(text)
+        case .agentThoughtChunk(let text):
+            self = .appendAgentThought(text)
+        case .userMessageChunk(let text):
+            self = .replayUserText(text)
+        case .toolCall(let payload):
+            self = .renderToolCall(payload, isUpdate: false)
+        case .toolCallUpdate(let payload):
+            self = .renderToolCall(payload, isUpdate: true)
+        case .plan(let payload):
+            self = .renderPlan(payload)
+        case .availableCommandsUpdate(let payload):
+            self = .updateAvailableCommands(payload)
+        case .currentModeUpdate:
+            self = .clearCurrentMode
+        case .unknown(let kind, let payload):
+            self = .handleUnknown(kind: kind, payload: payload)
+        }
+    }
+
+    public init(update: SessionUpdate) {
+        self.init(input: ACPEventRenderingInput(update: update))
+    }
+}
+
 public enum CodexEventRenderingInput: Equatable, Sendable {
     case itemStarted(itemType: String, itemID: String, item: [String: JSONValue])
     case agentMessageDelta(itemID: String, delta: String)
@@ -108,6 +146,45 @@ public enum CodexEventRenderingInput: Equatable, Sendable {
         default:
             self = .ignored
         }
+    }
+}
+
+public enum CodexRuntimeRenderingAction: Equatable, Sendable {
+    case startItem(itemType: String, itemID: String, item: [String: JSONValue])
+    case appendAgentText(itemID: String, delta: String)
+    case completeItem(itemType: String, itemID: String, item: [String: JSONValue])
+    case completeTurn(turnID: String?, status: String?, errorMessage: String?)
+    case appendReasoning(itemID: String, delta: String)
+    case markOutputActivity
+    case updateTokenUsage(lastTotalTokens: Int?, modelContextWindow: Int?)
+    case noop
+
+    public init(input: CodexEventRenderingInput) {
+        switch input {
+        case .itemStarted(let itemType, let itemID, let item):
+            self = .startItem(itemType: itemType, itemID: itemID, item: item)
+        case .agentMessageDelta(let itemID, let delta):
+            self = .appendAgentText(itemID: itemID, delta: delta)
+        case .itemCompleted(let itemType, let itemID, let item):
+            self = .completeItem(itemType: itemType, itemID: itemID, item: item)
+        case .turnCompleted(let turnID, let status, let errorMessage):
+            self = .completeTurn(turnID: turnID, status: status, errorMessage: errorMessage)
+        case .reasoningDelta(let itemID, let delta):
+            self = .appendReasoning(itemID: itemID, delta: delta)
+        case .outputDelta:
+            self = .markOutputActivity
+        case .tokenUsage(let lastTotalTokens, let modelContextWindow):
+            self = .updateTokenUsage(
+                lastTotalTokens: lastTotalTokens,
+                modelContextWindow: modelContextWindow
+            )
+        case .ignored:
+            self = .noop
+        }
+    }
+
+    public init(method: String, params: JSONValue?) {
+        self.init(input: CodexEventRenderingInput(method: method, params: params))
     }
 }
 

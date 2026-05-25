@@ -134,7 +134,7 @@ extension SidebarView {
         // count and the rendered list. They cannot disagree anymore.
         // resolved is nil when the project's sessions haven't been loaded
         // yet — badge falls back to the raw disk count.
-        let resolved = resolvedRows(for: project)
+        let resolved = sidebarRowsProjection.rowsByProject[project.id]
         ProjectSidebarRow(
             project: project,
             isSelected: activeProjectId == project.id
@@ -228,10 +228,10 @@ extension SidebarView {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(SoulColor.fgSubtle)
-                Image(systemName: "archivebox")
+                Image(systemName: "trash")
                     .font(.system(size: 12))
                     .foregroundStyle(SoulColor.fgSubtle)
-                Text("Archived")
+                Text("Recently Trashed")
                     .font(SoulFont.ui(12, weight: .regular))
                     .foregroundStyle(SoulColor.fgSubtle)
                     .textCase(.uppercase)
@@ -295,28 +295,35 @@ extension SidebarView {
             if starStore.isStarred(session.id, project: session.project) {
                 Button("Unstar") {
                     starStore.unstar(session.id, project: session.project)
+                    rebuildResolvedRows(projectIds: Set([session.project]))
                 }
             } else {
                 Button("Star (pin to top)") {
                     starStore.star(session.id, project: session.project)
+                    rebuildResolvedRows(projectIds: Set([session.project]))
                 }
             }
             Divider()
-            if archiveStore.isArchived(session.id, project: session.project) {
-                Button("Unarchive") {
-                    archiveStore.unarchive(session.id, project: session.project)
+            if session.lifecycle == "trashed" {
+                Button("Restore") {
+                    restoreSessionFromKernelTrash(session)
                 }
-                // Two-step delete: only available on archived rows so a
-                // fat-finger on the main list can't trash a live session.
-                // Files move to ~/.Trash (recoverable), not `rm`.
                 Divider()
-                Button("Delete (move to Trash)…", role: .destructive) {
-                    pendingDelete = DeleteConfirmation(session: session)
+                Button("Delete permanently…", role: .destructive) {
+                    pendingDelete = DeleteConfirmation(session: session, permanently: true)
+                }
+            } else if session.lifecycle == "archived" {
+                Button("Restore") {
+                    restoreSessionFromKernelTrash(session)
+                }
+            } else if session.lifecycle == nil && archiveStore.isArchived(session.id, project: session.project) {
+                Button("Restore legacy archive") {
+                    archiveStore.unarchive(session.id, project: session.project)
+                    rebuildResolvedRows(projectIds: Set([session.project]))
                 }
             } else {
-                Button("Archive") {
-                    archiveStore.archive(session.id, project: session.project)
-                    onArchive(session)
+                Button("Move to Trash…", role: .destructive) {
+                    pendingDelete = DeleteConfirmation(session: session, permanently: false)
                 }
             }
             if repairableProvider(for: session) != nil {
@@ -328,70 +335,37 @@ extension SidebarView {
         }
     }
 
-    /// Move every on-disk artifact for a session to ~/.Trash:
-    ///   - kernel ledger:  <SOUL_HOME>/sessions/<proj>/<sid>/, plus legacy registry copies
-    ///   - finalize JSON:  <SOUL_HOME>/sessions/<proj>/*<sid>.json, plus legacy registry copies
-    ///   - Claude file:    ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
-    ///   - Gemini chat:    ~/.gemini/tmp/<basename>(-N)/chats/*<first8>*
-    ///   - Codex transcript sibling lives inside the ledger dir, swept above
-    /// then remove the row from the archive set + invalidate the cache so
-    /// the sidebar repaints without it. Returns the count of trashed paths.
-    @discardableResult
-    func deleteSessionToTrash(_ session: SoulSession) -> Int {
-        let fm = FileManager.default
-        var paths: [String] = []
-
-        // Kernel ledger dir.
-        for root in SoulRegistry.sessionRoots() {
-            let kernelDir = "\(root)/\(session.project)/\(session.id)"
-            if fm.fileExists(atPath: kernelDir) { paths.append(kernelDir) }
+    func moveSessionToKernelTrash(_ session: SoulSession) {
+        runKernelLifecycleCommand("trash", session: session) {
+            onArchive(session)
         }
+    }
 
-        // Finalize JSON siblings (timestamp-prefixed and bare).
-        for projDir in SoulRegistry.projectSessionDirs(session.project) {
-            guard let entries = try? fm.contentsOfDirectory(atPath: projDir) else { continue }
-            for name in entries where name.hasSuffix(".json") {
-                let stem = String(name.dropLast(5))
-                if stem == session.id || stem.hasSuffix("_\(session.id)") {
-                    paths.append("\(projDir)/\(name)")
-                }
+    func restoreSessionFromKernelTrash(_ session: SoulSession) {
+        runKernelLifecycleCommand("restore", session: session)
+    }
+
+    func deleteSessionPermanently(_ session: SoulSession) {
+        runKernelLifecycleCommand("delete", session: session)
+    }
+
+    private func runKernelLifecycleCommand(
+        _ command: String,
+        session: SoulSession,
+        onSuccess: @escaping @MainActor () -> Void = {}
+    ) {
+        Task {
+            do {
+                try await SoulCLI.runMutation(["session", command, session.id, "-p", session.project])
+                archiveStore.unarchive(session.id, project: session.project)
+                registryStore.invalidateCache(forProject: session.project)
+                rebuildResolvedRows(projectIds: Set([session.project]))
+                onSuccess()
+                await loadProject(session.project)
+            } catch {
+                NSLog("[sidebar] soul session \(command) failed for \(session.project)/\(session.id): \(error)")
             }
         }
-
-        // Provider files. Resolve the project's cwd from PROJECTS.
-        if let project = registryStore.projects().first(where: { $0.id == session.project }) {
-            let trimmed = project.path.hasSuffix("/") ? String(project.path.dropLast()) : project.path
-            // Claude
-            let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-            let claudePath = NSHomeDirectory() + "/.claude/projects/\(encoded)/\(session.id).jsonl"
-            if fm.fileExists(atPath: claudePath) { paths.append(claudePath) }
-            // Gemini (walk basename + -N siblings)
-            let base = (trimmed as NSString).lastPathComponent
-            let geminiBase = NSHomeDirectory() + "/.gemini/tmp"
-            let first8 = String(session.id.prefix(8))
-            if let projects = try? fm.contentsOfDirectory(atPath: geminiBase) {
-                for proj in projects where proj == base || proj.hasPrefix("\(base)-") {
-                    let chatsDir = "\(geminiBase)/\(proj)/chats"
-                    guard let files = try? fm.contentsOfDirectory(atPath: chatsDir) else { continue }
-                    for name in files where name.contains(first8) {
-                        paths.append("\(chatsDir)/\(name)")
-                    }
-                }
-            }
-        }
-
-        // Move to Trash via NSWorkspace.recycle (uses Finder's recoverable
-        // path — files appear in ~/.Trash and can be restored).
-        let urls = paths.map { URL(fileURLWithPath: $0) }
-        if !urls.isEmpty {
-            NSWorkspace.shared.recycle(urls) { _, _ in }
-        }
-
-        archiveStore.unarchive(session.id, project: session.project)
-        registryStore.invalidateCache(forProject: session.project)
-        // Reload sessions so the sidebar repaints without the row.
-        Task { await loadProject(session.project) }
-        return urls.count
     }
 
     /// Build the visibility-policy `Context` once per render from the
@@ -411,7 +385,7 @@ extension SidebarView {
     /// Returns nil when the project hasn't been loaded yet — caller falls
     /// back to the raw disk-count badge. SOUL-SOUL_DESKTOP-270.
     func resolvedRows(for project: SoulProject) -> SidebarRowResolver.Output? {
-        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace") {
+        if UserDefaults.standard.bool(forKey: "soul.sidebar.trace.verbose") {
             let n = sessionsByProject[project.id]?.count
             SidebarRowResolver.traceWrite("resolvedRows project=\(project.id) sessionsByProject.count=\(n.map(String.init) ?? "nil")")
         }
@@ -426,6 +400,48 @@ extension SidebarView {
             visibilityContext: visibilityContext(for: project)
         )
         return SidebarRowResolver.resolve(inputs)
+    }
+
+    var sidebarProjectionInputSignature: SidebarProjectionInputSignature {
+        SidebarProjectionInputSignature(
+            projectIds: projects.map(\.id),
+            activeThreads: activeThreads.map { thread in
+                SidebarProjectionInputSignature.Thread(
+                    id: thread.id,
+                    sessionId: thread.sessionId,
+                    projectId: thread.project.id,
+                    provider: thread.provider.rawValue,
+                    displayTitle: thread.displayTitle,
+                    itemCount: thread.items.count,
+                    queuedCount: thread.queuedPrompts.count,
+                    isWorking: thread.isWorking,
+                    lastActivityAt: thread.lastActivityAt
+                )
+            },
+            draftId: draftSession?.id,
+            draftProject: draftSession?.project,
+            archivedIdsByProject: Dictionary(uniqueKeysWithValues: projects.map { project in
+                (project.id, archiveStore.archivedIDs(forProject: project.id).sorted())
+            }),
+            starredIdsByProject: Dictionary(uniqueKeysWithValues: projects.map { project in
+                (project.id, starStore.starredIDs(forProject: project.id).sorted())
+            })
+        )
+    }
+
+    func rebuildResolvedRows(projectIds: Set<String>? = nil) {
+        var projection = sidebarRowsProjection
+        let updatedCounts = projection.rebuild(
+            projects: projects,
+            projectIds: projectIds,
+            currentCounts: sessionCounts,
+            outputForProject: resolvedRows(for:)
+        )
+        sidebarRowsProjection = projection
+        if updatedCounts != sessionCounts {
+            sessionCounts = updatedCounts
+            Self.writeSessionCountsCache(updatedCounts)
+        }
     }
 
     func worktreeGroups(for lives: [SoulSession]) -> [(label: String, sessions: [SoulSession])] {
@@ -447,4 +463,55 @@ extension SidebarView {
         return out
     }
 
+}
+
+struct SidebarProjectionInputSignature: Hashable {
+    struct Thread: Hashable {
+        var id: String
+        var sessionId: String?
+        var projectId: String
+        var provider: String
+        var displayTitle: String
+        var itemCount: Int
+        var queuedCount: Int
+        var isWorking: Bool
+        var lastActivityAt: Date
+    }
+
+    var projectIds: [String]
+    var activeThreads: [Thread]
+    var draftId: String?
+    var draftProject: String?
+    var archivedIdsByProject: [String: [String]]
+    var starredIdsByProject: [String: [String]]
+}
+
+struct SidebarRowsProjection {
+    private(set) var rowsByProject: [String: SidebarRowResolver.Output] = [:]
+
+    mutating func rebuild(
+        projects: [SoulProject],
+        projectIds: Set<String>?,
+        currentCounts: [String: Int],
+        outputForProject: (SoulProject) -> SidebarRowResolver.Output?
+    ) -> [String: Int] {
+        let allProjectIds = Set(projects.map(\.id))
+        let targets = projectIds ?? allProjectIds
+        var updatedCounts = currentCounts
+
+        if projectIds == nil {
+            rowsByProject = rowsByProject.filter { allProjectIds.contains($0.key) }
+        }
+
+        for project in projects where targets.contains(project.id) {
+            guard let output = outputForProject(project) else {
+                rowsByProject.removeValue(forKey: project.id)
+                continue
+            }
+            rowsByProject[project.id] = output
+            updatedCounts[project.id] = output.activeCount
+        }
+
+        return updatedCounts
+    }
 }

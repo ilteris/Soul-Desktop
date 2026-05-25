@@ -13,6 +13,7 @@
 		C0D3C0DE0000000000000021 /* SoulCore in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000023 /* SoulCore */; };
 		C0D3C0DE0000000000000022 /* SoulACP in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000024 /* SoulACP */; };
 		C0D3C0DE0000000000000025 /* SoulLedger in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000026 /* SoulLedger */; };
+		C0D3C0DE0000000000000027 /* SoulRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000028 /* SoulRuntime */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,11 @@
 			path = "Soul-DesktopUITests";
 			sourceTree = "<group>";
 		};
+		C0D3C0DE0000000000000029 /* Modules */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Modules;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +76,7 @@
 				C0D3C0DE0000000000000021 /* SoulCore in Frameworks */,
 				C0D3C0DE0000000000000022 /* SoulACP in Frameworks */,
 				C0D3C0DE0000000000000025 /* SoulLedger in Frameworks */,
+				C0D3C0DE0000000000000027 /* SoulRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -97,6 +104,7 @@
 				A2B2B68F2FB0145A004C6EEC /* Soul-Desktop */,
 				A2B2B69F2FB0145B004C6EEC /* Soul-DesktopTests */,
 				A2B2B6A92FB0145B004C6EEC /* Soul-DesktopUITests */,
+				C0D3C0DE0000000000000029 /* Modules */,
 				A2B2B98C2FB0D080004C6EEC /* Frameworks */,
 				A2B2B68E2FB0145A004C6EEC /* Products */,
 			);
@@ -156,6 +164,7 @@
 				C0D3C0DE0000000000000023 /* SoulCore */,
 				C0D3C0DE0000000000000024 /* SoulACP */,
 				C0D3C0DE0000000000000026 /* SoulLedger */,
+				C0D3C0DE0000000000000028 /* SoulRuntime */,
 			);
 			productName = "Soul-Desktop";
 			productReference = A2B2B68D2FB0145A004C6EEC /* Soul-Desktop Dev.app */;
@@ -778,9 +787,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */ = {
+		C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = "";
+			relativePath = Modules/SoulDesktopModules;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -829,18 +838,23 @@
 		};
 		C0D3C0DE0000000000000023 /* SoulCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
 			productName = SoulCore;
 		};
 		C0D3C0DE0000000000000024 /* SoulACP */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
 			productName = SoulACP;
 		};
 		C0D3C0DE0000000000000026 /* SoulLedger */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
 			productName = SoulLedger;
+		};
+		C0D3C0DE0000000000000028 /* SoulRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
+			productName = SoulRuntime;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

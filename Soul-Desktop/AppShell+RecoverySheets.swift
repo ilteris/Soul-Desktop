@@ -19,7 +19,7 @@ extension AppShell {
                 .foregroundStyle(SoulColor.fgMuted)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 2) {
-                let rawTitle = (session.intent ?? session.summary ?? "")
+                let rawTitle = (session.title ?? session.intent ?? session.summary ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let title = SoulRegistry.stripCommandTags(rawTitle)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -118,7 +118,7 @@ extension AppShell {
             id: ctx.sessionId,
             project: project.id,
             timestamp: Date(),
-            intent: ctx.title,
+            title: ctx.title,
             source: "gemini",
             isLive: true,
             writer: .soulDesktop

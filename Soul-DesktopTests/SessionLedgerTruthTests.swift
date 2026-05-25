@@ -38,6 +38,112 @@ struct SessionLedgerTruthTests {
         }
     }
 
+    @Test func explicitMachineVisibilityHidesConversationRow() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "Has real content",
+            eventCount: 3,
+            promptCount: 1,
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "machine"
+
+        #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
+    }
+
+    @Test func scaffoldTitleAloneDoesNotHideConversationRow() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        let session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "<environment_context> <cwd>/tmp</cwd>",
+            eventCount: 3,
+            promptCount: 1,
+            loadable: true,
+            replayable: true
+        )
+
+        #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == true)
+    }
+
+    @Test func kernelHumanVisibilityBypassesLegacyPartialCaptureHide() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "Partial but visible by contract",
+            eventCount: 2,
+            promptCount: 2,
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "human"
+        session.sessionKind = "partial_capture"
+        session.visibilityReason = "partial_capture"
+        session.partialCapture = true
+        session.hasConversation = false
+
+        #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == true)
+    }
+
+    @Test func kernelHiddenVisibilityWinsOverConversationContent() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "Should not render",
+            eventCount: 10,
+            promptCount: 5,
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "hidden"
+        session.sessionKind = "conversation"
+        session.visibilityReason = "policy_hidden"
+
+        #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
+    }
+
+    @Test func kernelProviderWinsOverLegacySourceFilter() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "Provider contract row",
+            source: "claude",
+            eventCount: 6,
+            promptCount: 3,
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "human"
+        session.provider = Provider.geminiCLI.rawValue
+
+        let geminiCtx = SidebarRowResolver.VisibilityContext(
+            archivedIds: [],
+            showUnreadable: false,
+            chatSourceFilter: Provider.geminiCLI.rawValue,
+            hideUntitled: false
+        )
+        let claudeCtx = SidebarRowResolver.VisibilityContext(
+            archivedIds: [],
+            showUnreadable: false,
+            chatSourceFilter: Provider.claude.rawValue,
+            hideUntitled: false
+        )
+
+        #expect(SidebarRowResolver.shouldShow(session, in: geminiCtx) == true)
+        #expect(SidebarRowResolver.shouldShow(session, in: claudeCtx) == false)
+    }
+
     @Test func promptBearingLedgerIsVisibleConversation() throws {
         try SessionLedgerTruthTests.withTempHome { _ in
             let project = SessionLedgerTruthTests.testProject()
@@ -112,6 +218,248 @@ struct SessionLedgerTruthTests {
         #expect(controller.queuedPrompts.first?.display == "replacement")
         #expect(controller.editQueuedPrompt(itemId: UUID(), newText: "lost text") == false)
         #expect(controller.editQueuedPrompt(itemId: queuedId, newText: "   ") == false)
+    }
+
+    @Test func priorSessionContextDoesNotBecomeResolvedTitle() {
+        let prior = """
+        <prior_session_context>
+        You're resuming an existing Soul Desktop session. Use the following ledger as context.
+        </prior_session_context>
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: prior,
+            finalizeIntent: nil,
+            prompts: [prior, "Fix the sidebar title regression"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Fix the sidebar title regression")
+    }
+
+    @Test func liveDisplayTitleIgnoresPriorSessionContextEnvelope() {
+        let controller = ThreadController(provider: .geminiCLI, project: SessionLedgerTruthTests.testProject())
+        let prior = """
+        <prior_session_context>
+        You're resuming an existing Soul Desktop session. Use the following ledger as context.
+        </prior_session_context>
+        """
+        controller.customTitle = prior
+        controller.items = [
+            .userMessage(id: UUID(), text: prior, timestamp: Date()),
+            .userMessage(id: UUID(), text: "Restore missing sidebar rows", timestamp: Date()),
+        ]
+
+        #expect(controller.displayTitle == "Restore missing sidebar rows")
+    }
+
+    @Test func environmentContextDoesNotBecomeResolvedTitle() {
+        let environment = """
+        <environment_context>
+          <cwd>/Users/ilteris/dotfiles/soul</cwd>
+          <approval_policy>never</approval_policy>
+        </environment_context>
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: environment,
+            finalizeIntent: nil,
+            prompts: [environment, "Fix app server title cleanup"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Fix app server title cleanup")
+    }
+
+    @Test func absolutePathOutputDoesNotBecomeResolvedTitle() {
+        let pathOutput = "/Users/ilteris/.zshrc:668: command not found: foo"
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: pathOutput,
+            finalizeIntent: nil,
+            prompts: [pathOutput, "Repair shell startup for app server"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Repair shell startup for app server")
+    }
+
+    @Test func placeholderTitleDoesNotOverrideUsefulPrompt() {
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: "untitled",
+            finalizeIntent: nil,
+            prompts: ["Make the sidebar title generator skip scaffolds"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Make the sidebar title generator skip scaffolds")
+    }
+
+    @Test func scaffoldOnlyPromptsDoNotDerivePathTitle() {
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: nil,
+            finalizeIntent: nil,
+            prompts: ["/Users/ilteris/.zshrc:668: command not found: foo"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "New chat")
+    }
+
+    @Test func resolverMergesDuplicateDiskRowsBeforeVisibility() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        let empty = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            intent: "untitled",
+            loadable: true,
+            replayable: true
+        )
+        var content = empty
+        content.timestamp = Date(timeIntervalSince1970: 99)
+        content.title = "Restore missing sidebar rows"
+        content.promptCount = 3
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [empty, content],
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.count == 1)
+        #expect(resolved.active.first?.id == sid)
+        #expect(resolved.active.first?.promptCount == 3)
+        #expect(resolved.active.first?.title == "Restore missing sidebar rows")
+    }
+
+    @Test func kernelLifecyclePartitionsTrashedRowsOutOfActiveList() {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Trashed by kernel",
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "human"
+        session.lifecycle = "trashed"
+        session.trashedAt = Date(timeIntervalSince1970: 101)
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [session],
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.isEmpty)
+        #expect(resolved.archived.first?.id == session.id)
+    }
+
+    @Test func duplicateMergePreservesKernelSlashAndTaskContracts() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        var base = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Base",
+            loadable: true,
+            replayable: true
+        )
+        var contract = base
+        contract.promptCount = 2
+        contract.slashSemantics = [
+            "clear": SoulSlashCommandSemantics(
+                localOnly: true,
+                conversationWorthy: false,
+                taskAffecting: false,
+                titleWorthy: false,
+                expansionStrategy: nil
+            )
+        ]
+        contract.taskId = "SOUL-123"
+        contract.taskStatus = "in_progress"
+        contract.taskSubject = "Lift task association"
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [base, contract],
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        let row = resolved.active.first
+        #expect(row?.slashSemantics["clear"]?.localOnly == true)
+        #expect(row?.slashSemantics["clear"]?.conversationWorthy == false)
+        #expect(row?.taskId == "SOUL-123")
+        #expect(row?.taskStatus == "in_progress")
+        #expect(row?.taskSubject == "Lift task association")
+    }
+
+    @Test func sidebarRowsProjectionCachesRowsAndCounts() {
+        let project = SessionLedgerTruthTests.testProject()
+        let sid = UUID().uuidString
+        let session = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Cache sidebar rows outside body",
+            loadable: true,
+            replayable: true
+        )
+        var projection = SidebarRowsProjection()
+
+        let counts = projection.rebuild(
+            projects: [project],
+            projectIds: nil,
+            currentCounts: [:]
+        ) { _ in
+            SidebarRowResolver.Output(active: [session], archived: [])
+        }
+
+        #expect(projection.rowsByProject[project.id]?.active.first?.id == sid)
+        #expect(counts[project.id] == 1)
+    }
+
+    @Test func sidebarRowsProjectionTargetedRebuildDoesNotResolveOtherProjects() {
+        let soul = SessionLedgerTruthTests.testProject()
+        var other = SessionLedgerTruthTests.testProject()
+        other.id = "other"
+        other.name = "Other"
+        var projection = SidebarRowsProjection()
+        var resolvedProjectIds: [String] = []
+
+        _ = projection.rebuild(
+            projects: [soul, other],
+            projectIds: Set([soul.id]),
+            currentCounts: [other.id: 7]
+        ) { project in
+            resolvedProjectIds.append(project.id)
+            return SidebarRowResolver.Output(active: [], archived: [])
+        }
+
+        #expect(resolvedProjectIds == [soul.id])
     }
 
     private static func testProject() -> SoulProject {

@@ -299,6 +299,11 @@ final class ThreadController {
     /// True iff the anchor is the synthetic "__bottom__" sentinel. We store a
     /// separate bool because the sentinel isn't a UUID.
     var scrollAnchorAtBottom: Bool = true
+    /// Incremented whenever AppSessionCoordinator makes this controller the
+    /// visible thread. Mounted inactive threads are hidden with opacity, so
+    /// SwiftUI does not fire `onAppear` when they become active again; this
+    /// nonce gives ThreadView an explicit activation signal for scroll repair.
+    var activationNonce: Int = 0
 
     /// True while a `session/load` is in flight. The agent replays the prior
     /// transcript through `user_message_chunk` / `agent_message_chunk`

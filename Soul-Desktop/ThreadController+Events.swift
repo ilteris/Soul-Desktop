@@ -2,6 +2,7 @@ import Foundation
 import SoulACP
 import SoulCore
 import SoulLedger
+import SoulRuntime
 
 /// Generic ACP event dispatch + the auto-titling subsystem, lifted out
 /// of ThreadController. `handle(_:)` is the per-event router consumed by
@@ -42,26 +43,30 @@ extension ThreadController {
     func generateTitle() async {
         guard let sid = sessionId else { return }
 
-        // Snapshot the first user + first agent turn from items. Reading
-        // @MainActor state from inside an actor-isolated method is free; the
-        // detached subprocess work below uses only the captured strings.
-        var firstUser: String?
+        // Snapshot the first real user prompts + first agent turn from items.
+        // Harness scaffolds can be ledgered as user messages; passing those
+        // to the title LLM is how raw XML/path output becomes a persisted
+        // Title hook.
+        var userPrompts: [String] = []
         var firstAgent: String?
         for item in items {
             switch item {
-            case .userMessage(_, let text, _) where firstUser == nil:
-                firstUser = text
+            case .userMessage(_, let text, _):
+                let cleaned = SoulRegistry.stripCommandTags(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                if case .prose = SessionTitleResolver.classify(cleaned), !SessionTitleResolver.isPlaceholderTitle(cleaned) {
+                    userPrompts.append(cleaned)
+                }
             case .agentMessage(_, let text, _, _) where firstAgent == nil:
                 firstAgent = text
             default: break
             }
-            if firstUser != nil && firstAgent != nil { break }
+            if userPrompts.count >= 3 && firstAgent != nil { break }
         }
-        guard let user = firstUser, !user.isEmpty else { return }
+        guard !userPrompts.isEmpty else { return }
 
         let raw: String?
         if let claude = which("claude") {
-            raw = await Self.runClaudePrint(executable: claude, user: user, agent: firstAgent)
+            raw = await Self.runClaudePrint(executable: claude, users: userPrompts, agent: firstAgent)
         } else {
             // Fallback: no `claude` on PATH. Use the active ACP session so the
             // feature still works, at the cost of polluting context with one
@@ -98,11 +103,15 @@ extension ThreadController {
     }
 
     /// Run `claude -p` with a title-generation prompt that embeds the first
-    /// user turn (and, when present, the first agent reply) as context.
+    /// few substantive user turns (and, when present, the first agent reply)
+    /// as context.
     /// Returns trimmed stdout on success, nil on spawn/exit failure.
-    private static func runClaudePrint(executable: String, user: String, agent: String?) async -> String? {
+    private static func runClaudePrint(executable: String, users: [String], agent: String?) async -> String? {
         await Task.detached(priority: .userInitiated) { () -> String? in
-            var prompt = "Produce a concise 3-5 word title for the following chat. Respond with ONLY the title — no quotes, no prefix, no trailing punctuation.\n\nUser: \(user)"
+            let userContext = users.prefix(3).enumerated().map { idx, text in
+                "User \(idx + 1): \(text)"
+            }.joined(separator: "\n\n")
+            var prompt = "Produce a concise 3-5 word title for the following chat. Respond with ONLY the title — no quotes, no prefix, no trailing punctuation.\n\n\(userContext)"
             if let agent, !agent.isEmpty {
                 prompt += "\n\nAssistant: \(agent)"
             }
