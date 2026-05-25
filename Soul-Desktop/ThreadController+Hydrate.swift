@@ -13,14 +13,19 @@ import Foundation
 extension ThreadController {
 
     func hydrateFromDisk(id sid: String) async {
-        guard !hasInitialized else { return }
+        // Already-initialized re-entry: still clear the flag (default is
+        // true, so leaving it set would pin the skeleton forever on a
+        // re-hydrate). Defer-based clear below covers every other path.
+        guard !hasInitialized else { isHydrating = false; return }
         let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
-        // SOUL-SOUL_DESKTOP-231: gate the ThreadView skeleton overlay. Set
-        // true on entry, flipped false in `defer` so EVERY return path
-        // (success, empty-history, error, codex short-circuit, all of them)
-        // clears it. The skeleton flashes off the moment hydrate is done
-        // and the LazyVStack takes over with fully-populated items.
-        isHydrating = true
+        // SOUL-SOUL_DESKTOP-231: gate the ThreadView skeleton overlay.
+        // `isHydrating` defaults to true at construction so the canvas
+        // skeleton paints on the first body render — by the time we get
+        // here it's already set, and we just need to flip it false in
+        // `defer` so EVERY return path (success, empty-history, error,
+        // codex short-circuit, all of them) clears it. The skeleton
+        // flashes off the moment hydrate is done and the LazyVStack
+        // takes over with fully-populated items.
         defer {
             isHydrating = false
             SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval)

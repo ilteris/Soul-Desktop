@@ -312,7 +312,16 @@ final class ThreadController {
     /// would never trip isReplayingLoad. ThreadView's skeleton overlay
     /// gates on this so the user sees a loading state during the disk
     /// read instead of watching rows pop in one-by-one.
-    var isHydrating: Bool = false
+    ///
+    /// Defaults to `true` so a freshly-constructed controller paints the
+    /// skeleton from its very first body render — preventing the
+    /// mount-before-hydration blank flash where the controller was visible
+    /// at opacity 1 with `items=[]` AND `isHydrating=false` for one
+    /// runloop tick before the detached hydrate Task scheduled. Callers
+    /// that mount a controller WITHOUT going through hydrateFromDisk
+    /// (`startThread`, `branchFrom`) must clear this explicitly before
+    /// mount — they own their own loading affordance.
+    var isHydrating: Bool = true
 
     /// Set when a gemini-CLI `session/load` fails on a corrupted chat file
     /// (force-quit mid-write etc.). AppShell observes this and surfaces a

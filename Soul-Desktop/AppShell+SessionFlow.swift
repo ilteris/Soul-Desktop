@@ -6,6 +6,11 @@ extension AppShell {
         sessions.draftSession = nil
         let controller = ThreadController(provider: harness, project: project)
         controller.permissionMode = pendingPermissionMode
+        // startThread owns its first item synchronously via acceptUserPrompt
+        // below — no read-from-disk happens. Opt out of the default
+        // isHydrating=true so the skeleton overlay doesn't paint over the
+        // user's own message at mount.
+        controller.isHydrating = false
         // Contract: a fresh controller must not be mounted until the first
         // prompt has been synchronously accepted. Mounting before acceptance
         // creates a visible "New chat" shell that can race sidebar refreshes
@@ -188,6 +193,10 @@ extension AppShell {
         let project = source.project
         let controller = ThreadController(provider: target, project: project)
         controller.permissionMode = pendingPermissionMode
+        // Branch flow uses its own loading affordance (`branchSeedLoading`
+        // below) instead of the hydration skeleton. Opt out of the default
+        // isHydrating=true so the two loading states don't double-paint.
+        controller.isHydrating = false
         sessions.mount(controller)
         sessions.draftSession = nil
         newChatNonce &+= 1
