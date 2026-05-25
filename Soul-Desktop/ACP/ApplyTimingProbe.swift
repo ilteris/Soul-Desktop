@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Per-thread instrumentation for the cost of `ThreadController.apply(_:)`.
 /// Buckets each invocation by `SessionUpdate` kind, accumulating total time,

@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 enum ToolFailureLog {
     private static let queue = DispatchQueue(label: "soul.tool-failure-log")

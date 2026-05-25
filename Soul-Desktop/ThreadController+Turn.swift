@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Turn-lifecycle send loop for ThreadController.
 /// Queue mechanics live in ThreadController+Queue.swift; stall and per-tool

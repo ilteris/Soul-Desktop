@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// ACP `SessionUpdate` dispatch + per-update helpers, lifted out of
 /// ThreadController. The big `apply(_:)` switch and its accompanying

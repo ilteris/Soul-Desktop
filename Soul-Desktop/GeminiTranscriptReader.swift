@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 /// Reads a Gemini-CLI chat transcript (`.jsonl` shape) into ThreadItems for
 /// read-only display under SOUL-SOUL_DESKTOP-043 (read-first session open).

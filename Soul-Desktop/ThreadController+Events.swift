@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Generic ACP event dispatch + the auto-titling subsystem, lifted out
 /// of ThreadController. `handle(_:)` is the per-event router consumed by

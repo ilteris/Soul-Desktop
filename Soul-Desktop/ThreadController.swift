@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SoulACP
 
 struct PlanEntry: Hashable {
     let content: String
@@ -155,7 +156,7 @@ final class ThreadController {
         didSet {
             let mode = permissionMode
             let c = client
-            Task { await c?.setPermissionMode(mode) }
+            Task { await c?.setPermissionMode(mode.agentPermissionMode) }
         }
     }
     /// Rolling capture of the agent's stderr + protocol-level errors. Bounded

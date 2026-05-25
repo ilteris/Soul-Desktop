@@ -1,32 +1,46 @@
 import Foundation
 
-enum ACPProtocolVersion {
-    static let current: Int = 1
+public enum ACPProtocolVersion {
+    public static let current: Int = 1
 }
 
-struct JSONRPCEnvelope: Codable {
+public struct JSONRPCEnvelope: Codable, Sendable {
     /// Optional on the wire: codex app-server omits this header per its
     /// protocol docs ("with the 'jsonrpc':'2.0' header omitted on the
     /// wire"). ACP servers include it. We always emit "2.0" on outgoing
     /// envelopes; on incoming we accept either shape.
-    var jsonrpc: String? = "2.0"
-    var id: JSONRPCID?
-    var method: String?
-    var params: JSONValue?
-    var result: JSONValue?
-    var error: JSONRPCError?
+    public var jsonrpc: String? = "2.0"
+    public var id: JSONRPCID?
+    public var method: String?
+    public var params: JSONValue?
+    public var result: JSONValue?
+    public var error: JSONRPCError?
+
+    public init(jsonrpc: String? = "2.0",
+                id: JSONRPCID? = nil,
+                method: String? = nil,
+                params: JSONValue? = nil,
+                result: JSONValue? = nil,
+                error: JSONRPCError? = nil) {
+        self.jsonrpc = jsonrpc
+        self.id = id
+        self.method = method
+        self.params = params
+        self.result = result
+        self.error = error
+    }
 }
 
-enum JSONRPCID: Codable, Hashable {
+public enum JSONRPCID: Codable, Hashable, Sendable {
     case int(Int)
     case string(String)
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if let i = try? c.decode(Int.self) { self = .int(i); return }
         self = .string(try c.decode(String.self))
     }
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .int(let i):    try c.encode(i)
@@ -35,13 +49,19 @@ enum JSONRPCID: Codable, Hashable {
     }
 }
 
-struct JSONRPCError: Codable, Error {
-    var code: Int
-    var message: String
-    var data: JSONValue?
+public struct JSONRPCError: Codable, Error, Sendable {
+    public var code: Int
+    public var message: String
+    public var data: JSONValue?
+
+    public init(code: Int, message: String, data: JSONValue? = nil) {
+        self.code = code
+        self.message = message
+        self.data = data
+    }
 }
 
-enum JSONValue: Codable {
+public enum JSONValue: Codable, Sendable {
     case null
     case bool(Bool)
     case int(Int)
@@ -50,7 +70,7 @@ enum JSONValue: Codable {
     case array([JSONValue])
     case object([String: JSONValue])
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null; return }
         if let b = try? c.decode(Bool.self)               { self = .bool(b); return }
@@ -61,7 +81,7 @@ enum JSONValue: Codable {
         if let o = try? c.decode([String: JSONValue].self){ self = .object(o); return }
         throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unknown JSON value")
     }
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .null:           try c.encodeNil()
@@ -74,97 +94,118 @@ enum JSONValue: Codable {
         }
     }
 
-    var stringValue: String? {
+    public var stringValue: String? {
         if case .string(let s) = self { return s } else { return nil }
     }
-    subscript(key: String) -> JSONValue? {
+    public subscript(key: String) -> JSONValue? {
         if case .object(let o) = self { return o[key] } else { return nil }
     }
 }
 
-struct InitializeRequest: Codable {
-    var protocolVersion: Int
-    var clientCapabilities: ClientCapabilities?
-    var clientInfo: Implementation?
+public struct InitializeRequest: Codable, Sendable {
+    public var protocolVersion: Int
+    public var clientCapabilities: ClientCapabilities?
+    public var clientInfo: Implementation?
+
+    public init(protocolVersion: Int, clientCapabilities: ClientCapabilities? = nil, clientInfo: Implementation? = nil) {
+        self.protocolVersion = protocolVersion
+        self.clientCapabilities = clientCapabilities
+        self.clientInfo = clientInfo
+    }
 }
 
-struct InitializeResponse: Codable {
-    var protocolVersion: Int
-    var agentCapabilities: AgentCapabilities?
-    var agentInfo: Implementation?
-    var authMethods: [AuthMethod]?
+public struct InitializeResponse: Codable, Sendable {
+    public var protocolVersion: Int
+    public var agentCapabilities: AgentCapabilities?
+    public var agentInfo: Implementation?
+    public var authMethods: [AuthMethod]?
 }
 
-struct Implementation: Codable {
-    var name: String
-    var version: String
+public struct Implementation: Codable, Sendable {
+    public var name: String
+    public var version: String
+
+    public init(name: String, version: String) {
+        self.name = name
+        self.version = version
+    }
 }
 
-struct ClientCapabilities: Codable {
-    var fs: FileSystemCapability?
-    var terminal: Bool?
+public struct ClientCapabilities: Codable, Sendable {
+    public var fs: FileSystemCapability?
+    public var terminal: Bool?
+
+    public init(fs: FileSystemCapability? = nil, terminal: Bool? = nil) {
+        self.fs = fs
+        self.terminal = terminal
+    }
 }
-struct FileSystemCapability: Codable {
-    var readTextFile: Bool?
-    var writeTextFile: Bool?
+public struct FileSystemCapability: Codable, Sendable {
+    public var readTextFile: Bool?
+    public var writeTextFile: Bool?
+
+    public init(readTextFile: Bool? = nil, writeTextFile: Bool? = nil) {
+        self.readTextFile = readTextFile
+        self.writeTextFile = writeTextFile
+    }
 }
-struct AgentCapabilities: Codable {
-    var promptCapabilities: PromptCapabilities?
-    var loadSession: Bool?
-    var mcpCapabilities: JSONValue?
+public struct AgentCapabilities: Codable, Sendable {
+    public var promptCapabilities: PromptCapabilities?
+    public var loadSession: Bool?
+    public var mcpCapabilities: JSONValue?
 }
-struct PromptCapabilities: Codable {
-    var image: Bool?
-    var audio: Bool?
-    var embeddedContext: Bool?
+public struct PromptCapabilities: Codable, Sendable {
+    public var image: Bool?
+    public var audio: Bool?
+    public var embeddedContext: Bool?
 }
-struct AuthMethod: Codable {
-    var id: String
-    var name: String?
-    var description: String?
+public struct AuthMethod: Codable, Sendable {
+    public var id: String
+    public var name: String?
+    public var description: String?
 }
 
-struct NewSessionRequest: Codable {
-    var cwd: String
-    var mcpServers: [McpServer]
+public struct NewSessionRequest: Codable, Sendable {
+    public var cwd: String
+    public var mcpServers: [McpServer]
 }
-struct NewSessionResponse: Codable {
-    var sessionId: String
+public struct NewSessionResponse: Codable, Sendable {
+    public var sessionId: String
 }
-struct LoadSessionRequest: Codable {
-    var cwd: String
-    var mcpServers: [McpServer]
-    var sessionId: String
+public struct LoadSessionRequest: Codable, Sendable {
+    public var cwd: String
+    public var mcpServers: [McpServer]
+    public var sessionId: String
 }
-struct LoadSessionResponse: Codable {
+public struct LoadSessionResponse: Codable, Sendable {
     // configOptions, modes — ignored for now
 }
-struct McpServer: Codable {
-    var name: String
-    var command: String
-    var args: [String]?
-    var env: [EnvVariable]?
+public struct McpServer: Codable, Sendable {
+    public var name: String
+    public var command: String
+    public var args: [String]?
+    public var env: [EnvVariable]?
 }
-struct EnvVariable: Codable {
-    var name: String
-    var value: String
-}
-
-struct PromptRequest: Codable {
-    var sessionId: String
-    var prompt: [ContentBlock]
-}
-struct PromptResponse: Codable {
-    var stopReason: String
+public struct EnvVariable: Codable, Sendable {
+    public var name: String
+    public var value: String
 }
 
-enum ContentBlock: Codable, Hashable, Equatable {
+public struct PromptRequest: Codable, Sendable {
+    public var sessionId: String
+    public var prompt: [ContentBlock]
+}
+public struct PromptResponse: Codable, Sendable {
+    public var stopReason: String
+}
+
+public enum ContentBlock: Codable, Hashable, Equatable, Sendable {
     case text(String)
     case image(mimeType: String, base64: String)
 
     private enum CodingKeys: String, CodingKey { case type, text, mimeType, data }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
@@ -178,7 +219,7 @@ enum ContentBlock: Codable, Hashable, Equatable {
             self = .text("")
         }
     }
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .text(let s):
@@ -192,16 +233,16 @@ enum ContentBlock: Codable, Hashable, Equatable {
     }
 }
 
-struct CancelNotification: Codable {
-    var sessionId: String
+public struct CancelNotification: Codable, Sendable {
+    public var sessionId: String
 }
 
-struct SessionNotification: Codable {
-    var sessionId: String
-    var update: SessionUpdate
+public struct SessionNotification: Codable, Sendable {
+    public var sessionId: String
+    public var update: SessionUpdate
 }
 
-enum SessionUpdate: Codable {
+public enum SessionUpdate: Codable, Sendable {
     case agentMessageChunk(content: ContentBlock)
     case agentThoughtChunk(content: ContentBlock)
     case userMessageChunk(content: ContentBlock)
@@ -214,7 +255,7 @@ enum SessionUpdate: Codable {
 
     private enum CodingKeys: String, CodingKey { case sessionUpdate, content }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DynamicKey.self)
         let kindKey = DynamicKey(stringValue: "sessionUpdate")!
         let kind = try c.decode(String.self, forKey: kindKey)
@@ -240,7 +281,7 @@ enum SessionUpdate: Codable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         // We only decode notifications; encoding not needed.
     }
 }

@@ -1,4 +1,6 @@
 import SwiftUI
+import SoulACP
+import SoulCore
 
 /// Phase 1 smoke harness for the Codex provider.
 ///

@@ -1,4 +1,6 @@
 import Foundation
+import SoulACP
+import SoulCore
 
 /// Session-resume + spawn + teardown lifecycle methods lifted out of
 /// ThreadController. `loadSession(id:)` handles click-on-existing-row
@@ -520,7 +522,7 @@ extension ThreadController {
         let client = try ACPClient(spawn: spawn)
         self.client = client
         await client.setAutoAllow(true)
-        await client.setPermissionMode(permissionMode)
+        await client.setPermissionMode(permissionMode.agentPermissionMode)
         try await client.start()
 
         let stream = await client.events

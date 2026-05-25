@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulACP
 
 struct HeroEmptyState: View {
     let projectName: String

@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// Minimal Codex app-server client (Phase 1 stub).
 ///
@@ -18,7 +19,7 @@ import Foundation
 /// Full ThreadController integration (read-first hydrate, approvals,
 /// session resume via `thread/resume`, AGENTS.md harness) is out of scope
 /// for this phase — see the design doc.
-enum CodexClientError: Error {
+public enum CodexClientError: Error {
     case spawnFailed(String)
     case decodeFailed(String)
     case rpcError(JSONRPCError)
@@ -27,11 +28,11 @@ enum CodexClientError: Error {
     case notInitialized
 }
 
-actor CodexClient {
+public actor CodexClient {
     /// What the consumer sees. Notifications are kept as `raw` JSONValue
     /// payloads in this phase — we'll split into typed shapes once we know
     /// which events we're actually rendering in the canvas.
-    enum Event {
+    public enum Event: Sendable {
         case notification(method: String, params: JSONValue?)
         case request(id: JSONRPCID, method: String, params: JSONValue?)
         case stderr(String)
@@ -51,10 +52,10 @@ actor CodexClient {
     private var didTerminate = false
     private var initialized = false
 
-    let events: AsyncStream<Event>
+    public let events: AsyncStream<Event>
     private var eventCont: AsyncStream<Event>.Continuation?
 
-    init(spawn: ACPProviderSpawn) throws {
+    public init(spawn: ACPProviderSpawn) throws {
         let url = URL(fileURLWithPath: spawn.executablePath)
         self.transport = ACPTransport(
             executableURL: url,
@@ -68,14 +69,14 @@ actor CodexClient {
         self.eventCont = cont
     }
 
-    func start() async throws {
+    public func start() async throws {
         try await transport.start()
         Task { await self.readLoop() }
         Task { await self.stderrLoop() }
         Task { await self.terminationLoop() }
     }
 
-    func stop() async {
+    public func stop() async {
         await transport.terminate()
         drainPending(cause: "client stopped")
         eventCont?.finish()
@@ -87,8 +88,8 @@ actor CodexClient {
     /// notification. Codex rejects any other RPC on the connection until
     /// this pair lands.
     @discardableResult
-    func initializeAndAck(clientName: String = "soul_desktop",
-                          clientVersion: String = "0.1.0") async throws -> JSONValue {
+    public func initializeAndAck(clientName: String = "soul_desktop",
+                                 clientVersion: String = "0.1.0") async throws -> JSONValue {
         let params: [String: Any] = [
             "clientInfo": [
                 "name": clientName,
@@ -104,7 +105,7 @@ actor CodexClient {
 
     /// Start a new thread (codex 0.45+ protocol). Returns `thread.id`.
     @discardableResult
-    func threadStart(cwd: String? = nil, model: String? = nil) async throws -> String {
+    public func threadStart(cwd: String? = nil, model: String? = nil) async throws -> String {
         guard initialized else { throw CodexClientError.notInitialized }
         var p: [String: Any] = [:]
         if let cwd { p["cwd"] = cwd }
@@ -121,7 +122,7 @@ actor CodexClient {
     /// Start a turn on `threadId` with a single user text input. Returns the
     /// turn id; streamed events arrive on `events`.
     @discardableResult
-    func turnStart(threadId: String, text: String) async throws -> String {
+    public func turnStart(threadId: String, text: String) async throws -> String {
         guard initialized else { throw CodexClientError.notInitialized }
         let params: [String: Any] = [
             "threadId": threadId,
@@ -138,7 +139,7 @@ actor CodexClient {
         return id
     }
 
-    func turnInterrupt(threadId: String, turnId: String) async throws {
+    public func turnInterrupt(threadId: String, turnId: String) async throws {
         let params: [String: Any] = [
             "threadId": threadId,
             "turnId": turnId
@@ -146,12 +147,8 @@ actor CodexClient {
         _ = try await call(method: "turn/interrupt", params: toJSONValue(params))
     }
 
-    func respond(id: JSONRPCID, result: JSONValue) async throws {
-        var env = JSONRPCEnvelope()
-        env.jsonrpc = nil
-        env.id = id
-        env.result = result
-        let data = try encoder.encode(env)
+    public func respond(id: JSONRPCID, result: JSONValue) async throws {
+        let data = try Self.makeCodexResponseEnvelope(id: id, result: result, encoder: encoder)
         try await transport.send(data)
     }
 
@@ -186,6 +183,15 @@ actor CodexClient {
     }
 
     private func makeEnvelope(id: JSONRPCID?, method: String, params: JSONValue) throws -> Data {
+        try Self.makeCodexEnvelope(id: id, method: method, params: params, encoder: encoder)
+    }
+
+    public static func makeCodexEnvelope(
+        id: JSONRPCID?,
+        method: String,
+        params: JSONValue,
+        encoder: JSONEncoder = JSONEncoder()
+    ) throws -> Data {
         var env = JSONRPCEnvelope()
         // Codex app-server's docs are explicit: `"jsonrpc":"2.0"` is omitted
         // on the wire in both directions. Sending it back produces an
@@ -195,6 +201,18 @@ actor CodexClient {
         env.id = id
         env.method = method
         env.params = params
+        return try encoder.encode(env)
+    }
+
+    public static func makeCodexResponseEnvelope(
+        id: JSONRPCID,
+        result: JSONValue,
+        encoder: JSONEncoder = JSONEncoder()
+    ) throws -> Data {
+        var env = JSONRPCEnvelope()
+        env.jsonrpc = nil
+        env.id = id
+        env.result = result
         return try encoder.encode(env)
     }
 
@@ -269,7 +287,7 @@ actor CodexClient {
         }
     }
 
-    static func classifyEnvelope(_ env: JSONRPCEnvelope) -> Event? {
+    public static func classifyEnvelope(_ env: JSONRPCEnvelope) -> Event? {
         guard let method = env.method else { return nil }
         if let id = env.id {
             return .request(id: id, method: method, params: env.params)

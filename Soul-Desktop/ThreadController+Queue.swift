@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Queue and interruption helpers for ThreadController turn flow.
 /// Keeps prompt parking, bubble relocation, steer, and process-reset logic

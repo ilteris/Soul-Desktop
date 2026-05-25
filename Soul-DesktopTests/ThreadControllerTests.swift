@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SoulACP
 @testable import Soul_Desktop
 
 @MainActor

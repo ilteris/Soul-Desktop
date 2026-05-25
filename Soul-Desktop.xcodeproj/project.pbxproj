@@ -10,6 +10,9 @@
 		A2018E1C2FB51BBE000D1E87 /* Splash in Frameworks */ = {isa = PBXBuildFile; productRef = A2018E1B2FB51BBE000D1E87 /* Splash */; };
 		A2018E1F2FB51C3C000D1E87 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = A2018E1E2FB51C3C000D1E87 /* Highlightr */; };
 		A2B2B98E2FB0D080004C6EEC /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A2B2B98D2FB0D080004C6EEC /* SwiftTerm */; };
+		C0D3C0DE0000000000000021 /* SoulCore in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000023 /* SoulCore */; };
+		C0D3C0DE0000000000000022 /* SoulACP in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000024 /* SoulACP */; };
+		C0D3C0DE0000000000000025 /* SoulLedger in Frameworks */ = {isa = PBXBuildFile; productRef = C0D3C0DE0000000000000026 /* SoulLedger */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,6 +67,9 @@
 				A2B2B98E2FB0D080004C6EEC /* SwiftTerm in Frameworks */,
 				A2018E1F2FB51C3C000D1E87 /* Highlightr in Frameworks */,
 				A2018E1C2FB51BBE000D1E87 /* Splash in Frameworks */,
+				C0D3C0DE0000000000000021 /* SoulCore in Frameworks */,
+				C0D3C0DE0000000000000022 /* SoulACP in Frameworks */,
+				C0D3C0DE0000000000000025 /* SoulLedger in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +153,9 @@
 				A2B2B98D2FB0D080004C6EEC /* SwiftTerm */,
 				A2018E1B2FB51BBE000D1E87 /* Splash */,
 				A2018E1E2FB51C3C000D1E87 /* Highlightr */,
+				C0D3C0DE0000000000000023 /* SoulCore */,
+				C0D3C0DE0000000000000024 /* SoulACP */,
+				C0D3C0DE0000000000000026 /* SoulLedger */,
 			);
 			productName = "Soul-Desktop";
 			productReference = A2B2B68D2FB0145A004C6EEC /* Soul-Desktop Dev.app */;
@@ -234,6 +243,7 @@
 				A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				A2018E1A2FB51BB0000D1E87 /* XCRemoteSwiftPackageReference "Splash" */,
 				A2018E1D2FB51C35000D1E87 /* XCRemoteSwiftPackageReference "Highlightr" */,
+				C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A2B2B68E2FB0145A004C6EEC /* Products */;
@@ -767,6 +777,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "";
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		A2018E1A2FB51BB0000D1E87 /* XCRemoteSwiftPackageReference "Splash" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -809,6 +826,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		C0D3C0DE0000000000000023 /* SoulCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			productName = SoulCore;
+		};
+		C0D3C0DE0000000000000024 /* SoulACP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			productName = SoulACP;
+		};
+		C0D3C0DE0000000000000026 /* SoulLedger */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */;
+			productName = SoulLedger;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Read-first hydration + finalize-summary injection helpers, lifted out
 /// of ThreadController. The big `hydrateFromDisk(id:)` method that

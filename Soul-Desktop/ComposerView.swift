@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SoulACP
 
 struct ComposerView: View {
     @Binding var prompt: String

@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 /// Reads a pi-acp session transcript JSONL into ThreadItems for read-only display.
 ///

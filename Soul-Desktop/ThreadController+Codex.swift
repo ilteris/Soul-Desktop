@@ -1,4 +1,6 @@
 import Foundation
+import SoulACP
+import SoulCore
 
 /// Codex-provider event/RPC handling lifted out of ThreadController. The
 /// methods stay private to the extension so existing call sites in

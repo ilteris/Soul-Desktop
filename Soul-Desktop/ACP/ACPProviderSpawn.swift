@@ -1,12 +1,9 @@
 import Foundation
+import SoulCore
 
-struct ACPProviderSpawn {
-    var executablePath: String
-    var arguments: [String]
-    var environment: [String: String]?
-    var scrubEnvKeys: [String] = []
-    var cwd: String? = nil
+public typealias ACPProviderSpawn = SoulCore.ACPProviderSpawn
 
+extension ACPProviderSpawn {
     /// Resolve a spawn for a provider. When `resumeSessionId` is non-nil, we
     /// add provider-specific CLI flags so the agent comes up already loaded
     /// on that session — bypassing ACP `loadSession`, which gemini-cli and

@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulACP
 
 extension AppShell {
     func startThread(display: String, agent: String, extraBlocks: [ContentBlock] = []) -> Bool {

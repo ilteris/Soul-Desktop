@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 /// One event in a session timeline, paired with the timestamp it actually
 /// occurred at. The replay controller uses the inter-event gap (curr.ts -
@@ -21,94 +22,6 @@ struct ReplayEvent: Identifiable {
 /// the harness's own transcript (user prompts + agent text) into a single
 /// timeline sorted by timestamp. This is the same shape soul_view replays
 /// against — see kernel/soul_view.py `_merge_with_prompts`.
-/// Hard per-line cap for the streaming transcript readers. Lines over this
-/// are dropped — no legitimate transcript line is this big, and parsing one
-/// would OOM the process (SOUL-SOUL_DESKTOP-161 incident: Gemini-CLI
-/// re-serialized a tool result into a single line, ballooned the chat file
-/// to 2.17 GB, and `String(contentsOf:)` aborted on click).
-let SoulTranscriptMaxLineBytes: Int = 32 * 1024 * 1024  // 32 MB
-
-/// Soft per-line cap. Lines over this are still parsed (we can handle the
-/// memory hit) but counted so the UI can surface a warning — a 5 MB line is
-/// almost certainly bloat (cumulative tool-result re-serialization), not
-/// real content.
-let SoulTranscriptWarnLineBytes: Int = 5 * 1024 * 1024  // 5 MB
-
-/// Stats returned by `enumerateJSONLines` so the caller can surface bloat
-/// to the UI without re-walking the file.
-struct JSONLineStats {
-    var warnedCount: Int = 0       // lines > 5 MB (still parsed)
-    var skippedCount: Int = 0      // lines > 32 MB (dropped, parser unsafe)
-    var largestLineBytes: Int = 0
-}
-
-/// Iterate JSONL lines from `path` without slurping the whole file. Yields
-/// each line as `Data` (caller decodes as needed). Lines over
-/// `SoulTranscriptMaxLineBytes` are skipped — protects the parser from
-/// pathological mega-lines that would OOM the process.
-///
-/// Reads in 1 MB chunks, accumulates a per-line buffer until a `\n`
-/// terminator lands, then yields the line and resets. Bounded memory:
-/// O(largest legitimate line) regardless of total file size.
-@discardableResult
-func enumerateJSONLines(atPath path: String, _ body: (Data) -> Void) -> JSONLineStats {
-    var stats = JSONLineStats()
-    guard let handle = FileHandle(forReadingAtPath: path) else { return stats }
-    defer { try? handle.close() }
-    let chunkSize = 1 << 20  // 1 MB
-    var buffer = Data()
-    buffer.reserveCapacity(chunkSize)
-    var skipUntilNewline = false  // set when current line exceeded the cap
-    while true {
-        let chunk: Data
-        do {
-            guard let next = try handle.read(upToCount: chunkSize), !next.isEmpty else { break }
-            chunk = next
-        } catch { break }
-        var start = chunk.startIndex
-        while let nl = chunk[start..<chunk.endIndex].firstIndex(of: 0x0A) {
-            if skipUntilNewline {
-                skipUntilNewline = false
-                buffer.removeAll(keepingCapacity: true)
-            } else {
-                buffer.append(chunk[start..<nl])
-                let lineBytes = buffer.count
-                stats.largestLineBytes = max(stats.largestLineBytes, lineBytes)
-                if lineBytes > SoulTranscriptWarnLineBytes {
-                    stats.warnedCount += 1
-                }
-                if !buffer.isEmpty { body(buffer) }
-                buffer.removeAll(keepingCapacity: true)
-            }
-            start = chunk.index(after: nl)
-        }
-        if start < chunk.endIndex {
-            if skipUntilNewline { continue }
-            let remaining = chunk[start..<chunk.endIndex]
-            if buffer.count + remaining.count > SoulTranscriptMaxLineBytes {
-                let oversize = buffer.count + remaining.count
-                stats.skippedCount += 1
-                stats.largestLineBytes = max(stats.largestLineBytes, oversize)
-                SoulSignposts.event("TranscriptReader.skipOversizeLine", "bytes=\(oversize)")
-                buffer.removeAll(keepingCapacity: true)
-                skipUntilNewline = true
-            } else {
-                buffer.append(remaining)
-            }
-        }
-    }
-    // Trailing line without newline
-    if !skipUntilNewline, !buffer.isEmpty, buffer.count <= SoulTranscriptMaxLineBytes {
-        let lineBytes = buffer.count
-        stats.largestLineBytes = max(stats.largestLineBytes, lineBytes)
-        if lineBytes > SoulTranscriptWarnLineBytes {
-            stats.warnedCount += 1
-        }
-        body(buffer)
-    }
-    return stats
-}
-
 /// SOUL-SOUL_DESKTOP-174: hydrate-time dedup. Mirrors the live-stream
 /// dedup in `ThreadController+ACP.insertToolCall` (-170/-172/-173).
 /// Transcript files on disk can contain duplicated tool_use blocks
@@ -271,26 +184,19 @@ enum HooksReader {
     /// here so Replay still shows it.
     private static func readAgentChunks(projectKey: String, sessionId: String, hooks: [ReplayEvent]) -> [ReplayEvent] {
         let path = "\(SoulRegistry.sessionDir(projectKey: projectKey, sessionId: sessionId))/agent_chunks.jsonl"
-        guard FileManager.default.fileExists(atPath: path),
-              let blob = try? String(contentsOfFile: path, encoding: .utf8)
-        else { return [] }
+        guard FileManager.default.fileExists(atPath: path) else { return [] }
 
         // Aggregate chunks by bubble id, preserving first-seen timestamp.
         struct Accum { var firstTs: Date; var text: String }
         var byBubble: [String: Accum] = [:]
         var order: [String] = []
-        for raw in blob.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = raw.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let bubbleId = obj["bubble_id"] as? String,
-                  let chunk = obj["chunk"] as? String
-            else { continue }
-            let ts = parseTimestamp(obj["ts"] as? String) ?? Date()
-            if byBubble[bubbleId] == nil {
-                byBubble[bubbleId] = Accum(firstTs: ts, text: chunk)
-                order.append(bubbleId)
+        for record in readAgentChunkRecords(atPath: path) {
+            let ts = record.timestamp ?? Date()
+            if byBubble[record.bubbleId] == nil {
+                byBubble[record.bubbleId] = Accum(firstTs: ts, text: record.chunk)
+                order.append(record.bubbleId)
             } else {
-                byBubble[bubbleId]!.text += chunk
+                byBubble[record.bubbleId]!.text += record.chunk
             }
         }
 
@@ -366,70 +272,58 @@ enum HooksReader {
 
     private static func readHooks(projectKey: String, sessionId: String) -> [ReplayEvent] {
         let path = SoulRegistry.hooksPath(projectKey: projectKey, sessionId: sessionId)
-        guard FileManager.default.fileExists(atPath: path),
-              let blob = try? String(contentsOfFile: path, encoding: .utf8)
-        else { return [] }
+        guard FileManager.default.fileExists(atPath: path) else { return [] }
 
-        var records: [(Date, [String: Any])] = []
-        for line in blob.split(separator: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
-            guard let ts = parseTimestamp(obj["timestamp"] as? String) else { continue }
-            records.append((ts, obj))
-        }
+        let records = readHookRecords(atPath: path)
 
-        var completedDelegations: [String: [String: Any]] = [:]
-        for (_, obj) in records {
-            let event = (obj["event"] as? String) ?? ""
-            guard event == "DelegationCompleted" || event == "DelegationFailed",
-                  let id = obj["delegation_id"] as? String,
-                  !id.isEmpty else { continue }
-            completedDelegations[id] = obj
+        var completedDelegations: [String: LedgerDelegationCompletedPayload] = [:]
+        for record in records {
+            switch record.payload {
+            case .delegationCompleted(let payload), .delegationFailed(let payload):
+                guard !payload.delegationId.isEmpty else { continue }
+                completedDelegations[payload.delegationId] = payload
+            default:
+                continue
+            }
         }
 
         var out: [ReplayEvent] = []
-        for (ts, obj) in records {
-            let event = (obj["event"] as? String) ?? ""
+        for record in records {
+            let ts = record.timestamp
 
-            switch event {
-            case "AfterTool":
-                if let item = toolItem(from: obj) {
-                    let tool = (obj["tool"] as? String) ?? ""
-                    let target = (obj["target"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            switch record.payload {
+            case .afterTool(let payload):
+                if let item = toolItem(from: payload) {
+                    let target = payload.target.trimmingCharacters(in: .whitespacesAndNewlines)
                     let isPath = target.hasPrefix("/") || target.hasPrefix("~")
                     out.append(ReplayEvent(
                         id: UUID(),
                         timestamp: ts,
                         item: item,
-                        rationale: obj["rationale"] as? String,
-                        reward: obj["reward"] as? Double,
-                        toolName: tool.isEmpty ? nil : tool,
+                        rationale: payload.rationale,
+                        reward: payload.reward,
+                        toolName: payload.tool.isEmpty ? nil : payload.tool,
                         target: isPath ? target : nil
                     ))
                 }
-            case "AfterAgent":
-                let content = (obj["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            case .afterAgent(let payload):
+                let content = payload.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !content.isEmpty {
                     out.append(ReplayEvent(
                         id: UUID(),
                         timestamp: ts,
                         item: .agentMessage(id: UUID(), text: content, complete: true, timestamp: ts),
                         rationale: nil,
-                        reward: obj["reward"] as? Double
+                        reward: payload.reward
                     ))
                 }
-            case "UserPrompt", "UserMessage":
+            case .userPrompt(let payload):
                 // Soul-Desktop writes the user's literal prompt into hooks
                 // when it owns the session (no terminal-side Claude transcript
                 // to read from). Without this case, a gemini session whose
                 // only artifact is the kernel hooks ledger replays as empty
                 // even though it contains the full prompt log.
-                let text = (obj["text"] as? String)
-                    ?? (obj["content"] as? String)
-                    ?? (obj["prompt"] as? String)
-                    ?? ""
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     out.append(ReplayEvent(
                         id: UUID(),
@@ -437,15 +331,11 @@ enum HooksReader {
                         item: .userMessage(id: UUID(), text: trimmed, timestamp: ts)
                     ))
                 }
-            case "BranchSummary":
-                let summary = (obj["summary"] as? String)
-                    ?? (obj["text"] as? String)
-                    ?? (obj["content"] as? String)
-                    ?? ""
-                let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .branchSummary(let payload):
+                let trimmed = payload.summary.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    let source = Provider(rawValue: obj["from_provider"] as? String ?? "") ?? .claude
-                    let target = Provider(rawValue: obj["to_provider"] as? String ?? "") ?? .geminiCLI
+                    let source = Provider(rawValue: payload.fromProvider ?? "") ?? .claude
+                    let target = Provider(rawValue: payload.toProvider ?? "") ?? .geminiCLI
                     out.append(ReplayEvent(
                         id: UUID(),
                         timestamp: ts,
@@ -458,57 +348,54 @@ enum HooksReader {
                         )
                     ))
                 }
-            case "DelegationStarted":
-                if let item = delegationItem(from: obj, completed: completedDelegations[obj["delegation_id"] as? String ?? ""]) {
+            case .delegationStarted(let payload):
+                if let item = delegationItem(from: payload, completed: completedDelegations[payload.delegationId]) {
                     out.append(ReplayEvent(id: UUID(), timestamp: ts, item: item))
                 }
-            case "DelegationCompleted", "DelegationFailed":
+            case .delegationCompleted, .delegationFailed:
                 continue
-            case "CodexApproval":
-                let op = obj["op"] as? String ?? "APPROVAL"
-                let intent = obj["intent"] as? String ?? "Codex command approval handled"
+            case .codexApproval(let payload):
                 out.append(ReplayEvent(
                     id: UUID(),
                     timestamp: ts,
-                    item: .status(id: UUID(), text: "⌁ \(op) — \(intent)")
+                    item: .status(id: UUID(), text: "⌁ \(payload.op) — \(payload.intent)")
                 ))
-            case "SESSION_START", "NativeSessionID", "Title":
+            case .metadata:
                 continue   // metadata / linkage rows, skip from the timeline
-            default:
+            case .decision(let payload):
                 // Decision events (op/intent/target) and unknowns — render as a
                 // status row so the timeline shows them but they don't dominate.
-                if let op = obj["op"] as? String,
-                   let intent = obj["intent"] as? String {
-                    let text = "⌁ \(op) — \(intent)"
-                    out.append(ReplayEvent(
-                        id: UUID(),
-                        timestamp: ts,
-                        item: .status(id: UUID(), text: text)
-                    ))
-                }
+                let text = "⌁ \(payload.op) — \(payload.intent)"
+                out.append(ReplayEvent(
+                    id: UUID(),
+                    timestamp: ts,
+                    item: .status(id: UUID(), text: text)
+                ))
+            case .unknown:
+                continue
             }
         }
         return out
     }
 
-    private static func delegationItem(from obj: [String: Any], completed: [String: Any]?) -> ThreadItem? {
-        let delegationId = (obj["delegation_id"] as? String) ?? ""
-        let specialist = (obj["specialist"] as? String) ?? "specialist"
-        let objective = (obj["objective"] as? String)
-            ?? (obj["task"] as? String)
-            ?? ""
+    private static func delegationItem(
+        from payload: LedgerDelegationStartedPayload,
+        completed: LedgerDelegationCompletedPayload?
+    ) -> ThreadItem? {
+        let delegationId = payload.delegationId
+        let specialist = payload.specialist
+        let objective = payload.objective
         guard !delegationId.isEmpty else { return nil }
 
         let status: String = {
-            switch completed?["event"] as? String {
+            switch completed?.event {
             case "DelegationCompleted": return "completed"
             case "DelegationFailed": return "failed"
             default: return "in_progress"
             }
         }()
-        let findingPath = (completed?["finding_path"] as? String)
-            ?? (obj["finding_path"] as? String)
-        let colorHex = parseHexColor((completed?["color"] as? String) ?? (obj["color"] as? String))
+        let findingPath = completed?.findingPath ?? payload.findingPath
+        let colorHex = parseHexColor(completed?.color ?? payload.color)
         let title = "@\(specialist)"
 
         return .toolCall(
@@ -537,13 +424,12 @@ enum HooksReader {
         return UInt32(raw, radix: 16)
     }
 
-    private static func toolItem(from obj: [String: Any]) -> ThreadItem? {
-        let tool = (obj["tool"] as? String) ?? "tool"
-        let target = (obj["target"] as? String) ?? ""
-        let rationale = (obj["rationale"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    private static func toolItem(from payload: LedgerAfterToolPayload) -> ThreadItem? {
+        let target = payload.target
+        let rationale = payload.rationale?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let kind = kindForTool(tool)
-        let title = !rationale.isEmpty ? rationale : (target.isEmpty ? tool : target)
+        let kind = kindForTool(payload.tool)
+        let title = !rationale.isEmpty ? rationale : (target.isEmpty ? payload.tool : target)
         return .toolCall(
             id: UUID(),
             kind: kind,

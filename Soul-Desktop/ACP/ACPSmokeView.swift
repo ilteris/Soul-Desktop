@@ -1,4 +1,6 @@
 import SwiftUI
+import SoulACP
+import SoulCore
 
 @MainActor
 @Observable

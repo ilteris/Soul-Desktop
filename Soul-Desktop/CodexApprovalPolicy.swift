@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 enum CodexApprovalPolicy {
     static func responseResult(params: JSONValue?, permissionMode: PermissionMode) -> JSONValue {

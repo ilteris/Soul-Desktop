@@ -1,6 +1,12 @@
 import Foundation
+import SoulCore
+#if SWIFT_PACKAGE
+public typealias ACPPermissionMode = AgentPermissionMode
+#else
+public typealias ACPPermissionMode = PermissionMode
+#endif
 
-enum ACPClientError: Error {
+public enum ACPClientError: Error {
     case notInitialized
     case spawnFailed(String)
     case decodeFailed(String)
@@ -13,8 +19,8 @@ enum ACPClientError: Error {
     case writeFailed(String)
 }
 
-actor ACPClient {
-    enum Event {
+public actor ACPClient {
+    public enum Event: Sendable {
         case request(id: JSONRPCID, method: String, params: JSONValue?)
         case sessionUpdate(SessionNotification)
         case stderr(String)
@@ -37,14 +43,16 @@ actor ACPClient {
     private var nextId = 1
     private var pending: [JSONRPCID: CheckedContinuation<JSONValue, Error>] = [:]
 
-    let events: AsyncStream<Event>
+    public let events: AsyncStream<Event>
     private var eventCont: AsyncStream<Event>.Continuation?
     var autoAllowPermissions: Bool = false
     /// Per-thread permission policy. Overrides `autoAllowPermissions` when set.
-    /// See `PermissionMode` for what each mode does.
-    var permissionMode: PermissionMode = .fullAccess
+    /// Package builds use SoulCore's UI-free `AgentPermissionMode`; the app
+    /// target keeps using its local `PermissionMode` until the Xcode target is
+    /// wired to import package products.
+    var permissionMode: ACPPermissionMode = .fullAccess
 
-    init(spawn: ACPProviderSpawn) throws {
+    public init(spawn: ACPProviderSpawn) throws {
         let url = URL(fileURLWithPath: spawn.executablePath)
         self.transport = ACPTransport(
             executableURL: url,
@@ -58,14 +66,14 @@ actor ACPClient {
         self.eventCont = cont
     }
 
-    func start() async throws {
+    public func start() async throws {
         try await transport.start()
         Task { await self.readLoop() }
         Task { await self.stderrLoop() }
         Task { await self.terminationLoop() }
     }
 
-    func stop() async {
+    public func stop() async {
         await transport.terminate()
         // The transport will yield .explicit through terminationEvents and
         // terminationLoop will drain pending continuations; we don't need to
@@ -106,13 +114,13 @@ actor ACPClient {
         }
     }
 
-    func setAutoAllow(_ on: Bool) { autoAllowPermissions = on }
-    func setPermissionMode(_ mode: PermissionMode) { permissionMode = mode }
+    public func setAutoAllow(_ on: Bool) { autoAllowPermissions = on }
+    public func setPermissionMode(_ mode: ACPPermissionMode) { permissionMode = mode }
 
     // MARK: high-level methods
 
     @discardableResult
-    func initialize(clientName: String = "Soul-Desktop", clientVersion: String = "0.1") async throws -> InitializeResponse {
+    public func initialize(clientName: String = "Soul-Desktop", clientVersion: String = "0.1") async throws -> InitializeResponse {
         let req = InitializeRequest(
             protocolVersion: ACPProtocolVersion.current,
             clientCapabilities: ClientCapabilities(
@@ -125,7 +133,7 @@ actor ACPClient {
         return try decode(InitializeResponse.self, from: result)
     }
 
-    func newSession(
+    public func newSession(
         cwd: String,
         mcpServers: [McpServer] = [],
         systemPrompt: String? = nil
@@ -153,7 +161,7 @@ actor ACPClient {
         return resp.sessionId
     }
 
-    func newSession(id sid: String, cwd: String, mcpServers: [McpServer] = []) async throws -> String {
+    public func newSession(id sid: String, cwd: String, mcpServers: [McpServer] = []) async throws -> String {
         // session/new doesn't normally accept a sessionId, but the protocol
         // doesn't forbid it in params. If the server supports it, this
         // enforces kernel identity from frame zero.
@@ -170,19 +178,19 @@ actor ACPClient {
         return resp.sessionId
     }
 
-    func loadSession(sessionId: String, cwd: String, mcpServers: [McpServer] = []) async throws {
+    public func loadSession(sessionId: String, cwd: String, mcpServers: [McpServer] = []) async throws {
         let req = LoadSessionRequest(cwd: cwd, mcpServers: mcpServers, sessionId: sessionId)
         _ = try await call(method: "session/load", params: req)
     }
 
-    func prompt(sessionId: String, text: String, extraBlocks: [ContentBlock] = []) async throws -> String {
+    public func prompt(sessionId: String, text: String, extraBlocks: [ContentBlock] = []) async throws -> String {
         let req = PromptRequest(sessionId: sessionId, prompt: [.text(text)] + extraBlocks)
         let result = try await call(method: "session/prompt", params: req)
         let resp = try decode(PromptResponse.self, from: result)
         return resp.stopReason
     }
 
-    func cancel(sessionId: String) async throws {
+    public func cancel(sessionId: String) async throws {
         let note = CancelNotification(sessionId: sessionId)
         try await notify(method: "session/cancel", params: note)
     }
@@ -222,7 +230,7 @@ actor ACPClient {
         try await transport.send(envelope)
     }
 
-    func respond(id: JSONRPCID, result: Encodable) throws {
+    public func respond(id: JSONRPCID, result: Encodable) throws {
         var env = JSONRPCEnvelope()
         env.id = id
         env.result = try toJSONValue(result)
@@ -232,7 +240,7 @@ actor ACPClient {
         Task { try? await transport.send(data) }
     }
 
-    func respondError(id: JSONRPCID, code: Int, message: String) {
+    public func respondError(id: JSONRPCID, code: Int, message: String) {
         var env = JSONRPCEnvelope()
         env.id = id
         env.error = JSONRPCError(code: code, message: message)
@@ -300,7 +308,7 @@ actor ACPClient {
     }
 
     private func handleNotification(method: String, params: JSONValue?) {
-        ACPProtocolLog.record(direction: "notification", method: method, params: params)
+        recordACPProtocolFrame(direction: "notification", method: method, params: params)
         switch method {
         case "session/update":
             if let params,
@@ -316,7 +324,7 @@ actor ACPClient {
     }
 
     private func handleClientRequest(id: JSONRPCID, method: String, params: JSONValue?) {
-        ACPProtocolLog.record(direction: "request", method: method, params: params)
+        recordACPProtocolFrame(direction: "request", method: method, params: params)
         switch method {
         case "fs/read_text_file":
             handleFsRead(id: id, params: params)
@@ -366,7 +374,7 @@ actor ACPClient {
         case .fullAccess:
             allowFirstMatching()
         case .autoReview:
-            if PermissionMode.isReadOnlyTool(toolName) {
+            if ACPPermissionMode.isReadOnlyTool(toolName) {
                 allowFirstMatching()
             } else {
                 // State-mutating tool: deny until an interactive sheet exists.
@@ -403,4 +411,14 @@ actor ACPClient {
             respondError(id: id, code: -32000, message: "write failed: \(error.localizedDescription)")
         }
     }
+}
+
+private func recordACPProtocolFrame(direction: String, method: String, params: JSONValue?) {
+#if SWIFT_PACKAGE
+    // Protocol-log persistence is currently an app diagnostic concern. Keep
+    // SoulACP package builds free of user-Library filesystem side effects.
+    _ = (direction, method, params)
+#else
+    ACPProtocolLog.record(direction: direction, method: method, params: params)
+#endif
 }

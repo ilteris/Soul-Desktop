@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// One-entry-per-toolCallId log of the schema each provider's ACP tool-call
 /// payload uses. Built to answer "why does this edit row show a diff and that

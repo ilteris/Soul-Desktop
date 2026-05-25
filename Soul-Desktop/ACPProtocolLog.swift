@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 enum ACPProtocolLog {
     private static let queue = DispatchQueue(label: "soul.acp-protocol-log")

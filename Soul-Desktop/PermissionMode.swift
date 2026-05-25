@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// Umbrella permission policy for a thread. Drives how Soul-Desktop's ACP
 /// client responds to `session/request_permission` from the agent.
@@ -8,7 +9,7 @@ import Foundation
 /// most paths), so mode changes mostly affect Claude. Real cross-provider
 /// enforcement would require also rewriting `~/.gemini/settings.json` — we
 /// deliberately don't, to avoid stomping user-maintained config.
-enum PermissionMode: String, CaseIterable, Identifiable, Codable {
+public enum PermissionMode: String, CaseIterable, Identifiable, Codable {
     /// Ask for every action. With no interactive sheet yet, this currently
     /// rejects every permission request — useful for "read-only chat" mode.
     case defaultAsk = "default"
@@ -19,7 +20,7 @@ enum PermissionMode: String, CaseIterable, Identifiable, Codable {
     /// behavior — fastest, no safety net.
     case fullAccess = "full-access"
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     var label: String {
         switch self {
@@ -54,5 +55,13 @@ enum PermissionMode: String, CaseIterable, Identifiable, Codable {
             if n.contains(safe) { return true }
         }
         return false
+    }
+
+    var agentPermissionMode: AgentPermissionMode {
+        switch self {
+        case .defaultAsk: .defaultAsk
+        case .autoReview: .autoReview
+        case .fullAccess: .fullAccess
+        }
     }
 }

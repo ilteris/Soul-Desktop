@@ -1,4 +1,5 @@
 import Foundation
+import SoulACP
 
 /// Append-only log of every codex JSON-RPC notification, written to
 /// `~/Library/Logs/Soul-Desktop/codex-protocol.jsonl`. Built to answer
