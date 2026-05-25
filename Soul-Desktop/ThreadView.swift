@@ -522,7 +522,21 @@ struct ThreadView: View {
 
         .alert("Rename chat", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
-            Button("Save") { controller.customTitle = renameDraft.trimmingCharacters(in: .whitespaces) }
+            Button("Save") {
+                let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
+                controller.customTitle = trimmed
+                // SOUL-SOUL_DESKTOP-272: persist to hooks.jsonl so the
+                // rename survives restart. findTitle (SoulRegistry.swift:1033)
+                // returns the LAST Title event, so user overrides win over
+                // the LLM-generated title from ThreadController+Turn.swift.
+                if !trimmed.isEmpty, let sid = controller.sessionId {
+                    SoulRegistry.appendHook(
+                        projectKey: controller.project.id,
+                        sessionId: sid,
+                        event: ["event": "Title", "text": trimmed, "source": "user"]
+                    )
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
         .onChange(of: controller.renameRequestNonce) { _, _ in
