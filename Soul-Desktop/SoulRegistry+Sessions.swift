@@ -219,7 +219,29 @@ extension SoulRegistry {
             let spaced = Data("\"event\": \"\(name)\"".utf8)
             return countNeedle(tight, in: data) + countNeedle(spaced, in: data)
         }
-        meta.promptCount = countEvent("UserPrompt") + countEvent("UserMessage")
+        // SOUL-SOUL_DESKTOP-275: byte-needle countEvent above can't
+        // distinguish empty-text from real UserPrompt rows. SOUL-247-family
+        // writer bugs polluted 30+ on-disk sessions with empty UserPrompt
+        // events (8bb05275 has 84 empties + 1 real → byte-needle reports
+        // 85). Parse line-by-line and skip empty-text rows so promptCount
+        // matches what the user actually typed. Mirrors kernel
+        // soul_session_view.py:127-138.
+        if let blob = String(data: data, encoding: .utf8) {
+            var nonEmpty = 0
+            for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let ld = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any]
+                else { continue }
+                let ev = (obj["event"] as? String) ?? ""
+                guard ev == "UserPrompt" || ev == "UserMessage" else { continue }
+                let t = ((obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { nonEmpty += 1 }
+            }
+            meta.promptCount = nonEmpty
+        } else {
+            meta.promptCount = countEvent("UserPrompt") + countEvent("UserMessage")
+        }
         meta.delegationEventCount =
             countEvent("DelegationStarted") +
             countEvent("DelegationCompleted") +
