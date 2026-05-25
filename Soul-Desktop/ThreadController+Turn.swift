@@ -1,5 +1,7 @@
 import Foundation
 import SoulACP
+import SoulCore
+import SoulLedger
 
 /// Turn-lifecycle send loop for ThreadController.
 /// Queue mechanics live in ThreadController+Queue.swift; stall and per-tool
@@ -63,16 +65,23 @@ extension ThreadController {
         appendPromptHook(prompt, sessionId: sessionId ?? id)
         SoulRegistry.flushHooks()
 
-        if isWorking {
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        switch queueState.acceptPrompt() {
+        case .queued:
             // Already running a turn; stash this for the dispatch loop to
             // pick up. UserPrompt is logged here so the hooks ledger
             // reflects the order the user sent things, not the order the
             // agent processed them.
             queuedPrompts.append(prompt)
             return nil
+        case .dispatchNow:
+            isWorking = queueState.isWorking
         }
 
-        isWorking = true
         turnStartedAt = Date()
         startStallWatchdog()
         return prompt
@@ -112,12 +121,19 @@ extension ThreadController {
         appendPromptHook(prompt, sessionId: sessionId ?? id)
         SoulRegistry.flushHooks()
 
-        if isWorking {
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        switch queueState.acceptPrompt() {
+        case .queued:
             queuedPrompts.append(prompt)
             return nil
+        case .dispatchNow:
+            isWorking = queueState.isWorking
         }
 
-        isWorking = true
         turnStartedAt = Date()
         startStallWatchdog()
         return prompt
@@ -187,7 +203,13 @@ extension ThreadController {
                         }
                         return turn.agent
                     }()
-                    try await sendCodex(text: agentText)
+                    let promptRequest = ProviderRuntimePromptRequest<ContentBlock>(
+                        session: runtimeSessionSnapshot(),
+                        text: agentText,
+                        attachments: turn.extraBlocks
+                    )
+                    guard promptRequest.canDispatch else { return }
+                    try await sendCodex(promptRequest)
 
                     // Persist the codex agent's final reply text to the
                     // kernel hooks ledger, same way the ACP branch does.
@@ -197,11 +219,14 @@ extension ThreadController {
                     // (codex branch below) renders full conversations.
                     if let raw = mostRecentAgentReplyText() {
                         let reply = LedgerPreamble.scrubEchoed(raw)
-                        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-                            "event": "AfterAgent",
-                            "content": reply,
-                            "provider": provider.rawValue,
-                        ])
+                        ledger.appendHook(
+                            projectKey: project.id,
+                            sessionId: sid,
+                            event: LedgerHookEvent.afterAgent(
+                                content: reply,
+                                provider: provider.rawValue
+                            ).hookDictionary
+                        )
                         // SOUL-SOUL_DESKTOP-065: AfterAgent is now the canonical
                         // record; the per-chunk file can retire.
                         ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
@@ -210,11 +235,11 @@ extension ThreadController {
                     // Same finalize-card live injection as the ACP branch.
                     injectFinalizeSummaryIfFresh(sessionId: sid)
 
-                    current = queuedPrompts.isEmpty ? nil : queuedPrompts.removeFirst()
+                    current = popNextQueuedPromptForDispatch()
                 }
                 return
             }
-            guard let client, let sid = sessionId else { return }
+            guard let runtime = runtimes.acp, let sid = sessionId else { return }
             // ACP id used for prompt/cancel — may differ from kernel sid
             // when the session was resumed via backfill.
             let nid = nativeSessionId ?? sid
@@ -226,8 +251,13 @@ extension ThreadController {
                 } else {
                     turnStartedAt = Date()
                     relocateQueuedBubbleToEnd(turn)
-                    if steerPending {
-                        steerPending = false
+                    var queueState = TurnQueueState(
+                        isWorking: isWorking,
+                        queuedCount: queuedPrompts.count,
+                        steerPending: steerPending
+                    )
+                    if queueState.consumeSteerPending() {
+                        steerPending = queueState.steerPending
                         if let idx = items.firstIndex(where: { $0.id == turn.itemId }) {
                             items.insert(.status(id: UUID(), text: "↪ steered to next prompt"), at: idx)
                         } else {
@@ -255,8 +285,14 @@ extension ThreadController {
                 // rotating its on-disk transcript filename (the post-
                 // /compact case). No-op for non-Claude.
                 armTranscriptWatcher()
+                let promptRequest = ProviderRuntimePromptRequest<ContentBlock>(
+                    session: runtimeSessionSnapshot(),
+                    text: agentText,
+                    attachments: turn.extraBlocks
+                )
+                guard promptRequest.canDispatch else { return }
                 do {
-                    _ = try await client.prompt(sessionId: nid, text: agentText, extraBlocks: turn.extraBlocks)
+                    try await runtime.prompt(promptRequest)
                 } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
                     // SOUL-SOUL_DESKTOP-103: Gemini-CLI rotates / drops the
                     // session mid-conversation (observed: session loaded fine,
@@ -278,14 +314,15 @@ extension ThreadController {
                         suppressLoadReplay = false
                         isReplayingLoad = false
                     }
-                    try await client.loadSession(sessionId: nid, cwd: project.path)
+                    let loadRequest = runtimeLoadRequest(requestedSessionID: nid)
+                    try await runtime.loadSession(loadRequest)
                     // Retry uses agentText (preamble + prompt), not the
                     // bare turn.agent. SOUL-SOUL_DESKTOP-245 audit S1: if
                     // the first attempt failed at the RPC layer the agent
                     // never saw the preamble, and pendingContextPreamble
                     // was already cleared above. Re-sending agentText
                     // makes the recovery idempotent.
-                    _ = try await client.prompt(sessionId: nid, text: agentText, extraBlocks: turn.extraBlocks)
+                    try await runtime.prompt(promptRequest)
                 }
 
                 // Persist the agent's full reply text to the kernel hooks
@@ -302,11 +339,14 @@ extension ThreadController {
                 NSLog("[ledger] AfterAgent gate: replyLen=\(reply?.count ?? -1) sid=\(sid) project=\(project.id) provider=\(provider.rawValue) agentMessagesInItems=\(agentMsgCount)")
                 if let reply, !reply.isEmpty {
                     NSLog("[ledger] writing AfterAgent → \(project.id)/\(sid)")
-                    ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-                        "event": "AfterAgent",
-                        "content": reply,
-                        "provider": provider.rawValue,
-                    ])
+                    ledger.appendHook(
+                        projectKey: project.id,
+                        sessionId: sid,
+                        event: LedgerHookEvent.afterAgent(
+                            content: reply,
+                            provider: provider.rawValue
+                        ).hookDictionary
+                    )
                     // SOUL-SOUL_DESKTOP-065: AfterAgent now holds the canonical
                     // reply text; the per-chunk file can retire so it doesn't
                     // grow unbounded across a long session.
@@ -331,7 +371,7 @@ extension ThreadController {
                 // Pop the next queued turn. Re-check on each iteration so
                 // sends that arrived during this loop's await get drained
                 // without needing a separate dispatcher.
-                current = queuedPrompts.isEmpty ? nil : queuedPrompts.removeFirst()
+                current = popNextQueuedPromptForDispatch()
             }
         } catch {
             NSLog("[ledger] dispatchPending CATCH: \(error) — AfterAgent write was bypassed by this throw")
@@ -353,22 +393,21 @@ extension ThreadController {
     private func appendPromptHook(_ turn: QueuedPrompt, sessionId sid: String) {
         switch turn.ledgerEvent {
         case .userPrompt:
-            ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-                "event": QueuedPrompt.LedgerEvent.userPrompt.rawValue,
-                "text": turn.display,
-            ])
+            ledger.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: LedgerHookEvent.userPrompt(text: turn.display).hookDictionary
+            )
         case .branchSummary:
-            var event: [String: Any] = [
-                "event": QueuedPrompt.LedgerEvent.branchSummary.rawValue,
-                "summary": turn.display,
-            ]
-            if let sourceProvider = turn.sourceProvider {
-                event["from_provider"] = sourceProvider.rawValue
-            }
-            if let targetProvider = turn.targetProvider {
-                event["to_provider"] = targetProvider.rawValue
-            }
-            ledger.appendHook(projectKey: project.id, sessionId: sid, event: event)
+            ledger.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: LedgerHookEvent.branchSummary(
+                    summary: turn.display,
+                    sourceProvider: turn.sourceProvider?.rawValue,
+                    targetProvider: turn.targetProvider?.rawValue
+                ).hookDictionary
+            )
         }
     }
 
@@ -376,7 +415,7 @@ extension ThreadController {
         // SOUL-204: diagnostic so a user-reported "Stop is unresponsive" has
         // an audit trail. If this line never appears in the agent log on a
         // click, the button isn't even routing onCancel through.
-        logLifecycle("cancel.invoked", note: "queued=\(queuedPrompts.count) isWorking=\(isWorking) client=\(client != nil ? "live" : "nil")")
+        logLifecycle("cancel.invoked", note: "queued=\(queuedPrompts.count) isWorking=\(isWorking) runtimes.acp=\(runtimes.acp != nil ? "live" : "nil")")
         // Paint UI feedback FIRST — the async cancel below hops to the
         // ACPClient actor, which while a turn is streaming is busy decoding
         // session/update notifications. If we await it first, the Stop
@@ -388,10 +427,17 @@ extension ThreadController {
         // session/update notifications already in-flight on the actor
         // queue can't append more rows after the click.
         isCancelling = true
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        queueState.cancelActiveTurnAndClearQueue()
         queuedPrompts.removeAll()
+        steerPending = queueState.steerPending
         markInFlightToolCallsStopped()
         appendCancelStatusIfNeeded()
-        isWorking = false
+        isWorking = queueState.isWorking
         stopStallWatchdog()
         // Suppress the upcoming "prompt turn interrupted" error that the
         // in-flight `client.prompt` will throw once the transport tears
@@ -421,13 +467,16 @@ extension ThreadController {
         let label = source == "auto" ? "⏱ auto-recovered stalled turn (\(stalledSeconds)s)"
                                      : "⏭ recovered stalled turn (\(stalledSeconds)s)"
         items.append(.status(id: UUID(), text: label))
-        ledger.appendHook(projectKey: project.id, sessionId: sid, event: [
-            "event": "StallRecovered",
-            "provider": provider.rawValue,
-            "tool_kind": lastInProgressToolKind ?? "",
-            "stalled_seconds": stalledSeconds,
-            "recovery_source": source,
-        ])
+        ledger.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.stallRecovered(
+                provider: provider.rawValue,
+                toolKind: lastInProgressToolKind ?? "",
+                stalledSeconds: stalledSeconds,
+                recoverySource: source
+            ).hookDictionary
+        )
         // Tear the provider process down so the awaiting prompt/turn
         // continuation resolves. The original send() defer will then flip
         // `isWorking` off and drain exactly one queued prompt. Dispatching
@@ -440,7 +489,12 @@ extension ThreadController {
     /// behavior matches the legacy method (requires a queued prompt) so any
     /// external caller keeps working; new UI uses `recoverStalledTurn`.
     func skipStalledTurn() async {
-        guard !queuedPrompts.isEmpty else { return }
+        let queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        guard queueState.canSkipAhead else { return }
         await recoverStalledTurn(source: "manual")
     }
 

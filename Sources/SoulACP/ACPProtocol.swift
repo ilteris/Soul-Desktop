@@ -61,7 +61,7 @@ public struct JSONRPCError: Codable, Error, Sendable {
     }
 }
 
-public enum JSONValue: Codable, Sendable {
+public enum JSONValue: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
     case int(Int)

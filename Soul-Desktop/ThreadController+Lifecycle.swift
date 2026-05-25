@@ -1,6 +1,7 @@
 import Foundation
 import SoulACP
 import SoulCore
+import SoulLedger
 
 /// Session-resume + spawn + teardown lifecycle methods lifted out of
 /// ThreadController. `loadSession(id:)` handles click-on-existing-row
@@ -59,7 +60,7 @@ extension ThreadController {
             switch provider {
             case .claude, .geminiCLI, .pi:
                 try await spawnAndInitialize(skipNewSession: true)
-                guard let client else { return }
+                guard let runtime = runtimes.acp else { return }
                 let resumeId = nativeId ?? sid
 
                 let backupPath = Self.backupAgentChatIfPresent(
@@ -69,7 +70,8 @@ extension ThreadController {
                 )
                 do {
                     isReplayingLoad = true
-                    try await client.loadSession(sessionId: resumeId, cwd: project.path)
+                    let loadRequest = runtimeLoadRequest(requestedSessionID: resumeId)
+                    try await runtime.loadSession(loadRequest)
                     isReplayingLoad = false
                     nativeSessionId = resumeId
                     hasInitialized = true
@@ -104,7 +106,8 @@ extension ThreadController {
                             ))
                             do {
                                 isReplayingLoad = true
-                                try await client.loadSession(sessionId: resumeId, cwd: project.path)
+                                let loadRequest = runtimeLoadRequest(requestedSessionID: resumeId)
+                                try await runtime.loadSession(loadRequest)
                                 isReplayingLoad = false
                                 nativeSessionId = resumeId
                                 hasInitialized = true
@@ -131,7 +134,8 @@ extension ThreadController {
                             ))
                             do {
                                 isReplayingLoad = true
-                                try await client.loadSession(sessionId: backfilled, cwd: project.path)
+                                let loadRequest = runtimeLoadRequest(requestedSessionID: backfilled)
+                                try await runtime.loadSession(loadRequest)
                                 isReplayingLoad = false
                                 nativeSessionId = backfilled
                                 hasInitialized = true
@@ -180,14 +184,15 @@ extension ThreadController {
 
                     renderHistoryIfAvailable(sid: sid)
                     items.append(.status(id: UUID(), text: "ℹ session could not be resumed — starting fresh"))
-                    let newSid = try await client.newSession(cwd: project.path)
+                    let newSessionRequest = runtimeNewSessionRequest()
+                    let newSessionResult = try await runtime.startNewSession(newSessionRequest)
                     // Keep `sessionId` pinned to the original disk UUID so subsequent
                     // hook writes append to the existing ledger and the sidebar row
                     // merges back onto the resumed disk row instead of splitting into
                     // a duplicate. The provider's freshly-allocated handle belongs
                     // only in `nativeSessionId`; every ACP call site reads it as
                     // `nativeSessionId ?? sessionId`.
-                    nativeSessionId = newSid
+                    applyRuntimeNewSessionResult(newSessionResult)
                     hasInitialized = true
                 }
             case .codex:
@@ -227,10 +232,7 @@ extension ThreadController {
         preambleStagingTask = nil
         ensureSessionTask = nil
         eventTask?.cancel()
-        await client?.stop()
-        client = nil
-        await codexClient?.stop()
-        codexClient = nil
+        await runtimes.stopAll()
         if let cont = codexTurnContinuation {
             codexTurnContinuation = nil
             cont.resume(throwing: NSError(domain: "Codex", code: 99,
@@ -262,13 +264,13 @@ extension ThreadController {
 
     private func _ensureSessionImpl() async throws {
         logLifecycle("ensureSession enter",
-                     note: "hasInitialized=\(hasInitialized) client=\(client != nil) codexClient=\(codexClient != nil) sessionId=\(sessionId ?? "nil") nativeSessionId=\(nativeSessionId ?? "nil") pendingResumeOnFirstSend=\(pendingResumeOnFirstSend)")
+                     note: "hasInitialized=\(hasInitialized) runtimes.acp=\(runtimes.acp != nil) runtimes.codex=\(runtimes.codex != nil) sessionId=\(sessionId ?? "nil") nativeSessionId=\(nativeSessionId ?? "nil") pendingResumeOnFirstSend=\(pendingResumeOnFirstSend)")
         if provider == .codex {
-            if hasInitialized, codexClient != nil, sessionId != nil { return }
+            if hasInitialized, runtimes.codex != nil, sessionId != nil { return }
             try await spawnAndInitializeCodex()
             return
         }
-        if hasInitialized, client != nil, sessionId != nil { return }
+        if hasInitialized, runtimes.acp != nil, sessionId != nil { return }
 
         // SPEC-245-K hotfix: hydrate kicks off preamble staging in a
         // background Task. Await it here so pendingContextPreamble +
@@ -291,7 +293,7 @@ extension ThreadController {
         // without re-reading every prior turn. Kernel sid preserved.
         if let sid = sessionId, nativeSessionId != nil {
             try await spawnAndInitialize(skipNewSession: true)
-            guard let client else { return }
+            guard runtimes.acp != nil else { return }
             // Stop-recovery path: we already have a live session AND a
             // user prompt waiting. Awaiting here is fine — there's no
             // hydrate-skeleton race because the canvas was already
@@ -299,7 +301,6 @@ extension ThreadController {
             // user expects when they hit "Send" anyway.
             await stagePreambleForResume(sid: sid, rendered: items)
             try await mintFreshNativeSession(
-                client: client,
                 kernelSid: sid,
                 reason: "stop/stall recovery — Phase B fresh-session bypass",
                 variant: .phaseBBypass
@@ -319,9 +320,8 @@ extension ThreadController {
         if pendingResumeOnFirstSend, let sid = sessionId {
             pendingResumeOnFirstSend = false
             try await spawnAndInitialize(skipNewSession: true)
-            guard let client else { return }
+            guard runtimes.acp != nil else { return }
             try await mintFreshNativeSession(
-                client: client,
                 kernelSid: sid,
                 reason: pendingContextPreamble != nil
                     ? "Phase B bypass — preamble carries prior context"
@@ -334,8 +334,10 @@ extension ThreadController {
         logLifecycle("ensureSession.newSession",
                      note: "no live client, no native id — minting fresh session via client.newSession")
         try await spawnAndInitialize(skipNewSession: false)
-        guard let client else { return }
-        let nid = try await client.newSession(cwd: project.path)
+        guard let runtime = runtimes.acp else { return }
+        let newSessionRequest = runtimeNewSessionRequest()
+        let newSessionResult = try await runtime.startNewSession(newSessionRequest)
+        let nid = newSessionResult.nativeSessionID
         // SOUL-SOUL_DESKTOP-161 follow-up: preserve the kernel sessionId
         // when this controller was rehydrated from a kernel ledger. The
         // kernel sid is the durable identity; the native sid is a
@@ -358,7 +360,7 @@ extension ThreadController {
             // pi-acp's value lives on as nativeSessionId.
             sessionId = Self.looksLikeUUID(nid) ? nid : UUID().uuidString.lowercased()
         }
-        nativeSessionId = nid
+        applyRuntimeNewSessionResult(newSessionResult)
         hasInitialized = true
         guard let kernelSid = sessionId else { return }
 
@@ -377,12 +379,15 @@ extension ThreadController {
         // resolve back to the freshly-minted provider UUID, the transcript
         // readers miss the new chat file, and the next reopen re-renders the
         // pre-resume ledger as if nothing happened.
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: kernelSid, event: [
-            "event": "NativeSessionID",
-            "provider": provider.rawValue,
-            "nativeId": nid,
-            "cwd": project.path,
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: kernelSid,
+            event: LedgerHookEvent.nativeSessionID(
+                provider: provider.rawValue,
+                nativeID: nid,
+                cwd: project.path
+            ).hookDictionary
+        )
         // SOUL-IDENTITY-SPLIT: same watcher init as the fresh-session path.
         ensureTranscriptWatcher()
     }
@@ -402,7 +407,6 @@ extension ThreadController {
     }
 
     private func mintFreshNativeSession(
-        client: ACPClient,
         kernelSid: String,
         reason: String,
         variant: MintReason = .staleResume
@@ -437,16 +441,22 @@ extension ThreadController {
         } else {
             systemPrompt = nil
         }
-        let nid = try await client.newSession(cwd: project.path, systemPrompt: systemPrompt)
-        nativeSessionId = nid
+        let newSessionRequest = runtimeNewSessionRequest(systemPrompt: systemPrompt)
+        guard let runtime = runtimes.acp else { return }
+        let newSessionResult = try await runtime.startNewSession(newSessionRequest)
+        let nid = newSessionResult.nativeSessionID
+        applyRuntimeNewSessionResult(newSessionResult)
         hasInitialized = true
         try? kernelSid.write(toFile: "/tmp/soul_last_session_id", atomically: true, encoding: .utf8)
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: kernelSid, event: [
-            "event": "NativeSessionID",
-            "native_session_id": nid,
-            "provider": provider.rawValue,
-            "timestamp": ISO8601DateFormatter().string(from: Date())
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: kernelSid,
+            event: LedgerHookEvent.nativeSessionIDRecovery(
+                provider: provider.rawValue,
+                nativeSessionID: nid,
+                timestamp: ISO8601DateFormatter().string(from: Date())
+            ).hookDictionary
+        )
         // SOUL-IDENTITY-SPLIT: start watching the encoded Claude dir for
         // post-/compact transcript rotations. No-op for non-Claude.
         ensureTranscriptWatcher()
@@ -457,33 +467,8 @@ extension ThreadController {
             try await spawnAndInitializeCodex()
             return
         }
-        if client != nil { return }
+        if await runtimes.acp?.isStarted == true { return }
 
-        guard var spawn = ACPProviderSpawn.resolve(provider, resumeSessionId: resumeSessionId) else {
-            throw NSError(domain: "Soul-Desktop", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "no spawn config for \(provider.label)"])
-        }
-
-        // Spawn-time bookkeeping (hydration log, initialize handshake,
-        // session/new ack) used to write status rows here. They were chatty
-        // and told the user nothing actionable when the path was healthy;
-        // failures surface as thrown errors or the agent-stderr popover.
-        // Keep the work, drop the rows.
-        let hydration = await SoulHydration.prepare(
-            provider: provider,
-            projectKey: project.id,
-            projectPath: project.path,
-            sessionId: id
-        )
-
-        var env = spawn.environment ?? [:]
-        for (k, v) in hydration.env { env[k] = v }
-        // SOUL_PROJECT contract: declare the desktop-selected project key
-        // explicitly so kernel hooks (middleware_runner, soul_trace_commit,
-        // pi soul-orchestrator) don't re-derive a different key from cwd
-        // and split the ledger across two ~/soul_registry/sessions/<key>/
-        // buckets for the same session UUID. See SOUL-PROJECT-KEY-CONTRACT-001.
-        env["SOUL_PROJECT"] = project.id
         // SOUL-FINALIZE-PARITY-001 + SOUL-SPLIT-LEDGER-001: forward the
         // desktop-resolved kernel sid so `soul finalize` AND every kernel
         // hook the agent fires (middleware_runner.py, tracer.py) writes
@@ -513,29 +498,25 @@ extension ThreadController {
             // SOUL_SESSION_ID.
             sessionId = Self.looksLikeUUID(id) ? id : UUID().uuidString.lowercased()
         }
-        if let sid = sessionId {
-            env["SOUL_SESSION_ID"] = sid
-        }
-        spawn.environment = env
-        spawn.cwd = project.path
+        let runtime = runtimes.acp ?? ACPProviderRuntimeAdapter(
+            provider: provider,
+            projectKey: project.id,
+            provisionalSessionID: id
+        )
+        runtimes.acp = runtime
+        let startResult = try await runtime.start(runtimeStartRequest(
+            skipNewSession: skipNewSession,
+            resumeSessionId: resumeSessionId
+        ))
 
-        let client = try ACPClient(spawn: spawn)
-        self.client = client
-        await client.setAutoAllow(true)
-        await client.setPermissionMode(permissionMode.agentPermissionMode)
-        try await client.start()
-
-        let stream = await client.events
+        guard let stream = await runtime.eventStream() else { return }
         eventTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { break }
                 await self.handle(event)
             }
         }
-
-        let initResp = try await client.initialize()
-        supportsLoadSession = initResp.agentCapabilities?.loadSession ?? false
-        supportsImageAttachments = initResp.agentCapabilities?.promptCapabilities?.image ?? false
+        applyRuntimeStartResult(startResult)
     }
 
 }

@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 extension ThreadController {
     /// Lazily create the transcript watcher for Claude sessions. Other
@@ -58,13 +59,16 @@ extension ThreadController {
         guard newId != oldId else { return }
         providerTranscriptId = newId
         transcriptWatcher?.setCurrentId(newId)
-        SoulRegistry.appendHook(projectKey: projectKey, sessionId: kernelSid, event: [
-            "event": "ProviderTranscriptID",
-            "transcript_id": newId,
-            "previous_transcript_id": oldId ?? "",
-            "provider": "claude",
-            "timestamp": ISO8601DateFormatter().string(from: Date())
-        ])
+        SoulRegistry.appendHook(
+            projectKey: projectKey,
+            sessionId: kernelSid,
+            event: LedgerHookEvent.providerTranscriptID(
+                transcriptID: newId,
+                previousTranscriptID: oldId ?? "",
+                provider: "claude",
+                timestamp: ISO8601DateFormatter().string(from: Date())
+            ).hookDictionary
+        )
         logLifecycle("transcript.rotation", note: "old=\(oldId ?? "nil") new=\(newId)")
     }
 }

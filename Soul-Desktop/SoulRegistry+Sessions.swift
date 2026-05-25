@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 /// Session enumeration + agent-loadability discovery lifted out of
 /// SoulRegistry. This is the heart of the "what does a chat row look
@@ -11,94 +12,8 @@ import Foundation
 /// Pure file shuffle, no behavior change. Refactor 16/N — agent
 /// ergonomics: shrink SoulRegistry.swift below the threshold where
 /// a coding agent can hold it in context.
-/// Decodable for the `soul session list -p <key> --json` payload. Mirrors
-/// the canonical kernel response (see ~/dotfiles/soul/kernel/commands/soul_session_view.py).
-/// SOUL-SOUL_DESKTOP-263.
-struct SessionListPayload: Decodable {
-    var project: String
-    var sessions: [Record]
-
-    struct Record: Decodable {
-        var session_id: String
-        var session_dir: String?
-        var hooks_path: String?
-        var hooks_mtime: Double?
-        var finalize_path: String?
-        var finalize_mtime: Double?
-        var has_finalize: Bool?
-        var event_count: Int?
-        var prompt_count: Int?
-        var delegation_event_count: Int?
-        var first_event_ts: String?
-        var last_event_ts: String?
-        var first_user_prompt: String?
-        /// SOUL-SOUL-090: kernel CLI returns up to 3 non-empty user prompts
-        /// so SessionTitleResolver can walk past skill expansions and find
-        /// a prose prompt to title with. Optional for back-compat with
-        /// older kernel CLI binaries that don't emit this field.
-        var first_user_prompts: [String]?
-        var title: String?
-        var worktree_path: String?
-        var session_start_ppid: Int?
-        var session_visibility: String?
-        var session_kind: String?
-        var has_desktop_signature: Bool?
-        var partial_capture: Bool?
-        /// SOUL-SOUL_DESKTOP-268: count of AfterAgent events with non-empty
-        /// content. Distinct from envelope count (`after_agent_count`, not
-        /// exposed) because writer-drop bugs emit empty envelopes — counting
-        /// them as "model responded" lets archive-worthy sessions slip past
-        /// the partial-capture detector. The desktop combines this with its
-        /// own `transcriptTurns` probe (provider chat file may rescue a
-        /// session whose hooks ledger is empty) to make the final visibility
-        /// call.
-        var after_agent_content_count: Int?
-        var native_session_ids: [String: String]?
-        var finalize: Finalize?
-
-        struct Finalize: Decodable {
-            var intent: String?
-            var summary: String?
-            var rationale: String?
-            var fixed: String?
-            var next_step: String?
-            var timestamp: String?
-            var source: String?
-            var status: String?
-            var worktree_path: String?
-
-            // Post-SOUL-093: kernel sometimes emits `fixed` as an array of
-            // strings (one issue ID per entry) instead of a single string.
-            // A strict String? decode used to throw `typeMismatch` for that
-            // shape and the failure bubbled all the way up — one bad row
-            // killed the whole project's session list and the sidebar
-            // rendered zero rows. Accept either shape: arrays get joined
-            // with newlines so downstream consumers see a single string.
-            enum CodingKeys: String, CodingKey {
-                case intent, summary, rationale, fixed, next_step
-                case timestamp, source, status, worktree_path
-            }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                intent = try c.decodeIfPresent(String.self, forKey: .intent)
-                summary = try c.decodeIfPresent(String.self, forKey: .summary)
-                rationale = try c.decodeIfPresent(String.self, forKey: .rationale)
-                next_step = try c.decodeIfPresent(String.self, forKey: .next_step)
-                timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
-                source = try c.decodeIfPresent(String.self, forKey: .source)
-                status = try c.decodeIfPresent(String.self, forKey: .status)
-                worktree_path = try c.decodeIfPresent(String.self, forKey: .worktree_path)
-                if let s = try? c.decodeIfPresent(String.self, forKey: .fixed) {
-                    fixed = s
-                } else if let arr = try? c.decodeIfPresent([String].self, forKey: .fixed) {
-                    fixed = arr.isEmpty ? nil : arr.joined(separator: "\n")
-                } else {
-                    fixed = nil
-                }
-            }
-        }
-    }
-}
+typealias SessionListPayload = LedgerSessionListPayload
+typealias SessionListRecord = LedgerSessionListRecord
 
 extension SoulRegistry {
 
@@ -112,7 +27,7 @@ extension SoulRegistry {
             return nil
         }
         do {
-            return try JSONDecoder().decode(SessionListPayload.self, from: data)
+            return try decodeLedgerSessionListPayload(from: data)
         } catch {
             // Decode failures here are how SOUL-093-class shape drifts surface:
             // a single schema mismatch nukes the whole project's payload, so
@@ -244,7 +159,7 @@ extension SoulRegistry {
         struct Ranked {
             var id: String
             var shape: Shape
-            var record: SessionListPayload.Record
+            var record: SessionListRecord
             var recency: Date
         }
 

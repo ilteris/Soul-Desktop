@@ -1,6 +1,7 @@
 import Foundation
 import SoulACP
 import SoulCore
+import SoulLedger
 
 /// Codex-provider event/RPC handling lifted out of ThreadController. The
 /// methods stay private to the extension so existing call sites in
@@ -14,33 +15,15 @@ import SoulCore
 extension ThreadController {
 
     func spawnAndInitializeCodex() async throws {
-        if codexClient != nil { return }
-        guard let spawn = ACPProviderSpawn.resolve(.codex) else {
+        let startRequest = runtimeStartRequest(skipNewSession: false)
+        if await runtimes.codex?.isStarted == true { return }
+        let runtime = runtimes.codex ?? CodexProviderRuntimeAdapter(projectKey: project.id)
+        runtimes.codex = runtime
+        let startResult = try await runtime.start(startRequest)
+        guard let stream = await runtime.eventStream() else {
             throw NSError(domain: "Soul-Desktop", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "codex binary not found on PATH"])
+                          userInfo: [NSLocalizedDescriptionKey: "codex event stream unavailable"])
         }
-        var enriched = spawn
-        var codexEnv = enriched.environment ?? [:]
-        // SOUL_PROJECT contract — see ACP spawn path above. Same rationale
-        // for codex: kernel hooks should write to the desktop-selected
-        // project bucket, not a cwd-derived one.
-        codexEnv["SOUL_PROJECT"] = project.id
-        // SOUL-FINALIZE-PARITY-001: same SOUL_SESSION_ID export as the ACP
-        // path so `soul finalize` from a codex bash tool call writes a JSON
-        // tagged with the desktop's session id. Codex resume isn't wired yet,
-        // so `sessionId` is nil at spawn — the env stays out and the composer
-        // expansion below carries the sid at /finalize time.
-        if let sid = sessionId {
-            codexEnv["SOUL_SESSION_ID"] = sid
-        }
-        enriched.environment = codexEnv
-        enriched.cwd = project.path
-
-        let client = try CodexClient(spawn: enriched)
-        self.codexClient = client
-        try await client.start()
-
-        let stream = await client.events
         eventTask = Task { [weak self] in
             for await event in stream {
                 guard let self else { break }
@@ -48,9 +31,7 @@ extension ThreadController {
             }
         }
 
-        _ = try await client.initializeAndAck()
-
-        let threadId = try await client.threadStart(cwd: project.path)
+        guard let threadId = startResult.nativeSessionID else { return }
         // Preserve the kernel sessionId when this thread was hydrated from
         // disk (sessionId already set to the original kernel UUID by
         // `hydrateFromDisk`). Without this guard, the freshly-minted codex
@@ -63,8 +44,8 @@ extension ThreadController {
             // be strict UUIDs; mint our own kernel sid in that case.
             sessionId = Self.looksLikeUUID(threadId) ? threadId : UUID().uuidString.lowercased()
         }
-        nativeSessionId = threadId
         hasInitialized = true
+        applyRuntimeStartResult(startResult)
 
         // Record a NativeSessionID hook so future reopens can identify this
         // session as codex via `SoulRegistry.findProvider`. Without it
@@ -72,35 +53,39 @@ extension ThreadController {
         // AppShell falls back to the active harness on click, mis-routing
         // codex rows when the harness is gemini/claude.
         if let sid = sessionId {
-            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-                "event": "NativeSessionID",
-                "provider": Provider.codex.rawValue,
-                "nativeId": threadId,
-                "cwd": project.path,
-            ])
+            SoulRegistry.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: LedgerHookEvent.nativeSessionID(
+                    provider: Provider.codex.rawValue,
+                    nativeID: threadId,
+                    cwd: project.path
+                ).hookDictionary
+            )
         }
     }
 
     /// Drive a single codex turn: send `text` via turn/start, then await
     /// the turn/completed notification (resumed by `handleCodex`). The
     /// streaming agent/tool events update `items` as they arrive.
-    func sendCodex(text: String) async throws {
+    func sendCodex(_ request: ProviderRuntimePromptRequest<ContentBlock>) async throws {
         // Use `nativeSessionId` (the codex-minted thread id) for the actual
         // RPC. `sessionId` is the kernel UUID and is preserved as the hooks
         // directory key — see `spawnAndInitializeCodex`. Sending the kernel
         // UUID to codex produces "thread not found" because codex never
         // started a thread with that id.
-        guard let client = codexClient, let tid = nativeSessionId ?? sessionId else {
+        guard let runtime = runtimes.codex, request.session.rpcSessionID != nil, request.canDispatch else {
             throw NSError(domain: "Soul-Desktop", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "codex client not initialized"])
         }
         codexItemMap.removeAll(keepingCapacity: true)
-        let turnId = try await client.turnStart(threadId: tid, text: text)
-        codexActiveTurnId = turnId
+        try await runtime.prompt(request)
+        codexActiveTurnId = await runtime.activeTurnID
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             codexTurnContinuation = cont
         }
         codexActiveTurnId = nil
+        await runtime.clearActiveTurn()
     }
 
     /// Translates codex notifications (item/started, item/agentMessage/delta,
@@ -127,106 +112,55 @@ extension ThreadController {
             // reasoning streams that we don't render yet but still indicate
             // forward motion.
             lastActivityAt = Date()
-            switch method {
-            case "item/started":
-                guard case .object(let p)? = params,
-                      case .object(let item)? = p["item"],
-                      case .string(let itemType)? = item["type"],
-                      case .string(let codexId)? = item["id"]
-                else { return }
+            switch CodexEventRenderingInput(method: method, params: params) {
+            case .itemStarted(let itemType, let codexId, let item):
                 appendCodexItem(itemType: itemType, codexId: codexId, item: item, terminal: false)
-            case "item/agentMessage/delta":
-                guard case .object(let p)? = params,
-                      case .string(let itemId)? = p["itemId"],
-                      case .string(let delta)? = p["delta"],
-                      let uuid = codexItemMap[itemId]
-                else { return }
+            case .agentMessageDelta(let itemId, let delta):
+                guard let uuid = codexItemMap[itemId] else { return }
                 if let idx = items.firstIndex(where: { $0.id == uuid }),
                    case .agentMessage(let id, let prior, _, let ts) = items[idx] {
                     items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
                 }
                 lastActivityAt = Date()
-            case "item/completed":
-                guard case .object(let p)? = params,
-                      case .object(let item)? = p["item"],
-                      case .string(let itemType)? = item["type"],
-                      case .string(let codexId)? = item["id"]
-                else { return }
+            case .itemCompleted(let itemType, let codexId, let item):
                 completeCodexItem(itemType: itemType, codexId: codexId, item: item)
-            case "turn/completed":
-                guard case .object(let p)? = params,
-                      case .object(let turn)? = p["turn"]
-                else { return }
+            case .turnCompleted(let turnId, let status, let errorMessage):
                 let turnIdMatches: Bool = {
-                    if case .string(let tid)? = turn["id"], let active = codexActiveTurnId {
-                        return tid == active
+                    if let turnId, let active = codexActiveTurnId {
+                        return turnId == active
                     }
                     return true
                 }()
                 guard turnIdMatches else { return }
                 if let cont = codexTurnContinuation {
                     codexTurnContinuation = nil
-                    if case .string(let status)? = turn["status"], status == "failed",
-                       case .object(let err)? = turn["error"],
-                       case .string(let msg)? = err["message"] {
+                    if status == "failed", let errorMessage {
                         cont.resume(throwing: NSError(domain: "Codex", code: 1,
-                                                      userInfo: [NSLocalizedDescriptionKey: msg]))
+                                                      userInfo: [NSLocalizedDescriptionKey: errorMessage]))
                     } else {
                         cont.resume(returning: ())
                     }
                 }
-            case "item/reasoning/textDelta",
-                 "item/reasoning/summaryTextDelta",
-                 "item/reasoning/summaryPartAdded":
+            case .reasoningDelta(let itemId, let delta):
                 // Codex's reasoning stream. Append each delta into the open
                 // agent-thought bubble so the user sees what the agent is
                 // reasoning through. Without this the `item/started` event
                 // creates an empty `Thinking…` card and the deltas vanish.
-                guard case .object(let p)? = params,
-                      case .string(let itemId)? = p["itemId"],
-                      let uuid = codexItemMap[itemId]
-                else { return }
-                // Codex reasoning streams come in three shapes:
-                //   - summaryTextDelta / textDelta:  {"delta": "<string>"}
-                //   - summaryPartAdded:              {"summaryPart": {"text": "<string>"}}
-                //   - any: pick first nested string we find
-                let delta: String = {
-                    if case .string(let s)? = p["delta"] { return s }
-                    if case .string(let s)? = p["text"] { return s }
-                    if case .object(let part)? = p["summaryPart"] {
-                        if case .string(let s)? = part["text"] { return s }
-                    }
-                    if case .object(let item)? = p["item"] {
-                        if case .string(let s)? = item["text"] { return s }
-                        if case .string(let s)? = item["content"] { return s }
-                    }
-                    return ""
-                }()
-                guard !delta.isEmpty else { return }
+                guard let uuid = codexItemMap[itemId] else { return }
                 if let idx = items.firstIndex(where: { $0.id == uuid }),
                    case .agentThought(let id, let prior, _, let ts) = items[idx] {
                     items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
                 }
-            case "item/commandExecution/outputDelta",
-                 "item/fileChange/outputDelta",
-                 "item/plan/delta":
+            case .outputDelta:
                 // Stream-level deltas for other item types — keep
                 // `lastActivityAt` fresh (already done above) and rely on
                 // `item/completed` to render the final state. Wiring
                 // per-row live streaming for these is a follow-up.
                 break
-            case "thread/tokenUsage/updated":
-                guard case .object(let p)? = params,
-                      case .object(let usage)? = p["tokenUsage"]
-                else { return }
-                if case .object(let last)? = usage["last"],
-                   case .int(let total)? = last["totalTokens"] {
-                    codexTokensUsed = total
-                }
-                if case .int(let window)? = usage["modelContextWindow"] {
-                    codexContextWindow = window
-                }
-            default:
+            case .tokenUsage(let lastTotalTokens, let modelContextWindow):
+                if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
+                if let modelContextWindow { codexContextWindow = modelContextWindow }
+            case .ignored:
                 break  // ignore lifecycle / mcp / remoteControl chatter
             }
         case .stderr(let line):
@@ -243,7 +177,7 @@ extension ThreadController {
 
     private func handleCodexRequest(id: JSONRPCID, method: String, params: JSONValue?) async {
         guard method == "item/commandExecution/requestApproval" else {
-            try? await codexClient?.respond(id: id, result: .null)
+            await runtimes.codex?.respond(id: id, result: .null)
             appendCodexRequestHook(
                 method: method,
                 params: params,
@@ -261,7 +195,7 @@ extension ThreadController {
         }()
         if case .object(let obj) = result,
            case .string("decline")? = obj["decision"] {
-            try? await codexClient?.respond(id: id, result: result)
+            await runtimes.codex?.respond(id: id, result: result)
             appendCodexRequestHook(
                 method: method,
                 params: params,
@@ -272,7 +206,7 @@ extension ThreadController {
             return
         }
 
-        try? await codexClient?.respond(id: id, result: result)
+        await runtimes.codex?.respond(id: id, result: result)
         appendCodexRequestHook(
             method: method,
             params: params,
@@ -302,16 +236,19 @@ extension ThreadController {
                 ? "Codex command approval handled"
                 : "Codex command approval handled: \(command)"
         }()
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-            "event": "CodexApproval",
-            "op": handled ? "APPROVAL" : "REQUEST",
-            "intent": intent,
-            "provider": Provider.codex.rawValue,
-            "method": method,
-            "decision": decisionText,
-            "command": command,
-            "permission_mode": permissionMode.rawValue,
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.codexApproval(
+                op: handled ? "APPROVAL" : "REQUEST",
+                intent: intent,
+                provider: Provider.codex.rawValue,
+                method: method,
+                decision: decisionText,
+                command: command,
+                permissionMode: permissionMode.rawValue
+            ).hookDictionary
+        )
     }
 
     /// Phase 3: translate a codex `item/started` payload into a ThreadItem.
@@ -648,16 +585,19 @@ extension ThreadController {
             tool = kind
             target = title
         }
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-            "event": "AfterTool",
-            "tool": tool,
-            "target": target,
-            "rationale": title,
-            "provider": Provider.codex.rawValue,
-            "codex_item_type": itemType,
-            "status": status,
-            "cwd": locationHint ?? project.path,
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.afterTool(
+                tool: tool,
+                target: target,
+                rationale: title,
+                provider: Provider.codex.rawValue,
+                codexItemType: itemType,
+                status: status,
+                cwd: locationHint ?? project.path
+            ).hookDictionary
+        )
     }
 
     /// Pull `field` out of a codex item object when it's a string.

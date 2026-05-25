@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 /// Stall and per-tool timeout watchdog for a live ThreadController turn.
 /// The controller owns UI-visible state, while this file owns polling,
@@ -61,13 +62,12 @@ extension ThreadController {
             ledger.appendHook(
                 projectKey: project.id,
                 sessionId: sessionId ?? id,
-                event: [
-                    "event": "StallDetected",
-                    "provider": provider.rawValue,
-                    "tool_kind": lastInProgressToolKind ?? "",
-                    "stalled_seconds": quiet,
-                    "threshold": budget,
-                ]
+                event: LedgerHookEvent.stallDetected(
+                    provider: provider.rawValue,
+                    toolKind: lastInProgressToolKind ?? "",
+                    stalledSeconds: quiet,
+                    threshold: budget
+                ).hookDictionary
             )
         }
 
@@ -176,13 +176,12 @@ extension ThreadController {
         ledger.appendHook(
             projectKey: project.id,
             sessionId: sessionId ?? id,
-            event: [
-                "event": "ToolCallSignpost",
-                "provider": provider.rawValue,
-                "tool_call_id": toolId,
-                "quiet_seconds": quietFor,
-                "threshold": threshold,
-            ]
+            event: LedgerHookEvent.toolCallSignpost(
+                provider: provider.rawValue,
+                toolCallID: toolId,
+                quietSeconds: quietFor,
+                threshold: threshold
+            ).hookDictionary
         )
     }
 
@@ -207,12 +206,11 @@ extension ThreadController {
         ledger.appendHook(
             projectKey: project.id,
             sessionId: sessionId ?? id,
-            event: [
-                "event": "SubagentLongRunning",
-                "provider": provider.rawValue,
-                "tool_call_id": toolId,
-                "quiet_seconds": quietFor,
-            ]
+            event: LedgerHookEvent.subagentLongRunning(
+                provider: provider.rawValue,
+                toolCallID: toolId,
+                quietSeconds: quietFor
+            ).hookDictionary
         )
     }
 
@@ -260,16 +258,15 @@ extension ThreadController {
         ledger.appendHook(
             projectKey: project.id,
             sessionId: sessionId ?? id,
-            event: [
-                "event": "ToolCallTimeout",
-                "provider": provider.rawValue,
-                "tool_call_id": toolId,
-                "tool_kind": kindForHook,
-                "tool_title": titleForHook,
-                "elapsed_seconds": elapsed,
-                "threshold": threshold,
-                "afterTool_in_ledger": afterToolInLedger,
-            ]
+            event: LedgerHookEvent.toolCallTimeout(
+                provider: provider.rawValue,
+                toolCallID: toolId,
+                toolKind: kindForHook,
+                toolTitle: titleForHook,
+                elapsedSeconds: elapsed,
+                threshold: threshold,
+                afterToolInLedger: afterToolInLedger
+            ).hookDictionary
         )
 
         items.append(.status(

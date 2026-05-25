@@ -1,5 +1,6 @@
 import Foundation
 import SoulACP
+import SoulLedger
 
 /// ACP `SessionUpdate` dispatch + per-update helpers, lifted out of
 /// ThreadController. The big `apply(_:)` switch and its accompanying
@@ -39,28 +40,27 @@ extension ThreadController {
         // rendered those items from the on-disk transcript, so re-applying
         // them here would double everything. Let only non-content updates
         // (availableCommandsUpdate populates the slash picker) through.
+        let input = ACPEventRenderingInput(update: update)
         if suppressLoadReplay {
-            if case .availableCommandsUpdate(let payload) = update {
+            if case .availableCommandsUpdate(let payload) = input {
                 updateCommands(payload)
             }
             return
         }
-        switch update {
-        case .agentMessageChunk(let block):
-            if case .text(let chunk) = block {
-                // SOUL-SOUL_DESKTOP-108: skip empty-text chunks so they don't
-                // ghost-append a bubble with no body. Most empty chunks come
-                // from non-text ACP content types the old decoder collapsed
-                // to "" — the new decoder produces visible surrogates, but
-                // legacy hooks.jsonl entries can still replay empty strings.
-                guard !chunk.isEmpty else { break }
-                if silentCapture != nil {
-                    silentCapture? += chunk
-                } else {
-                    appendAgentChunk(chunk)
-                }
+        switch input {
+        case .agentMessageChunk(let chunk):
+            // SOUL-SOUL_DESKTOP-108: skip empty-text chunks so they don't
+            // ghost-append a bubble with no body. Most empty chunks come
+            // from non-text ACP content types the old decoder collapsed
+            // to "" — the new decoder produces visible surrogates, but
+            // legacy hooks.jsonl entries can still replay empty strings.
+            guard !chunk.isEmpty else { break }
+            if silentCapture != nil {
+                silentCapture? += chunk
+            } else {
+                appendAgentChunk(chunk)
             }
-        case .agentThoughtChunk(let block):
+        case .agentThoughtChunk(let text):
             // Render the agent's reasoning stream so the user sees what's
             // happening during long turns instead of staring at a spinner.
             // Same coalescing pattern as agentMessageChunk: append to the
@@ -68,8 +68,7 @@ extension ThreadController {
             // agentMessageChunk (or tool call) closes the bubble by
             // resetting `openAgentThoughtId`.
             if silentCapture != nil { break }
-            if case .text(let text) = block,
-               !text.isEmpty {
+            if !text.isEmpty {
                 appendAgentThoughtChunk(text)
             }
         case .toolCall(let payload):
@@ -82,13 +81,12 @@ extension ThreadController {
             insertPlan(payload)
         case .availableCommandsUpdate(let payload):
             updateCommands(payload)
-        case .userMessageChunk(let block):
+        case .userMessageChunk(let text):
             // The agent replays prior user turns through this stream during
             // `session/load`. Each chunk is the full text of one turn (not a
             // partial stream). Closing the open agent bubble ensures turn
             // boundaries paint cleanly when several turns replay in sequence.
-            if case .text(let text) = block,
-               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 openAgentMessageId = nil
                 // Claude Code wraps locally-executed slash command output in
                 // `<local-command-*>` scaffolding tags before injecting them
@@ -928,22 +926,22 @@ extension ThreadController {
         // checked its own built-ins (fs/*, session/request_permission).
         // Anything here is an unknown provider request.
         // Respond with an error so the provider doesn't stall, and log it.
-        await client?.respondError(id: id, code: -32601, message: "method not implemented: \(method)")
+        await runtimes.acp?.respondError(id: id, code: -32601, message: "method not implemented: \(method)")
 
         let text = "■ ACP request ignored: \(method)"
         items.append(.status(id: UUID(), text: text))
 
         // Log to kernel hooks for -056 auditing
         if let sid = sessionId {
-            var hook: [String: Any] = [
-                "event": "ACPRequestIgnored",
-                "method": method,
-                "provider": provider.rawValue
-            ]
-            if let params {
-                hook["params"] = compactJSONString(params)
-            }
-            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: hook)
+            SoulRegistry.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: LedgerHookEvent.acpRequestIgnored(
+                    method: method,
+                    provider: provider.rawValue,
+                    params: params.map(compactJSONString)
+                ).hookDictionary
+            )
         }
     }
 

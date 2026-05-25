@@ -64,7 +64,6 @@ public struct LedgerSession: Codable, Hashable, Identifiable, Sendable {
     public var agentReplyMissing: Bool
     public var lastActivityAt: Date?
     public var startedAt: Date?
-    public var isWorking: Bool
     public var isStale: Bool
 
     public init(
@@ -93,7 +92,6 @@ public struct LedgerSession: Codable, Hashable, Identifiable, Sendable {
         agentReplyMissing: Bool = false,
         lastActivityAt: Date? = nil,
         startedAt: Date? = nil,
-        isWorking: Bool = false,
         isStale: Bool = false
     ) {
         self.id = id
@@ -121,7 +119,6 @@ public struct LedgerSession: Codable, Hashable, Identifiable, Sendable {
         self.agentReplyMissing = agentReplyMissing
         self.lastActivityAt = lastActivityAt
         self.startedAt = startedAt
-        self.isWorking = isWorking
         self.isStale = isStale
     }
 

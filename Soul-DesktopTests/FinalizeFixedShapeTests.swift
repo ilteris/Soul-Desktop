@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SoulLedger
 @testable import Soul_Desktop
 
 /// Regression lock for the SOUL-093-class bug where the kernel's Finalize

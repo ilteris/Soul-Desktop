@@ -17,131 +17,42 @@ enum ClaudeTranscriptReader {
     }
 
     private static func _transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
-        let encoded = encodeCwd(cwd)
-        let path = NSHomeDirectory() + "/.claude/projects/\(encoded)/\(sid).jsonl"
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
-
-        var items: [ThreadItem] = []
-        var pendingAgentText: (id: UUID, text: String, ts: Date)? = nil
-
-        // SOUL-SOUL_DESKTOP-161: stream lines instead of slurping the whole
-        // transcript. A 33h Claude session is ~10-20 MB JSONL today; if a
-        // future tool result balloons a single line, the per-line cap in
-        // `enumerateJSONLines` skips it instead of OOM-ing the parser.
-        enumerateJSONLines(atPath: path) { data in
-            guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return }
-
-            let type = rec["type"] as? String
-            let ts = parseTimestamp(rec["timestamp"] as? String) ?? Date.distantPast
-
-            switch type {
-            case "user":
-                // Flush any pending assistant text first.
-                flush(&items, pending: &pendingAgentText)
-
-                let msg = rec["message"] as? [String: Any]
-                let contentRaw: String = {
-                    if let s = msg?["content"] as? String { return s }
-                    if let blocks = msg?["content"] as? [[String: Any]] {
-                        return blocks.compactMap { $0["text"] as? String }.joined()
-                    }
-                    return ""
-                }()
-
-                if !contentRaw.isEmpty {
-                    // Run the shared `<local-command-*>` classifier first so
-                    // caveat/stdout scaffolding in stored transcripts renders
-                    // identically to the live ACP path (compact status row
-                    // for command output, dropped for pure caveat reminders).
-                    switch LocalCommandClassifier.classify(contentRaw) {
-                    case .skip:
-                        break
-                    case .status(let inner):
-                        items.append(.status(id: UUID(), text: inner))
-                    case .message(let cleaned):
-                        // Defensive: same auto-expansion strip the Gemini
-                        // reader uses. No-op for native Claude prompts —
-                        // Claude doesn't inline @path content. Covers the
-                        // case where a user pastes a previously-expanded
-                        // block from elsewhere into Claude.
-                        let stripped = GeminiTranscriptReader.stripGeminiReferencedFileBlock(cleaned)
-                        let content = sanitizeUserContent(stripped)
-                        if !content.isEmpty {
-                            items.append(.userMessage(id: UUID(), text: content, timestamp: ts))
-                        }
-                    }
-                }
-                // user records with list content are tool_results — skip; they're already
-                // implied by the preceding tool_use card and the agent's follow-up text.
-
-            case "assistant":
-                let msg = rec["message"] as? [String: Any]
-                guard let blocks = msg?["content"] as? [[String: Any]] else { return }
-
-                for blk in blocks {
-                    let kind = blk["type"] as? String
-                    switch kind {
-                    case "text":
-                        let text = (blk["text"] as? String) ?? ""
-                        if text.isEmpty { continue }
-                        if var pending = pendingAgentText {
-                            pending.text += text
-                            pendingAgentText = pending
-                        } else {
-                            pendingAgentText = (UUID(), text, ts)
-                        }
-
-                    case "tool_use":
-                        flush(&items, pending: &pendingAgentText)
-                        let name = (blk["name"] as? String) ?? "tool"
-                        let input = (blk["input"] as? [String: Any]) ?? [:]
-                        let (title, location) = describe(tool: name, input: input)
-                        let details: ToolCallDetails? = {
-                            if let oldS = input["old_string"] as? String,
-                               let newS = input["new_string"] as? String {
-                                return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS))
-                            }
-                            if let content = input["content"] as? String {
-                                return ToolCallDetails(kind: .write(content: content))
-                            }
-                            return nil
-                        }()
-                        items.append(.toolCall(
-                            id: UUID(),
-                            kind: name,
-                            title: title,
-                            status: "completed",
-                            locationHint: location,
-                            details: details
-                        ))
-
-                    case "thinking":
-                        // Skip — historical thinking blocks would clutter the view.
-                        continue
-
-                    default:
-                        continue
-                    }
-                }
-
-            default:
-                return
-            }
-        }
-
-        flush(&items, pending: &pendingAgentText)
+        guard let result = readClaudeTranscriptTurns(sessionId: sid, cwd: cwd) else { return nil }
+        let items = result.turns.compactMap(item)
         let deduped = dedupAdjacentToolCalls(items)
         return deduped.isEmpty ? nil : deduped
     }
 
     // MARK: - helpers
 
-    private static func flush(_ items: inout [ThreadItem],
-                              pending: inout (id: UUID, text: String, ts: Date)?) {
-        guard let p = pending else { return }
-        items.append(.agentMessage(id: p.id, text: p.text, complete: true, timestamp: p.ts))
-        pending = nil
+    private static func item(from turn: LedgerTranscriptTurn) -> ThreadItem? {
+        switch turn.content {
+        case .message(.user, let text, let ts):
+            switch LocalCommandClassifier.classify(text) {
+            case .skip:
+                return nil
+            case .status(let inner):
+                return .status(id: UUID(), text: inner)
+            case .message(let cleaned):
+                let stripped = GeminiTranscriptReader.stripGeminiReferencedFileBlock(cleaned)
+                let content = sanitizeUserContent(stripped)
+                return content.isEmpty ? nil : .userMessage(id: UUID(), text: content, timestamp: ts)
+            }
+        case .message(.assistant, let text, let ts):
+            return .agentMessage(id: UUID(), text: text, complete: true, timestamp: ts)
+        case .tool(let tool, _):
+            let (title, location) = describe(tool: tool.name, input: tool.arguments)
+            return .toolCall(
+                id: UUID(),
+                kind: tool.name,
+                title: title,
+                status: "completed",
+                locationHint: location,
+                details: details(from: tool)
+            )
+        case .thought, .status:
+            return nil
+        }
     }
 
     /// Slash-command invocations land in the transcript as scaffolded XML:
@@ -172,46 +83,40 @@ enum ClaudeTranscriptReader {
         return String(s[o.upperBound..<c.lowerBound])
     }
 
-    private static func encodeCwd(_ cwd: String) -> String {
-        // Claude's projects/ subdirectory uses "-" as the separator for the absolute path.
-        // /Users/ilteris/Code/Foo → -Users-ilteris-Code-Foo
-        let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
-        return trimmed.replacingOccurrences(of: "/", with: "-")
-    }
-
-    private static func parseTimestamp(_ s: String?) -> Date? {
-        guard let s, !s.isEmpty else { return nil }
-        let f1 = ISO8601DateFormatter()
-        f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f1.date(from: s) { return d }
-        let f2 = ISO8601DateFormatter()
-        f2.formatOptions = [.withInternetDateTime]
-        return f2.date(from: s)
-    }
-
-    private static func describe(tool name: String, input: [String: Any]) -> (title: String, location: String?) {
+    private static func describe(tool name: String, input: [String: LedgerJSONValue]) -> (title: String, location: String?) {
         // Best-effort summaries that match what the live ToolCallRow expects.
         switch name {
         case "Read", "Edit", "Write", "MultiEdit":
-            let path = (input["file_path"] as? String) ?? (input["path"] as? String) ?? name
+            let path = input["file_path"]?.stringValue ?? input["path"]?.stringValue ?? name
             return (path, path)
         case "Bash":
-            let cmd = (input["command"] as? String) ?? ""
-            let desc = (input["description"] as? String) ?? cmd
+            let cmd = input["command"]?.stringValue ?? ""
+            let desc = input["description"]?.stringValue ?? cmd
             return (desc.isEmpty ? cmd : desc, nil)
         case "Grep":
-            let pattern = (input["pattern"] as? String) ?? ""
-            let path = (input["path"] as? String)
+            let pattern = input["pattern"]?.stringValue ?? ""
+            let path = input["path"]?.stringValue
             return ("grep \"\(pattern)\"", path)
         case "Glob":
-            let pattern = (input["pattern"] as? String) ?? ""
+            let pattern = input["pattern"]?.stringValue ?? ""
             return (pattern, nil)
         default:
             // Generic fallback: first short string-valued key.
             let summary = input.values
-                .compactMap { $0 as? String }
+                .compactMap(\.stringValue)
                 .first(where: { !$0.isEmpty }) ?? name
             return (summary.count > 80 ? String(summary.prefix(80)) + "…" : summary, nil)
         }
+    }
+
+    private static func details(from tool: LedgerToolRecord) -> ToolCallDetails? {
+        if let oldS = tool.string("old_string"),
+           let newS = tool.string("new_string") {
+            return ToolCallDetails(kind: .edit(oldString: oldS, newString: newS))
+        }
+        if let content = tool.string("content") {
+            return ToolCallDetails(kind: .write(content: content))
+        }
+        return nil
     }
 }

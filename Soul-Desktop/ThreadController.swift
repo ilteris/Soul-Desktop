@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import SoulACP
+import SoulLedger
 
 struct PlanEntry: Hashable {
     let content: String
@@ -155,8 +156,8 @@ final class ThreadController {
     var permissionMode: PermissionMode = .fullAccess {
         didSet {
             let mode = permissionMode
-            let c = client
-            Task { await c?.setPermissionMode(mode.agentPermissionMode) }
+            let runtime = runtimes.acp
+            Task { await runtime?.setPermissionMode(mode.agentPermissionMode) }
         }
     }
     /// Rolling capture of the agent's stderr + protocol-level errors. Bounded
@@ -543,13 +544,9 @@ final class ThreadController {
         return out
     }
 
-    var client: ACPClient?
-    /// Codex app-server client. Spawned alongside `client` when provider ==
-    /// .codex; the two clients never coexist on the same thread. Codex
-    /// speaks its own JSON-RPC dialect (thread/start, turn/start, item/* and
-    /// turn/* notifications) so its event loop and turn semantics live on a
-    /// parallel path from ACPClient's session/prompt flow.
-    var codexClient: CodexClient?
+    /// Provider runtime adapter state. ThreadController owns app-facing state;
+    /// concrete provider process lifecycle lives behind these runtime adapters.
+    var runtimes = ThreadProviderRuntimeStore()
     /// Set while a codex turn is in flight. The codex event loop resumes
     /// this continuation when it observes `turn/completed`, letting `send`
     /// stay awaitable on a single turn boundary.
@@ -630,12 +627,15 @@ final class ThreadController {
         // guarantees the marker lands at the same moment the controller
         // takes ownership, so any crash thereafter still leaves behind proof
         // the session was desktop-driven.
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-            "event": "SessionOwner",
-            "writer": "soul-desktop",
-            "pid": Int(ProcessInfo.processInfo.processIdentifier),
-            "provider": provider.rawValue,
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.sessionOwner(
+                writer: "soul-desktop",
+                pid: Int(ProcessInfo.processInfo.processIdentifier),
+                provider: provider.rawValue
+            ).hookDictionary
+        )
     }
 
     /// SOUL-SOUL_DESKTOP-075 (b1): watch the project's sessions dir for new

@@ -1,5 +1,7 @@
 import Foundation
 import SoulACP
+import SoulCore
+import SoulLedger
 
 /// Queue and interruption helpers for ThreadController turn flow.
 /// Keeps prompt parking, bubble relocation, steer, and process-reset logic
@@ -7,11 +9,20 @@ import SoulACP
 extension ThreadController {
 
 func drainQueuedPromptAfterTurn() {
-        guard !queuedPrompts.isEmpty else { return }
-        let next = queuedPrompts.removeFirst()
+        guard let next = popNextQueuedPromptForDispatch() else { return }
         Task { [weak self] in
-            await self?.send(display: next.display, agent: next.agent)
+            await self?.send(display: next.display, agent: next.agent, extraBlocks: next.extraBlocks)
         }
+    }
+
+    func popNextQueuedPromptForDispatch() -> QueuedPrompt? {
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        guard queueState.claimQueuedPromptForDispatch() else { return nil }
+        return queuedPrompts.removeFirst()
     }
 
     func markInFlightToolCallsStopped() {
@@ -29,14 +40,7 @@ func drainQueuedPromptAfterTurn() {
         suppressNextInterruptedTurnError = true
         eventTask?.cancel()
         eventTask = nil
-        if let client {
-            await client.stop()
-            self.client = nil
-        }
-        if let codexClient {
-            await codexClient.stop()
-            self.codexClient = nil
-        }
+        await runtimes.stopAll()
         if let cont = codexTurnContinuation {
             codexTurnContinuation = nil
             cont.resume(throwing: NSError(
@@ -55,18 +59,17 @@ func drainQueuedPromptAfterTurn() {
     }
 
     func cancelActiveProviderTurn() async {
+        let cancelRequest = ProviderRuntimeCancelRequest(
+            session: runtimeSessionSnapshot(),
+            activeTurnID: codexActiveTurnId
+        )
         if provider == .codex {
-            if let codex = codexClient,
-               let tid = nativeSessionId ?? sessionId,
-               let turnId = codexActiveTurnId {
-                try? await codex.turnInterrupt(threadId: tid, turnId: turnId)
-            }
+            await runtimes.codex?.cancel(cancelRequest)
             return
         }
 
-        if let client, let sid = sessionId {
-            let nid = nativeSessionId ?? sid
-            try? await client.cancel(sessionId: nid)
+        if cancelRequest.session.rpcSessionID != nil {
+            await runtimes.acp?.cancel(cancelRequest)
         }
     }
 
@@ -108,23 +111,37 @@ func drainQueuedPromptAfterTurn() {
     /// The teardown is appropriate for Stop (user wants out) and for
     /// recoverStalledTurn (agent is unresponsive). Steer is neither.
     func steerToNextQueued() async {
-        guard isWorking, !queuedPrompts.isEmpty else { return }
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        guard queueState.requestSteerToNextQueuedPrompt() else { return }
         suppressNextInterruptedTurnError = true
-        steerPending = true
+        steerPending = queueState.steerPending
         await cancelActiveProviderTurn()
         markInFlightToolCallsStopped()
-        ledger.appendHook(projectKey: project.id, sessionId: sessionId ?? id, event: [
-            "event": "TurnSteered",
-            "provider": provider.rawValue,
-            "queued_count": queuedPrompts.count,
-        ])
+        ledger.appendHook(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            event: LedgerHookEvent.turnSteered(
+                provider: provider.rawValue,
+                queuedCount: queuedPrompts.count
+            ).hookDictionary
+        )
     }
 
     /// Drop any queued-but-not-yet-sent prompts. Wired into `cancel()` and
     /// surfaced via a clear-X on the queue chip in the composer.
     func clearQueue() {
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        queueState.clearQueuedPrompts()
         queuedPrompts.removeAll()
-        steerPending = false
+        steerPending = queueState.steerPending
     }
 
     /// SOUL-SOUL_DESKTOP-199: edit a queued (not-yet-dispatched) user prompt
@@ -139,7 +156,15 @@ func drainQueuedPromptAfterTurn() {
         guard !trimmed.isEmpty else { return false }
         guard let qIdx = queuedPrompts.firstIndex(where: { $0.itemId == itemId }) else { return false }
         let original = queuedPrompts[qIdx]
-        queuedPrompts[qIdx] = QueuedPrompt(itemId: original.itemId, display: trimmed, agent: trimmed)
+        queuedPrompts[qIdx] = QueuedPrompt(
+            itemId: original.itemId,
+            display: trimmed,
+            agent: trimmed,
+            extraBlocks: original.extraBlocks,
+            ledgerEvent: original.ledgerEvent,
+            sourceProvider: original.sourceProvider,
+            targetProvider: original.targetProvider
+        )
         if let iIdx = items.firstIndex(where: { $0.id == itemId }),
            case .userMessage(let id, _, let ts) = items[iIdx] {
             items[iIdx] = .userMessage(id: id, text: trimmed, timestamp: ts)

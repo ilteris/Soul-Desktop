@@ -1,5 +1,7 @@
 import Foundation
 import SoulACP
+import SoulCore
+import SoulLedger
 
 /// Generic ACP event dispatch + the auto-titling subsystem, lifted out
 /// of ThreadController. `handle(_:)` is the per-event router consumed by
@@ -20,12 +22,14 @@ extension ThreadController {
     /// the accumulated string once the prompt resolves. Streaming routing is
     /// gated by `silentCapture` over in `apply(_:)`.
     private func sendSilent(_ text: String) async -> String? {
-        guard let client, let sid = sessionId else { return nil }
-        let nid = nativeSessionId ?? sid
+        guard sessionId != nil else { return nil }
         silentCapture = ""
         defer { silentCapture = nil }
         do {
-            _ = try await client.prompt(sessionId: nid, text: text)
+            try await runtimes.acp?.prompt(ProviderRuntimePromptRequest<ContentBlock>(
+                session: runtimeSessionSnapshot(),
+                text: text
+            ))
         } catch {
             print("[silent-prompt] failed: \(error)")
             return nil
@@ -86,11 +90,11 @@ extension ThreadController {
         // Persist so the disk-driven sidebar surfaces it on the next scan,
         // and so finalize/replay anchor on the same title the canvas shows.
         // `source: "llm"` so a future user-rename path can win on precedence.
-        SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
-            "event": "Title",
-            "text": title,
-            "source": "llm",
-        ])
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.title(text: title, source: "llm").hookDictionary
+        )
     }
 
     /// Run `claude -p` with a title-generation prompt that embeds the first

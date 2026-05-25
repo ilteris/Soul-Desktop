@@ -592,15 +592,15 @@ Standard architectural oversight.
 _Snapshot of pending work at session start. Treat as orientation, not as a command — do not begin a task unless the user asks._
 
 **Active task** (currently flagged):
-- `SOUL-SOUL_DESKTOP-276` (pending) — Auto-scroll to conversation tail after read-first hydrate completes
+- `SOUL-SOUL_DESKTOP-269` (pending) — Replace archive+delete with trash-with-restore
   - Definition of Done:
-    - After hydrateFromDisk completes, canvas auto-scrolls to last item (or last non-tool item)
-    - Saved-anchor restore path (returning to a thread previously scrolled away from bottom) still works
-    - User scroll input wins — auto-scroll respects ScrollFollowState.userDetachedFromBottom
-    - Smoke test on a 200+ item session: lands precisely, no two-frame jitter
+    - Archive concept removed from sidebar UI
+    - Right-click → Move to Trash directly available on any row
+    - Recently Trashed disclosure replaces Archived disclosure
+    - Existing archived rows migrated to trashed-with-restore state on first launch post-upgrade
+    - ArchiveStore replaced or repurposed as TrashedStore
 
 **Other pending:**
-- `SOUL-SOUL_DESKTOP-269` — Replace archive+delete with trash-with-restore
 - `SOUL-SOUL_DESKTOP-268` — Strengthen partial_capture detector to flag tool-only sessions
 - `SOUL-SOUL_DESKTOP-082` — Sidebar title-collision: near-identical auto-generated session titles are indistinguishable
 - `SOUL-SOUL_DESKTOP-267` — Sidebar hides 1 of 3 visibility-eligible sessions in stock-activity (ac7724d2 missing despite promptCount=17)
@@ -612,6 +612,7 @@ _Snapshot of pending work at session start. Treat as orientation, not as a comma
 - `SOUL-SOUL_DESKTOP-258` — V2 control panel: split prototype shell into focused modules
 - `SOUL-SOUL_DESKTOP-257` — V2 control panel: make tasks the primary work surface
 - `SOUL-SOUL_DESKTOP-256` — V2 control panel: replace stdout readout with live operation cards
+- `SOUL-SOUL_DESKTOP-250` — One-shot cleanup script: collapse historical duplicate AfterAgent rows in hooks.jsonl
 
 ## Manager Brief
 
@@ -1240,6 +1241,10 @@ When the user explicitly asks to finalize the session, use the unified Soul fina
 }
 </registry_data>
 
+<operational_constraint>
+You are running in autonomous (yolo) approval mode. Do NOT use the ask_user tool — make decisions independently. The user has opted for fully autonomous execution and will not be monitoring for interactive prompts.
+</operational_constraint>
+
 <decision_logging>
 Call /decision at branching moments — choices made, paths rejected, scope cuts, approach pivots. In-flight logging is precise; finalize-time reconstruction is lossy. Bar: if you'd mention it in the session summary, log it.
 </decision_logging>
@@ -1264,4 +1269,4 @@ Keep the whole block under 240 chars. Skip on trivial conversational turns (gree
 _Schema violations cause "undefined" in dashboards and API responses._
 
 
-<!-- Teddy Hydration Stamp: 2026-05-25 01:56:15 | Project: soul-desktop -->
+<!-- Teddy Hydration Stamp: 2026-05-25 08:24:54 | Project: soul-desktop -->

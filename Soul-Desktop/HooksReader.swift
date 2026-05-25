@@ -274,24 +274,13 @@ enum HooksReader {
         let path = SoulRegistry.hooksPath(projectKey: projectKey, sessionId: sessionId)
         guard FileManager.default.fileExists(atPath: path) else { return [] }
 
-        let records = readHookRecords(atPath: path)
-
-        var completedDelegations: [String: LedgerDelegationCompletedPayload] = [:]
-        for record in records {
-            switch record.payload {
-            case .delegationCompleted(let payload), .delegationFailed(let payload):
-                guard !payload.delegationId.isEmpty else { continue }
-                completedDelegations[payload.delegationId] = payload
-            default:
-                continue
-            }
-        }
+        let records = readLedgerReplayRecords(atPath: path)
 
         var out: [ReplayEvent] = []
         for record in records {
             let ts = record.timestamp
 
-            switch record.payload {
+            switch record.kind {
             case .afterTool(let payload):
                 if let item = toolItem(from: payload) {
                     let target = payload.target.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -348,20 +337,16 @@ enum HooksReader {
                         )
                     ))
                 }
-            case .delegationStarted(let payload):
-                if let item = delegationItem(from: payload, completed: completedDelegations[payload.delegationId]) {
+            case .delegationStarted(let payload, let completed):
+                if let item = delegationItem(from: payload, completed: completed) {
                     out.append(ReplayEvent(id: UUID(), timestamp: ts, item: item))
                 }
-            case .delegationCompleted, .delegationFailed:
-                continue
             case .codexApproval(let payload):
                 out.append(ReplayEvent(
                     id: UUID(),
                     timestamp: ts,
                     item: .status(id: UUID(), text: "⌁ \(payload.op) — \(payload.intent)")
                 ))
-            case .metadata:
-                continue   // metadata / linkage rows, skip from the timeline
             case .decision(let payload):
                 // Decision events (op/intent/target) and unknowns — render as a
                 // status row so the timeline shows them but they don't dominate.
@@ -371,8 +356,6 @@ enum HooksReader {
                     timestamp: ts,
                     item: .status(id: UUID(), text: text)
                 ))
-            case .unknown:
-                continue
             }
         }
         return out
@@ -467,42 +450,5 @@ enum HooksReader {
             }
             return nil
         }
-    }
-
-    // MARK: - helpers
-
-    /// Two timestamp dialects collide here:
-    ///   - Claude transcript: "2026-05-05T14:25:58.912Z"           (UTC, Z-suffixed)
-    ///   - hooks.jsonl:        "2026-05-05T10:26:05.386439"        (naive local)
-    /// We must detect which kind it is before parsing — treating naive as UTC
-    /// shifts hooks events by the local offset (4h in May/EDT) and breaks the
-    /// merge sort completely.
-    private static func parseTimestamp(_ s: String?) -> Date? {
-        guard let s, !s.isEmpty else { return nil }
-        let hasTZ = s.hasSuffix("Z")
-            || s.range(of: "[+-]\\d{2}:?\\d{2}$", options: .regularExpression) != nil
-
-        // Strip fractional seconds — DateFormatter handles 3-digit %SSS, not 6.
-        // Slice [start, dot) + [tz, end).
-        let normalized: String = {
-            guard let dot = s.firstIndex(of: ".") else { return s }
-            let afterDot = s[dot...]
-            // Find where the fractional part ends (any of Z, +, -)
-            let tz = afterDot.firstIndex(where: { $0 == "Z" || $0 == "+" || $0 == "-" })
-            return String(s[..<dot]) + (tz.map { String(s[$0...]) } ?? "")
-        }()
-
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.timeZone = hasTZ ? TimeZone(identifier: "UTC")! : TimeZone.current
-        // Try a few common shapes:
-        for pattern in [
-            hasTZ ? "yyyy-MM-dd'T'HH:mm:ssZ" : "yyyy-MM-dd'T'HH:mm:ss",
-            hasTZ ? "yyyy-MM-dd'T'HH:mm:ssXXX" : "yyyy-MM-dd'T'HH:mm:ss",
-        ] {
-            fmt.dateFormat = pattern
-            if let d = fmt.date(from: normalized) { return d }
-        }
-        return nil
     }
 }

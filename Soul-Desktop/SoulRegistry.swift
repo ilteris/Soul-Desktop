@@ -1,4 +1,5 @@
 import Foundation
+import SoulLedger
 
 struct SoulProject: Identifiable, Hashable {
     var id: String                 // project key, e.g. "soul", "bifrost"
@@ -932,11 +933,11 @@ enum SoulRegistry {
     /// (executable missing, non-zero exit, decode error) — callers degrade
     /// individually rather than treating CLI failure as "session has no
     /// title", which would mis-render the canvas.
-    static func sessionShow(projectKey: String, sessionId: String) -> SessionListPayload.Record? {
+    static func sessionShow(projectKey: String, sessionId: String) -> SessionListRecord? {
         guard let data = SoulCLI.runSync(["session", "show", sessionId, "-p", projectKey, "--json"]) else {
             return nil
         }
-        return try? JSONDecoder().decode(SessionListPayload.Record.self, from: data)
+        return try? decodeLedgerSessionListRecord(from: data)
     }
 
     static func findNativeSessionID(projectKey: String, sessionId: String, provider: String? = nil) -> String? {

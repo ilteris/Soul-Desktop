@@ -32,6 +32,11 @@ let package = Package(
             path: "Tests/SoulACPTests"
         ),
         .testTarget(
+            name: "SoulCoreTests",
+            dependencies: ["SoulCore"],
+            path: "Tests/SoulCoreTests"
+        ),
+        .testTarget(
             name: "SoulLedgerTests",
             dependencies: ["SoulLedger"],
             path: "Tests/SoulLedgerTests"
