@@ -104,8 +104,8 @@ extension SidebarView {
     /// already carries `substantive`/`loadable`/`replayable` flags so the
     /// sidebar doesn't have to re-check disk.
     ///
-    /// Single-pass project scan. The kernel's `readHooksMetadata` is a
-    /// binary-needle + bounded-JSON walk that finishes a couple-hundred-
+    /// Single-pass project scan. The kernel CLI `soul session list --json`
+    /// (called from `SoulRegistry.allSessions`) finishes a couple-hundred-
     /// session project in low-millisecond range, so the old "Stage 1: 20
     /// rows, Stage 2: full list" split (-145 / -229) is no longer needed.
     /// One scan → one assignment → one badge recompute.
