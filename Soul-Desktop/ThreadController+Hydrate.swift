@@ -94,7 +94,28 @@ extension ThreadController {
                     r.history = ClaudeTranscriptReader.transcript(forSession: lookupId, cwd: proj.path)
                 }
             case .geminiCLI:
-                r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
+                // SOUL-SOUL_DESKTOP-273: same SOUL-LEDGER-FIRST rationale
+                // as Claude above. Gemini-CLI cold-spawns mint a fresh
+                // NativeSessionID per relaunch; each spawn writes a new
+                // chat file with prior context flattened into a single
+                // <prior_session_context> blob, then accretes new turns.
+                // findNativeSessionID returns the most-recent native UUID
+                // — which may be a 400KB+ file with zero structured
+                // user turns (everything collapsed into the preamble).
+                // The hasUser/hasAgent guard at line 128 doesn't catch
+                // it because the file is non-empty, just content-free.
+                // Trust the kernel ledger when it has both kinds; fall
+                // back to GeminiTranscriptReader only when the ledger
+                // is partial (legacy sessions hit by SOUL-247 / SOUL-254
+                // payload-drop classes).
+                let ledger = HooksReader.events(forSession: sid, project: proj).map { $0.item }
+                let hasUser = ledger.contains { if case .userMessage = $0 { return true } else { return false } }
+                let hasAgent = ledger.contains { if case .agentMessage = $0 { return true } else { return false } }
+                if hasUser && hasAgent {
+                    r.history = ledger
+                } else {
+                    r.history = GeminiTranscriptReader.transcript(forSession: lookupId, projectKey: proj.id)
+                }
             case .pi:
                 // Try pi-acp's own chat file first (SOUL-SOUL_DESKTOP-140).
                 // Matches the Claude/Gemini happy path: rich content from
