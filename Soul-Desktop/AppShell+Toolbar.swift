@@ -216,7 +216,7 @@ struct HarnessPicker: View {
                 } label: {
                     VStack(alignment: .leading) {
                         HStack {
-                            ProviderGlyph(provider: p)
+                            CompactProviderGlyph(provider: p)
                             Text(p.label)
                             if selection == p { Image(systemName: "checkmark") }
                         }
@@ -226,7 +226,7 @@ struct HarnessPicker: View {
             }
         } label: {
             HStack(spacing: 4) {
-                ProviderGlyph(provider: selection)
+                CompactProviderGlyph(provider: selection)
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
                     .font(SoulFont.ui(13))

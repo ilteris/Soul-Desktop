@@ -387,7 +387,7 @@ struct AppShellV2: View {
                         selectedProvider = provider
                     } label: {
                         HStack {
-                            ProviderGlyph(provider: provider)
+                            CompactProviderGlyph(provider: provider)
                             Text(provider.label)
                             if provider == selectedProvider {
                                 Image(systemName: "checkmark")
@@ -397,7 +397,7 @@ struct AppShellV2: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    ProviderGlyph(provider: selectedProvider, size: 12, weight: .medium)
+                    CompactProviderGlyph(provider: selectedProvider)
                     Text(selectedProvider.label)
                         .font(SoulFont.ui(13, weight: .medium))
                     Image(systemName: "chevron.down")
@@ -910,7 +910,7 @@ struct AppShellV2: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        ProviderGlyph(provider: selectedProvider, size: 11, weight: .medium)
+                        CompactProviderGlyph(provider: selectedProvider)
                         Text(selectedProvider.label)
                             .font(SoulFont.ui(11, weight: .medium))
                     }
@@ -1016,7 +1016,7 @@ struct AppShellV2: View {
             }
         } label: {
             HStack(spacing: 7) {
-                ProviderGlyph(provider: selectedProvider, size: 12, weight: .medium)
+                CompactProviderGlyph(provider: selectedProvider)
                 Text(selectedProvider.label)
                     .font(SoulFont.ui(12, weight: .medium))
                     .lineLimit(1)

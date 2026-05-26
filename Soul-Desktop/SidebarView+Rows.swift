@@ -601,14 +601,10 @@ private struct LiveSessionRow: View {
 /// Either spelling normalizes to the same SF Symbol, so a row's icon stays
 /// stable across its lifecycle (finalize → resume → re-finalize).
 enum ProviderIcon {
-    static let claudeAssetName = "ClaudeIcon"
-    static let codexAssetName = "CodexIcon"
-    static let assetVisualScale: CGFloat = 0.82
-
-    static func assetName(for raw: String?) -> String? {
+    static func customSymbolName(for raw: String?) -> String? {
         switch raw {
-        case "claude": return claudeAssetName
-        case "codex":  return codexAssetName
+        case "claude": return "claude"
+        case "codex":  return "codex"
         default:       return nil
         }
     }
@@ -629,24 +625,24 @@ struct ProviderIconView: View {
     let raw: String?
     var size: CGFloat = SoulMetric.icon
     var weight: Font.Weight = .regular
+    var compact: Bool = false
 
     var body: some View {
-        Group {
-            if let assetName = ProviderIcon.assetName(for: raw) {
-                Image(assetName)
-                    .resizable()
-                    .renderingMode(.template)
-                    .scaledToFit()
-                    .frame(
-                        width: size * ProviderIcon.assetVisualScale,
-                        height: size * ProviderIcon.assetVisualScale
-                    )
+        ZStack {
+            if let symbolName = ProviderIcon.customSymbolName(for: raw) {
+                Image(symbolName)
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: compact ? size - 1 : size, weight: weight))
                     .frame(width: size, height: size)
             } else {
                 Image(systemName: ProviderIcon.symbol(for: raw))
-                    .font(.system(size: size, weight: weight))
+                    .font(.system(size: compact ? size - 1 : size, weight: weight))
+                    .frame(width: size, height: size)
             }
         }
+        .frame(width: size, height: size)
+        .clipped()
+        .fixedSize()
         .accessibilityHidden(true)
     }
 }
@@ -657,7 +653,16 @@ struct ProviderGlyph: View {
     var weight: Font.Weight = .regular
 
     var body: some View {
-        ProviderIconView(raw: provider.rawValue, size: size, weight: weight)
+        ProviderIconView(raw: provider.rawValue, size: size, weight: weight, compact: false)
+    }
+}
+
+struct CompactProviderGlyph: View {
+    let provider: Provider
+    var size: CGFloat = 11
+
+    var body: some View {
+        ProviderIconView(raw: provider.rawValue, size: size, weight: .regular, compact: true)
     }
 }
 
