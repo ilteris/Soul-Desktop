@@ -365,7 +365,8 @@ struct UserMessageRow: View {
                         CollapsibleBubbleBody(
                             text: remaining,
                             isHistorical: isHistorical,
-                            mutedFg: mutedFg
+                            mutedFg: mutedFg,
+                            compactMarkdown: true
                         )
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -387,7 +388,8 @@ struct UserMessageRow: View {
                 CollapsibleBubbleBody(
                     text: text,
                     isHistorical: isHistorical,
-                    mutedFg: mutedFg
+                    mutedFg: mutedFg,
+                    compactMarkdown: true
                 )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -421,6 +423,11 @@ struct CollapsibleBubbleBody: View {
     let text: String
     let isHistorical: Bool
     let mutedFg: Color
+    /// User prompt bubbles are containers inside the conversation, not
+    /// document surfaces. Keep their markdown hierarchy compact so pasted
+    /// scaffolding ("Files mentioned by the user", request headers, paths)
+    /// does not visually overpower surrounding agent prose.
+    var compactMarkdown: Bool = false
     /// Initial visible-line cap. User prompts collapse aggressively (5);
     /// agent replies only collapse when abnormally large (200) so normal
     /// reading flow isn't interrupted.
@@ -452,6 +459,12 @@ struct CollapsibleBubbleBody: View {
         return VStack(alignment: .leading, spacing: 6) {
             MarkdownView(
                 text: visibleText,
+                codeFont: compactMarkdown ? SoulFont.code(12, weight: .regular) : SoulType.code,
+                bodyFont: compactMarkdown ? SoulFont.ui(13, weight: .regular) : SoulType.body,
+                h1Font: compactMarkdown ? SoulFont.ui(15, weight: .semibold) : SoulType.h1,
+                h2Font: compactMarkdown ? SoulFont.ui(14, weight: .semibold) : SoulType.h2,
+                h3Font: compactMarkdown ? SoulFont.ui(13, weight: .semibold) : SoulType.h3,
+                h4Font: compactMarkdown ? SoulFont.ui(13, weight: .semibold) : SoulType.h4,
                 headerColor: isHistorical ? mutedFg : SoulColor.fg,
                 bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                 codeColor: isHistorical ? mutedFg : SoulColor.fg

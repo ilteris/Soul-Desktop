@@ -13,6 +13,10 @@ struct MarkdownView: View, Equatable {
     let text: String
     var codeFont: Font = SoulType.code
     var bodyFont: Font = SoulType.body
+    var h1Font: Font = SoulType.h1
+    var h2Font: Font = SoulType.h2
+    var h3Font: Font = SoulType.h3
+    var h4Font: Font = SoulType.h4
     var headerColor: Color = SoulColor.fg
     var bodyColor: Color = SoulColor.fg
     var codeColor: Color = SoulColor.fg
@@ -30,6 +34,10 @@ struct MarkdownView: View, Equatable {
         lhs.text == rhs.text
             && lhs.codeFont == rhs.codeFont
             && lhs.bodyFont == rhs.bodyFont
+            && lhs.h1Font == rhs.h1Font
+            && lhs.h2Font == rhs.h2Font
+            && lhs.h3Font == rhs.h3Font
+            && lhs.h4Font == rhs.h4Font
             && lhs.headerColor == rhs.headerColor
             && lhs.bodyColor == rhs.bodyColor
             && lhs.codeColor == rhs.codeColor
@@ -558,10 +566,10 @@ struct MarkdownView: View, Equatable {
 
     private func headingFont(_ level: Int) -> Font {
         switch level {
-        case 1: return SoulType.h1
-        case 2: return SoulType.h2
-        case 3: return SoulType.h3
-        default: return SoulType.h4
+        case 1: return h1Font
+        case 2: return h2Font
+        case 3: return h3Font
+        default: return h4Font
         }
     }
 }
