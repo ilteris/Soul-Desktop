@@ -90,16 +90,6 @@ struct ChatRow: View {
                             )
                             .help(taskHelpText)
                     }
-                    if let slashBadgeText {
-                        Text(slashBadgeText)
-                            .font(SoulFont.ui(9, weight: .medium))
-                            .foregroundStyle(SoulColor.fgSubtle)
-                            .lineLimit(1)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(SoulColor.surface.opacity(0.75), in: Capsule())
-                            .help(slashHelpText)
-                    }
                 }
                 Text(isDraft ? "Draft · not sent yet" : metaLine(session))
                     .font(SoulFont.ui(11))
@@ -182,13 +172,12 @@ struct ChatRow: View {
         // every AfterAgent envelope was empty AND no provider transcript
         // rescues the session. Row stays clickable — the user decides
         // whether to keep, archive, or trash it.
-        let slash = slashMetaSuffix(session)
         let reply = session.agentReplyMissing ? " · no reply" : ""
         if n > 0 {
             let label = n == 1 ? "1 turn" : "\(n) turns"
-            return "\(label) · \(ago)\(slash)\(reply)"
+            return "\(label) · \(ago)\(reply)"
         }
-        return "\(ago)\(slash)\(reply)"
+        return "\(ago)\(reply)"
     }
 
     private var taskBadgeText: String? {
@@ -206,36 +195,6 @@ struct ChatRow: View {
 
     private var normalizedTaskId: String? {
         trimmed(session.taskId)
-    }
-
-    private var slashBadgeText: String? {
-        guard !session.slashSemantics.isEmpty else { return nil }
-        if session.slashSemantics.values.contains(where: { $0.taskAffecting == true }) {
-            return "task"
-        }
-        if session.slashSemantics.values.allSatisfy({ ($0.localOnly == true) || ($0.conversationWorthy == false) }) {
-            return "local"
-        }
-        return nil
-    }
-
-    private var slashHelpText: String {
-        let commands = session.slashSemantics.keys.sorted().map { "/\($0)" }.joined(separator: ", ")
-        if let slashBadgeText {
-            return "\(slashBadgeText.capitalized) slash command: \(commands)"
-        }
-        return "Slash command: \(commands)"
-    }
-
-    private func slashMetaSuffix(_ session: SoulSession) -> String {
-        guard !session.slashSemantics.isEmpty else { return "" }
-        if session.slashSemantics.values.contains(where: { $0.taskAffecting == true }) {
-            return " · task command"
-        }
-        if session.slashSemantics.values.allSatisfy({ ($0.localOnly == true) || ($0.conversationWorthy == false) }) {
-            return " · local command"
-        }
-        return ""
     }
 
     private func trimmed(_ value: String?) -> String? {
