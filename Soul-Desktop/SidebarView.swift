@@ -243,7 +243,7 @@ struct SidebarView: View {
                         }
                         Toggle("Hide untitled", isOn: $hideUntitled)
                         Toggle("Show unreadable sessions", isOn: $showUnreadable)
-                        Toggle("Show archived", isOn: $showArchived)
+                        Toggle("Show Recently Trashed", isOn: $showArchived)
                     } label: {
                         Image(systemName: filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
                             .font(.system(size: 13))

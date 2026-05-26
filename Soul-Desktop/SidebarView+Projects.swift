@@ -167,10 +167,10 @@ extension SidebarView {
             } else if showAll && active.count > sessionPageSize {
                 showLessButton(for: project)
             }
-            // Always render the disclosure when archived rows exist so the
-            // user has a visible signal that something is hidden — otherwise
-            // archiving a row makes it vanish with zero UI trace.
-            if !archived.isEmpty {
+            // Trashed rows are hidden from the normal project list by
+            // default. The filter menu can reveal this disclosure when the
+            // user needs restore/permanent-delete actions.
+            if showArchived, !archived.isEmpty {
                 archivedDisclosure(for: project, archived: archived)
             }
         }
@@ -337,6 +337,7 @@ extension SidebarView {
 
     func moveSessionToKernelTrash(_ session: SoulSession) {
         runKernelLifecycleCommand("trash", session: session) {
+            archivedExpanded[session.project] = false
             onArchive(session)
         }
     }
