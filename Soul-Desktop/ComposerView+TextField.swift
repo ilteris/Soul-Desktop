@@ -83,7 +83,16 @@ struct ComposerTextField: NSViewRepresentable {
         // For a composer with long pasted content the per-pass cost
         // beachballs the main thread.
         let textChanged = tv.string != text
-        if textChanged { tv.string = text }
+        if textChanged {
+            if text.isEmpty,
+               !tv.string.isEmpty,
+               tv.window?.firstResponder === tv,
+               !tv.allowNextEmptySync {
+                return
+            }
+            tv.allowNextEmptySync = false
+            tv.string = text
+        }
         if tv.placeholderString != placeholder { tv.placeholderString = placeholder }
         tv.onBackspaceWhenEmpty = onBackspaceWhenEmpty
         tv.onCommit = onSubmit
@@ -148,6 +157,7 @@ private final class BackspaceInterceptingTextView: NSTextView {
     var onTab: (() -> Bool)?
     var onUpArrowWhenEmpty: (() -> Bool)?
     var placeholderString: String = "" { didSet { needsDisplay = true } }
+    var allowNextEmptySync = false
 
     private let lineHeight: CGFloat = 20
     private let minLines: CGFloat = 3
@@ -200,6 +210,7 @@ private final class BackspaceInterceptingTextView: NSTextView {
         }
         if (event.keyCode == 36 || event.keyCode == 76),
            !event.modifierFlags.contains(.shift) {
+            allowNextEmptySync = true
             onCommit?()
             return
         }
