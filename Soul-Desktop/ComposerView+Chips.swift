@@ -75,7 +75,7 @@ private struct ProviderPicker: View {
                 Button { selection = p } label: {
                     VStack(alignment: .leading) {
                         HStack {
-                            Image(systemName: p.icon)
+                            ProviderGlyph(provider: p)
                             Text(p.label)
                             if selection == p { Image(systemName: "checkmark") }
                         }
@@ -85,8 +85,7 @@ private struct ProviderPicker: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: selection.icon)
-                    .font(.system(size: SoulMetric.icon))
+                ProviderGlyph(provider: selection)
                     .foregroundStyle(SoulColor.fgMuted)
                 Text(selection.label)
                     .font(SoulFont.ui(12))

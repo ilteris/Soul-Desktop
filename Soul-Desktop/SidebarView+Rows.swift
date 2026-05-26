@@ -36,8 +36,7 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 8) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: sourceIcon)
-                    .font(.system(size: 12))
+                ProviderIconView(raw: session.source ?? session.liveProvider, size: 12)
                     .foregroundStyle(isSelected ? SoulColor.accent : SoulColor.fgSubtle)
                     .frame(width: 14)
                 if session.isDirty {
@@ -109,7 +108,7 @@ struct ChatRow: View {
             }
             .layoutPriority(1)
             Spacer(minLength: 0)
-if isActiveReplay {
+            if isActiveReplay {
                 ReplayProgressChip(
                     progress: replayProgress,
                     index: replayIndex,
@@ -155,14 +154,6 @@ if isActiveReplay {
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-    }
-
-    private var sourceIcon: String {
-        // Always show the provider glyph as the leading icon — the small
-        // inline `terminal` badge next to the title carries the external-
-        // writer signal. Hiding the provider behind a terminal icon for
-        // external sessions made it hard to tell which CLI authored a row.
-        ProviderIcon.symbol(for: session.source ?? session.liveProvider)
     }
 
     private func relative(_ d: Date) -> String {
@@ -517,18 +508,10 @@ private struct LiveSessionRow: View {
         session.writer == .external && !session.isStale
     }
 
-    /// Always show the provider glyph as the leading icon; the inline
-    /// `terminal` badge next to the title carries the external-writer
-    /// signal. Keeps "which CLI authored this" visible across all states.
-    private var liveIcon: String {
-        ProviderIcon.symbol(for: session.liveProvider ?? session.source)
-    }
-
     var body: some View {
         HStack(spacing: 8) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: liveIcon)
-                    .font(.system(size: 11))
+                ProviderIconView(raw: session.liveProvider ?? session.source, size: 11)
                     .foregroundStyle(iconColor)
                     .frame(width: 14)
                 if session.writer == .external {
@@ -618,6 +601,18 @@ private struct LiveSessionRow: View {
 /// Either spelling normalizes to the same SF Symbol, so a row's icon stays
 /// stable across its lifecycle (finalize → resume → re-finalize).
 enum ProviderIcon {
+    static let claudeAssetName = "ClaudeIcon"
+    static let codexAssetName = "CodexIcon"
+    static let assetVisualScale: CGFloat = 0.82
+
+    static func assetName(for raw: String?) -> String? {
+        switch raw {
+        case "claude": return claudeAssetName
+        case "codex":  return codexAssetName
+        default:       return nil
+        }
+    }
+
     static func symbol(for raw: String?) -> String {
         switch raw {
         case "claude":                  return "circle.hexagongrid"
@@ -626,6 +621,43 @@ enum ProviderIcon {
         case "codex":                   return "atom"
         default:                        return "circle.dotted"
         }
+    }
+
+}
+
+struct ProviderIconView: View {
+    let raw: String?
+    var size: CGFloat = SoulMetric.icon
+    var weight: Font.Weight = .regular
+
+    var body: some View {
+        Group {
+            if let assetName = ProviderIcon.assetName(for: raw) {
+                Image(assetName)
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .frame(
+                        width: size * ProviderIcon.assetVisualScale,
+                        height: size * ProviderIcon.assetVisualScale
+                    )
+                    .frame(width: size, height: size)
+            } else {
+                Image(systemName: ProviderIcon.symbol(for: raw))
+                    .font(.system(size: size, weight: weight))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+struct ProviderGlyph: View {
+    let provider: Provider
+    var size: CGFloat = SoulMetric.icon
+    var weight: Font.Weight = .regular
+
+    var body: some View {
+        ProviderIconView(raw: provider.rawValue, size: size, weight: weight)
     }
 }
 

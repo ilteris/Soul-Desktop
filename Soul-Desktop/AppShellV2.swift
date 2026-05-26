@@ -387,7 +387,7 @@ struct AppShellV2: View {
                         selectedProvider = provider
                     } label: {
                         HStack {
-                            Image(systemName: provider.icon)
+                            ProviderGlyph(provider: provider)
                             Text(provider.label)
                             if provider == selectedProvider {
                                 Image(systemName: "checkmark")
@@ -397,8 +397,7 @@ struct AppShellV2: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: selectedProvider.icon)
-                        .font(.system(size: 12, weight: .medium))
+                    ProviderGlyph(provider: selectedProvider, size: 12, weight: .medium)
                     Text(selectedProvider.label)
                         .font(SoulFont.ui(13, weight: .medium))
                     Image(systemName: "chevron.down")
@@ -911,8 +910,7 @@ struct AppShellV2: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: selectedProvider.icon)
-                            .font(.system(size: 11, weight: .medium))
+                        ProviderGlyph(provider: selectedProvider, size: 11, weight: .medium)
                         Text(selectedProvider.label)
                             .font(SoulFont.ui(11, weight: .medium))
                     }
@@ -1018,8 +1016,7 @@ struct AppShellV2: View {
             }
         } label: {
             HStack(spacing: 7) {
-                Image(systemName: selectedProvider.icon)
-                    .font(.system(size: 12, weight: .medium))
+                ProviderGlyph(provider: selectedProvider, size: 12, weight: .medium)
                 Text(selectedProvider.label)
                     .font(SoulFont.ui(12, weight: .medium))
                     .lineLimit(1)
@@ -1523,7 +1520,7 @@ struct AppShellV2: View {
                             metadataChip(project, icon: "folder")
                         }
                         if let provider = operation.provider {
-                            metadataChip(provider.label, icon: provider.icon)
+                            providerMetadataChip(provider)
                         }
                         metadataChip(operation.startedAt.formatted(date: .omitted, time: .shortened), icon: "clock")
                     }
@@ -1582,6 +1579,16 @@ struct AppShellV2: View {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .medium))
             Text(text)
+                .lineLimit(1)
+        }
+        .font(SoulFont.code(10))
+        .foregroundStyle(SoulColor.fgSubtle)
+    }
+
+    private func providerMetadataChip(_ provider: Provider) -> some View {
+        HStack(spacing: 4) {
+            ProviderGlyph(provider: provider, size: 9, weight: .medium)
+            Text(provider.label)
                 .lineLimit(1)
         }
         .font(SoulFont.code(10))
