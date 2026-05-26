@@ -44,22 +44,88 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-echo "[pre-push] Running Soul-Desktop test target (override with SOUL_SKIP_TESTS=1 or git push --no-verify)…"
+echo "[pre-push] Running Soul-Desktop test target (override with SOUL_SKIP_TESTS=1 or git push --no-verify)..."
 START=$SECONDS
 LOG=/tmp/soul-prepush-test.log
+TIMEOUT_SECONDS="${SOUL_PREPUSH_TIMEOUT_SECONDS:-300}"
+STATUS=0
+
+print_log_context() {
+    echo "[pre-push] Recent xcodebuild context from $LOG:"
+    tail -80 "$LOG" 2>/dev/null || true
+    echo ""
+    echo "[pre-push] Test summary from $LOG:"
+    grep -E "Test case.*failed|TEST (FAILED|SUCCEEDED)|\\*\\* BUILD (FAILED|INTERRUPTED|SUCCEEDED) \\*\\*" "$LOG" | tail -30 || true
+}
+
 # Run without -quiet so the "TEST SUCCEEDED/FAILED" summary line lands in
 # the log. Capture xcodebuild's exit code directly — that's authoritative;
 # don't try to re-derive pass/fail by grepping output.
 set +e
-xcodebuild test \
-    -project Soul-Desktop.xcodeproj \
-    -scheme "Soul-Desktop Dev" \
-    > "$LOG" 2>&1
+SOUL_PREPUSH_LOG="$LOG" SOUL_PREPUSH_TIMEOUT_SECONDS="$TIMEOUT_SECONDS" /usr/bin/python3 <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+log_path = os.environ["SOUL_PREPUSH_LOG"]
+timeout_seconds = int(os.environ["SOUL_PREPUSH_TIMEOUT_SECONDS"])
+command = [
+    "xcodebuild",
+    "test",
+    "-project",
+    "Soul-Desktop.xcodeproj",
+    "-scheme",
+    "Soul-Desktop Dev",
+    "-destination",
+    "platform=macOS,arch=arm64",
+]
+
+with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+    process = subprocess.Popen(
+        command,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    deadline = time.monotonic() + timeout_seconds
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            sys.exit(124)
+        time.sleep(2)
+
+    sys.exit(process.returncode)
+PY
 STATUS=$?
 set -e
 
+if [[ $STATUS -eq 124 ]]; then
+    echo "[pre-push] TIMEOUT after ${TIMEOUT_SECONDS}s while running xcodebuild test."
+    print_log_context
+    echo "[pre-push] FAIL — push blocked. Full log: $LOG"
+    echo "[pre-push] Bypass: SOUL_SKIP_TESTS=1 git push   OR   git push --no-verify"
+    exit 124
+fi
+
 # Surface only failures (and the summary) so the terminal stays usable.
-grep -E "Test case.*failed|TEST (FAILED|SUCCEEDED)" "$LOG" | tail -20 || true
+grep -E "Test case.*failed|TEST (FAILED|SUCCEEDED)|\\*\\* BUILD (FAILED|INTERRUPTED|SUCCEEDED) \\*\\*" "$LOG" | tail -30 || true
 
 if [[ $STATUS -eq 0 ]]; then
     echo "[pre-push] PASS in $((SECONDS - START))s — push allowed."
@@ -68,5 +134,6 @@ fi
 
 echo ""
 echo "[pre-push] FAIL (xcodebuild exit $STATUS) — push blocked. Full log: $LOG"
+print_log_context
 echo "[pre-push] Bypass: SOUL_SKIP_TESTS=1 git push   OR   git push --no-verify"
 exit 1
