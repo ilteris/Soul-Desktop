@@ -146,11 +146,11 @@ enum HooksReader {
         merged.append(contentsOf: prompts)
         merged.append(contentsOf: geminiTurns)
         merged.append(contentsOf: recoveredAgentTurns)
-        // De-dup user prompts: hooks `UserPrompt` and gemini chat `user`
-        // turns describe the same event from two writers. Prefer the gemini
-        // version when text matches within 2s, since it carries the full
-        // content (hooks sometimes only get the slash-command prefix).
-        merged = dedupeUserPrompts(merged)
+        // De-dup transcript bubbles written by multiple sources. This heals
+        // both provider-transcript merges and the short-lived attached-Codex
+        // double-writer bug where Desktop and hooks wrote the same bubbles
+        // into the canonical ledger.
+        merged = dedupeTranscriptMessages(merged)
         merged.sort(by: { (a: ReplayEvent, b: ReplayEvent) -> Bool in
             a.timestamp < b.timestamp
         })
@@ -247,25 +247,39 @@ enum HooksReader {
         }
     }
 
-    /// Remove duplicate user-prompt events that appear in both the hooks
-    /// ledger and the gemini chat file. Same text + within 2s = same turn.
-    /// Keeps the FIRST occurrence (which, after the sort, will be whichever
-    /// timestamp lands earlier). Two-pass: index by normalized text, then
-    /// filter.
-    private static func dedupeUserPrompts(_ events: [ReplayEvent]) -> [ReplayEvent] {
-        var seen: [(text: String, ts: Date)] = []
+    /// Remove duplicate transcript events that appear through multiple
+    /// writers. Same role + normalized text + close timestamp = same bubble.
+    /// Keeps the first occurrence. The small time window avoids collapsing a
+    /// legitimate repeated "ok" prompt or reply later in the conversation.
+    private static func dedupeTranscriptMessages(_ events: [ReplayEvent]) -> [ReplayEvent] {
+        var seen: [(role: String, text: String, ts: Date)] = []
         var out: [ReplayEvent] = []
         for e in events {
+            let candidate: (role: String, text: String, ts: Date)?
             if case .userMessage(_, let text, let ts) = e.item {
-                let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if seen.contains(where: { $0.text == key && abs($0.ts.timeIntervalSince(ts)) < 2 }) {
+                candidate = ("user", normalizedTranscriptText(text), ts)
+            } else if case .agentMessage(_, let text, _, let ts) = e.item {
+                candidate = ("agent", normalizedTranscriptText(text), ts)
+            } else {
+                candidate = nil
+            }
+            if let candidate, !candidate.text.isEmpty {
+                if seen.contains(where: {
+                    $0.role == candidate.role
+                        && $0.text == candidate.text
+                        && abs($0.ts.timeIntervalSince(candidate.ts)) < 2
+                }) {
                     continue
                 }
-                seen.append((key, ts))
+                seen.append(candidate)
             }
             out.append(e)
         }
         return out
+    }
+
+    private static func normalizedTranscriptText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - hooks.jsonl

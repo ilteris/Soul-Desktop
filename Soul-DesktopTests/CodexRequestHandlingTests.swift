@@ -171,4 +171,72 @@ struct CodexRequestHandlingTests {
             return false
         })
     }
+
+    @Test func hooksReaderDedupesDuplicateCodexTranscriptRows() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-hook-dedupe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let oldHome = SoulRegistry.homePath
+        let oldSoul = SoulRegistry.soulPath
+        let oldSoulHome = SoulRegistry.soulHomePath
+        let oldRegistry = SoulRegistry.registryPath
+        SoulRegistry.homePath = tempDir.path
+        SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
+        SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
+        defer {
+            SoulRegistry.homePath = oldHome
+            SoulRegistry.soulPath = oldSoul
+            SoulRegistry.soulHomePath = oldSoulHome
+            SoulRegistry.registryPath = oldRegistry
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let project = SoulProject(
+            id: "soul-desktop",
+            name: "Soul Desktop",
+            path: "/tmp/soul-desktop",
+            pillar: nil,
+            tier: nil,
+            status: nil,
+            primaryHost: nil,
+            devCommand: nil,
+            devURL: nil
+        )
+        let sessionId = UUID().uuidString
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let duplicatePrompt = "we are not deleting the files right"
+        let duplicateReply = "Correct: the files are still on disk locally."
+
+        for offset in [0.0, 0.5] {
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId, event: [
+                "event": "UserPrompt",
+                "text": duplicatePrompt,
+                "timestamp": ISO8601DateFormatter().string(from: base.addingTimeInterval(offset)),
+            ])
+        }
+        for offset in [1.0, 1.5] {
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sessionId, event: [
+                "event": "AfterAgent",
+                "content": duplicateReply,
+                "provider": "codex",
+                "timestamp": ISO8601DateFormatter().string(from: base.addingTimeInterval(offset)),
+            ])
+        }
+        SoulRegistry.flushHooks()
+
+        let events = HooksReader.events(forSession: sessionId, project: project)
+        let userMessages = events.compactMap { event -> String? in
+            if case .userMessage(_, let text, _) = event.item { return text }
+            return nil
+        }
+        let agentMessages = events.compactMap { event -> String? in
+            if case .agentMessage(_, let text, _, _) = event.item { return text }
+            return nil
+        }
+
+        #expect(userMessages.filter { $0 == duplicatePrompt }.count == 1)
+        #expect(agentMessages.filter { $0 == duplicateReply }.count == 1)
+    }
 }
