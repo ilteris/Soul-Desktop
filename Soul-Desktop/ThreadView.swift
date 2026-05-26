@@ -517,7 +517,8 @@ struct ThreadView: View {
                 // sees the animation context.
                 Group {
                     if controller.isHydrating {
-                        ThreadSkeletonView()
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(SoulColor.bg)
                             .transition(.opacity)
                     }

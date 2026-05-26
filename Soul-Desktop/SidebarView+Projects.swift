@@ -105,14 +105,17 @@ extension SidebarView {
         if let owner, !isExpanded(owner.id) {
             setExpanded(owner.id, true)
         }
-        // Animate the scroll-to-row when the sidebar is at rest. The prior
+        // Bring the active row into view when the sidebar is at rest. The prior
         // unconditional `withAnimation` stacked on top of in-flight
         // momentum (.decelerating) and triggered a SwiftUI
         // MoveTransition.MoveLayout + nested-VStack recursion 100+ frames
         // deep — full beachball. `sidebarScrollIdle` is fed from
         // .onScrollPhaseChange on the parent ScrollView; when false we
         // snap (which mid-momentum is what the user perceived as natural
-        // anyway, since they're actively scrolling). The 50ms delay stays
+        // anyway, since they're actively scrolling). Do not force `.center`:
+        // direct row clicks near the viewport edge should not recenter the
+        // whole list. Let ScrollViewProxy apply its minimal "make visible"
+        // behavior instead. The 50ms delay stays
         // — expanding the owning project (above) needs a runloop tick for
         // the freshly-revealed row to materialize before scrollTo can find
         // it.
@@ -120,10 +123,10 @@ extension SidebarView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             if animate {
                 withAnimation(.easeOut(duration: 0.22)) {
-                    proxy.scrollTo(sid, anchor: .center)
+                    proxy.scrollTo(sid)
                 }
             } else {
-                proxy.scrollTo(sid, anchor: .center)
+                proxy.scrollTo(sid)
             }
         }
     }

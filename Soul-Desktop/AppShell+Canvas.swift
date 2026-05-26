@@ -151,23 +151,19 @@ extension AppShell {
     @ViewBuilder
     var mountedThreadsCanvas: some View {
         ZStack {
-            ForEach(sessions.mountedThreads, id: \.id) { ctrl in
-                let isActive = sessions.activeThreadKey == ctrl.id
+            if let ctrl = sessions.activeThread {
                 ThreadView(
                     controller: ctrl,
                     prompt: sessions.bindingForDraft(ctrl.id),
-                    onCancel: { if isActive { cancelTurn() } },
+                    onCancel: { cancelTurn() },
                     onPickHarness: onPickHarness,
-                    branchSeedLoading: isActive && branchSeedLoading,
+                    branchSeedLoading: branchSeedLoading,
                     terminalActive: showTerminal,
                     onToggleTerminal: toggleTerminal,
                     isImageDropTargeted: $isImageDropTargeted
                 )
                 .environment(\.autoCompactController, autoCompact)
-                .opacity(isActive ? 1 : 0)
-                .allowsHitTesting(isActive)
-                .accessibilityHidden(!isActive)
-                .zIndex(isActive ? 1 : 0)
+                .zIndex(1)
             }
             if sessions.activeThreadKey == nil {
                 HeroEmptyState(
