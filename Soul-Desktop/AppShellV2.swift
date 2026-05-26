@@ -56,7 +56,7 @@ struct AppShellV2: View {
                 VStack(alignment: .trailing, spacing: 12) {
                     if showDispatchBox {
                         dispatchBox
-                            .transition(.scale(scale: 0.96, anchor: .bottomTrailing).combined(with: .opacity))
+                            .transition(.scale(scale: 0.96).combined(with: .opacity))
                     }
                     Button {
                         withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
@@ -1420,12 +1420,6 @@ struct AppShellV2: View {
             .frame(minHeight: 320)
             .background(Self.controlCanvas, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(SoulColor.border.opacity(0.5), lineWidth: 0.5))
-            .onAppear {
-                scrollOperationStream(proxy: proxy, events: events, isRunning: isRunning)
-            }
-            .onChange(of: events.count) { _, _ in
-                scrollOperationStream(proxy: proxy, events: events, isRunning: isRunning)
-            }
         }
     }
 
@@ -1461,18 +1455,6 @@ struct AppShellV2: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(SoulColor.bgElevated.opacity(0.42), in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(SoulColor.border.opacity(0.25), lineWidth: 0.5))
-    }
-
-    private func scrollOperationStream(proxy: ScrollViewProxy, events: [SoulOperationEvent], isRunning: Bool) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.18)) {
-                if isRunning {
-                    proxy.scrollTo("stream-open", anchor: .bottom)
-                } else if let last = events.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
-            }
-        }
     }
 
     private func operationIsStalled(_ operation: SoulOperation) -> Bool {

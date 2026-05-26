@@ -296,9 +296,6 @@ final class ThreadController {
     /// as the user scrolls and restores it on re-appear so switching threads
     /// (multiplexer) doesn't snap each view back to the top.
     var scrollAnchorItemId: UUID? = nil
-    /// True iff the anchor is the synthetic "__bottom__" sentinel. We store a
-    /// separate bool because the sentinel isn't a UUID.
-    var scrollAnchorAtBottom: Bool = true
     /// Incremented whenever AppSessionCoordinator makes this controller the
     /// visible thread. Mounted inactive threads are hidden with opacity, so
     /// SwiftUI does not fire `onAppear` when they become active again; this

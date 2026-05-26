@@ -6,7 +6,7 @@ import SoulACP
 @MainActor
 struct ThreadControllerTests {
 
-    @Test func testScrollAnchorResetOnSend() async throws {
+    @Test func testScrollAnchorClearsOnSend() async throws {
         let project = SoulProject(
             id: "test",
             name: "Test Project",
@@ -23,12 +23,11 @@ struct ThreadControllerTests {
         // Simulate a scroll anchor being set
         let midId = UUID()
         controller.scrollAnchorItemId = midId
-        controller.scrollAnchorAtBottom = false
         
-        // Sending a message should reset the anchor to the bottom
-        await controller.send("hello")
+        // Accepting a live message should clear the saved read-position
+        // anchor so ThreadView's live-follow path can drive the new turn.
+        _ = controller.acceptUserPrompt(display: "hello", agent: "hello")
         
-        #expect(controller.scrollAnchorAtBottom == true)
         #expect(controller.scrollAnchorItemId == nil)
     }
 

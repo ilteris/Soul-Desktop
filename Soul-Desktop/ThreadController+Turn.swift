@@ -56,10 +56,8 @@ extension ThreadController {
         items.append(.userMessage(id: messageId, text: trimmedDisplay, timestamp: Date()))
         openAgentMessageId = nil
         lastActivityAt = Date()
-        // User just sent — they want to follow the response. Reset the scroll
-        // anchor to "stick to bottom" so ThreadView's items.count auto-scroll
-        // pins to the latest content regardless of where the view was before.
-        scrollAnchorAtBottom = true
+        // User just sent; clear the saved read-position anchor so live
+        // follow can drive this new turn.
         scrollAnchorItemId = nil
 
         let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent, extraBlocks: extraBlocks)
@@ -108,7 +106,6 @@ extension ThreadController {
         ))
         openAgentMessageId = nil
         lastActivityAt = Date()
-        scrollAnchorAtBottom = true
         scrollAnchorItemId = nil
 
         let prompt = QueuedPrompt(

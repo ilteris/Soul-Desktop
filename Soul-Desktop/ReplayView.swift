@@ -16,11 +16,7 @@ struct ReplayView: View {
     /// to "only the latest chapter is open" — so as new prompts land, prior
     /// chapters auto-collapse without trapping any chapter the user opened.
     @State private var explicitExpansion: [Int: Bool] = [:]
-    /// Replay auto-follow gate. A user scroll upward detaches playback from
-    /// bottom-follow; reaching bottom again re-arms it.
-    @State private var scrollFollow = ScrollFollowState()
-    @State private var isAutoScrolling: Bool = false
-
+    @State private var bottomSentinelVisible: Bool = true
     private var chapters: [ReplayChapter] {
         ReplayView.chapters(from: controller.visible, readingMode: readingMode)
     }
@@ -44,7 +40,9 @@ struct ReplayView: View {
                         }
                         Color.clear
                             .frame(height: 60)
-                            .id("__bottom__")
+                            .id("__replay_bottom__")
+                            .onAppear { bottomSentinelVisible = true }
+                            .onDisappear { bottomSentinelVisible = false }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity)
@@ -56,63 +54,21 @@ struct ReplayView: View {
                 .background(NSScrollViewConfigurator { sv in
                     sv.horizontalScrollElasticity = .none
                 })
-                .onScrollGeometryChange(for: ScrollFollowGeometry.self) { geometry in
-                    let viewportBottom = geometry.contentOffset.y + geometry.containerSize.height
-                    let contentBottom = geometry.contentSize.height
-                    return ScrollFollowGeometry(
-                        offsetY: geometry.contentOffset.y,
-                        atBottom: viewportBottom >= contentBottom - 8,
-                        contentHeight: contentBottom
-                    )
-                } action: { oldValue, newValue in
-                    if newValue.atBottom {
-                        scrollFollow.userDetachedFromBottom = false
-                    } else if newValue.offsetY < oldValue.offsetY - 1 {
-                        scrollFollow.userDetachedFromBottom = true
-                    }
-                }
-                .onScrollPhaseChange { _, newPhase, context in
-                    let viewportBottom = context.geometry.contentOffset.y + context.geometry.containerSize.height
-                    let contentBottom = context.geometry.contentSize.height
-                    guard !isAutoScrolling else { return }
-                    switch newPhase {
-                    case .tracking, .interacting, .decelerating:
-                        if viewportBottom < contentBottom - 8 {
-                            scrollFollow.userDetachedFromBottom = true
-                        }
-                    case .idle, .animating:
-                        break
-                    }
-                }
                 .onChange(of: controller.visible.count) { _, _ in
-                    guard !scrollFollow.userDetachedFromBottom else { return }
-                    autoScroll(to: "__bottom__", proxy: proxy)
+                    guard bottomSentinelVisible else { return }
+                    proxy.scrollTo("__replay_bottom__", anchor: .bottom)
+                }
+                .onChange(of: readingMode) { _, _ in
+                    guard bottomSentinelVisible else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("__replay_bottom__", anchor: .bottom)
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { controller.start() }
         .onDisappear { controller.stop() }
-    }
-
-    private func autoScroll(to id: AnyHashable, proxy: ScrollViewProxy) {
-        scrollFollow.autoScrollGeneration += 1
-        let generation = scrollFollow.autoScrollGeneration
-        isAutoScrolling = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
-            guard generation == scrollFollow.autoScrollGeneration else { return }
-            guard !scrollFollow.userDetachedFromBottom else {
-                isAutoScrolling = false
-                return
-            }
-            withAnimation(.smooth(duration: 0.18)) {
-                proxy.scrollTo(id, anchor: .bottom)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                guard generation == scrollFollow.autoScrollGeneration else { return }
-                isAutoScrolling = false
-            }
-        }
     }
 
     private var loadingState: some View {
