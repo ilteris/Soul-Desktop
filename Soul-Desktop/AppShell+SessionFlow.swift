@@ -48,11 +48,12 @@ extension AppShell {
             return
         }
         sessions.draftSession = nil
-        guard let project = registryStore.projects().first(where: { $0.id == session.project })
+        guard let project = workspace.project(id: session.project)
+                ?? registryStore.projects().first(where: { $0.id == session.project })
                 ?? currentProject()
         else { return }
-        if selectedProject != session.project {
-            selectedProject = session.project
+        if workspace.selectedProjectId != session.project {
+            workspace.selectProject(session.project)
         }
         let provider = providerForSession(session)
         if sessions.pendingActiveId == session.id, sessions.activeThreadKey != nil {
@@ -62,16 +63,12 @@ extension AppShell {
 
         if let existing = sessions.existingThread(sessionId: session.id) {
             harness = existing.provider
-            existing.scrollAnchorAtBottom = true
-            existing.scrollAnchorItemId = nil
             sessions.setActiveThread(existing.id)
             return
         }
         if session.id.hasPrefix("thread-") {
             if let existing = sessions.existingThread(syntheticSessionId: session.id) {
                 harness = existing.provider
-                existing.scrollAnchorAtBottom = true
-                existing.scrollAnchorItemId = nil
                 sessions.setActiveThread(existing.id)
                 sessions.pendingActiveId = nil
                 return
@@ -140,6 +137,9 @@ extension AppShell {
         }
         controller.lastActivityAt = session.lastActivityAt ?? session.timestamp
         controller.assignSessionId(session.id)
+        if let snapshot = hydrationCache.snapshot(project: routedProject, sessionId: session.id, provider: provider) {
+            controller.applyHydratedSnapshot(snapshot)
+        }
         sessions.mount(controller)
         let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi
         if useReadFirst {
@@ -160,6 +160,15 @@ extension AppShell {
         } else {
             Task { await controller.loadSession(id: session.id) }
         }
+    }
+
+    func prewarmSessionHydration(_ rows: [SoulSession]) {
+        let projects = registryStore.projects()
+        hydrationCache.prewarm(
+            sessions: rows.filter { !$0.isLive && $0.replayable },
+            projects: projects,
+            providerForSession: providerForSession
+        )
     }
 
     func handleBranch(session: SoulSession, target: Provider) {
@@ -194,7 +203,7 @@ extension AppShell {
             )
         }
         harness = target
-        if selectedProject != source.project.id { selectedProject = source.project.id }
+        if workspace.selectedProjectId != source.project.id { workspace.selectProject(source.project.id) }
         let project = source.project
         let controller = ThreadController(provider: target, project: project)
         controller.permissionMode = pendingPermissionMode
@@ -268,12 +277,12 @@ extension AppShell {
         replay.stop()
         sessions.activeThreadKey = nil
         prompt = ""
-        if let targetProjectID, targetProjectID != selectedProject {
-            selectedProject = targetProjectID
+        if let targetProjectID, targetProjectID != workspace.selectedProjectId {
+            workspace.selectProject(targetProjectID)
         }
         let resolvedProject: SoulProject? = {
             if let id = targetProjectID {
-                return registryStore.projects().first { $0.id == id }
+                return workspace.project(id: id) ?? registryStore.projects().first { $0.id == id }
             }
             return currentProject()
         }()
@@ -321,7 +330,7 @@ extension AppShell {
     }
 
     func startReplay(_ session: SoulSession) {
-        guard let project = currentProject() else { return }
+        guard let project = workspace.project(id: session.project) ?? currentProject() else { return }
         replay.start(
             session: session,
             project: project,

@@ -640,16 +640,17 @@ final class ThreadController {
         )
     }
 
-    /// SOUL-SOUL_DESKTOP-075 (b1): watch the project's sessions dir for new
-    /// finalize JSON files so an agent self-invoking `/finalize` (typical
-    /// Gemini-CLI behavior) surfaces a real FinalizeCard instead of just a
-    /// bold "Finalization complete" line of stdout from the tool call.
+    /// Watch finalize storage so an agent self-invoking `/finalize`
+    /// surfaces a real FinalizeCard instead of just a bold
+    /// "Finalization complete" line of stdout from the tool call.
     @ObservationIgnored var finalizeWatcher: FinalizeWatcher?
 
     private func startFinalizeWatcher() {
         finalizeWatcher?.stop()
-        let dir = "\(SoulRegistry.primarySessionsRoot)/\(project.id)"
-        let watcher = FinalizeWatcher(directoryPath: dir) { [weak self] in
+        guard let sid = sessionId else { return }
+        let projectDir = "\(SoulRegistry.primarySessionsRoot)/\(project.id)"
+        let sessionDir = "\(projectDir)/\(sid)"
+        let watcher = FinalizeWatcher(directoryPaths: [projectDir, sessionDir]) { [weak self] in
             guard let self, let sid = self.sessionId else { return }
             self.injectFinalizeSummaryIfFresh(sessionId: sid)
         }

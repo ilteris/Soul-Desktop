@@ -1,6 +1,12 @@
 import Foundation
 import SoulACP
 
+private struct HydratedTranscript {
+    var items: [ThreadItem]
+    var historicalIDs: Set<UUID>
+    var lastFinalizeInjectedAt: Date?
+}
+
 /// Read-first hydration + finalize-summary injection helpers, lifted out
 /// of ThreadController. The big `hydrateFromDisk(id:)` method that
 /// rebuilds an archived session's transcript from the kernel ledger
@@ -13,20 +19,30 @@ import SoulACP
 /// a coding agent can hold it in context.
 extension ThreadController {
 
+    func applyHydratedSnapshot(_ snapshot: HydratedSessionSnapshot) {
+        if let title = snapshot.title, !title.isEmpty {
+            customTitle = title
+        }
+        nativeSessionId = snapshot.nativeSessionId
+        historicalIDs.formUnion(snapshot.historicalIDs)
+        if let finalizeTs = snapshot.lastFinalizeInjectedAt {
+            lastFinalizeInjectedAt = finalizeTs
+        }
+        items = snapshot.items
+        isHydrating = false
+    }
+
     func hydrateFromDisk(id sid: String) async {
         // Already-initialized re-entry: still clear the flag (default is
-        // true, so leaving it set would pin the skeleton forever on a
+        // true, so leaving it set would leave the controller in a loading
         // re-hydrate). Defer-based clear below covers every other path.
         guard !hasInitialized else { isHydrating = false; return }
         let hydrateInterval = SoulSignposts.beginInterval("ThreadController.hydrateFromDisk", id: sid)
-        // SOUL-SOUL_DESKTOP-231: gate the ThreadView skeleton overlay.
-        // `isHydrating` defaults to true at construction so the canvas
-        // skeleton paints on the first body render — by the time we get
-        // here it's already set, and we just need to flip it false in
-        // `defer` so EVERY return path (success, empty-history, error,
-        // codex short-circuit, all of them) clears it. The skeleton
-        // flashes off the moment hydrate is done and the LazyVStack
-        // takes over with fully-populated items.
+        // `isHydrating` defaults to true at construction so row opens have
+        // an explicit loading state before the detached disk read returns.
+        // ThreadView no longer paints a full-scroll loading overlay from
+        // this flag; it remains controller state for scroll-restore gating
+        // and lifecycle correctness.
         defer {
             isHydrating = false
             SoulSignposts.endInterval("ThreadController.hydrateFromDisk", state: hydrateInterval)
@@ -163,10 +179,11 @@ extension ThreadController {
             if !ledgerItems.isEmpty {
                 if let t = result.title, !t.isEmpty { customTitle = t }
                 nativeSessionId = result.nativeId
-                historicalIDs.formUnion(ledgerItems.lazy.map(\.id))
-                items.append(contentsOf: ledgerItems)
-                injectSlashCommandPrompts(result.slashPrompts)
-                injectFinalizeSummary(sessionId: sid)
+                commitHydratedTranscript(
+                    baseItems: ledgerItems,
+                    slashPrompts: result.slashPrompts,
+                    sessionId: sid
+                )
                 // SOUL-SOUL_DESKTOP-245 (Phase B): mint preamble from the
                 // ledger items so the fresh provider session gets the
                 // prior conversation as inline context on first send.
@@ -201,8 +218,12 @@ extension ThreadController {
             if FileManager.default.fileExists(atPath: hooksPath) {
                 if let t = result.title, !t.isEmpty { customTitle = t }
                 nativeSessionId = result.nativeId
-                injectFinalizeSummary(sessionId: sid)
-                items.append(.status(id: UUID(), text: "ℹ session ledger present but turn content was dropped at write-time — finalize summary above; new turns start fresh"))
+                commitHydratedTranscript(
+                    baseItems: [],
+                    slashPrompts: [],
+                    sessionId: sid,
+                    statusTail: "ℹ session ledger present but turn content was dropped at write-time — finalize summary above; new turns start fresh"
+                )
                 preambleStagingTask?.cancel()
                 let stagingSid = sid
                 let stagingItems = items
@@ -214,7 +235,13 @@ extension ThreadController {
             }
             if let t = result.title, !t.isEmpty { customTitle = t }
             nativeSessionId = result.nativeId
-            items.append(.status(id: UUID(), text: "ℹ this session has no offline transcript on this machine — type to start a fresh chat"))
+            commitHydratedTranscript(
+                baseItems: [],
+                slashPrompts: [],
+                sessionId: sid,
+                includeFinalize: false,
+                statusTail: "ℹ this session has no offline transcript on this machine — type to start a fresh chat"
+            )
             return
         }
         let history = result.history!
@@ -226,21 +253,11 @@ extension ThreadController {
         // "New chat".
         if let t = result.title, !t.isEmpty { customTitle = t }
         nativeSessionId = result.nativeId
-        // SOUL-SOUL_DESKTOP-097: bulk-update; see commit 88aead0.
-        historicalIDs.formUnion(history.lazy.map(\.id))
-        items.append(contentsOf: history)
-        // Slash-command UserPrompt hooks (captured by the kernel before the
-        // model API ever saw them) don't appear in the Claude transcript —
-        // merge them in by timestamp so chip rendering stays consistent.
-        injectSlashCommandPrompts(result.slashPrompts)
-        // Surface the Quad from any finalize JSON for this session. The
-        // structured summary (Intent / Summary / Rationale / Fixed / Next)
-        // lives in `~/soul_registry/sessions/<project>/<ts>_<sid>.json` —
-        // recorded by `/finalize` but otherwise never rendered to the user.
-        // Injecting it at the tail of the loaded transcript means clicking
-        // a finalized row immediately answers "what did we accomplish here?"
-        // without anyone needing to `cat` the JSON.
-        injectFinalizeSummary(sessionId: sid)
+        commitHydratedTranscript(
+            baseItems: history,
+            slashPrompts: result.slashPrompts,
+            sessionId: sid
+        )
         // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. Render
         // the prior items into a text preamble that gets prefixed to the
         // user's first prompt in dispatchPending. This replaces the old
@@ -322,6 +339,143 @@ extension ThreadController {
             return
         }
         pendingContextPreamble = built.text
+    }
+
+    /// SOUL-SOUL_DESKTOP-340: read-first hydrate should publish one
+    /// completed transcript snapshot to the observed `items` array. Building
+    /// slash/finalize/status rows locally avoids phased `items.append` /
+    /// `items.insert` mutations while ThreadView is trying to settle scroll.
+    private func commitHydratedTranscript(
+        baseItems: [ThreadItem],
+        slashPrompts: [(text: String, timestamp: Date)],
+        sessionId sid: String,
+        includeFinalize: Bool = true,
+        statusTail: String? = nil
+    ) {
+        let snapshot = buildHydratedTranscript(
+            baseItems: baseItems,
+            slashPrompts: slashPrompts,
+            sessionId: sid,
+            includeFinalize: includeFinalize,
+            statusTail: statusTail
+        )
+        historicalIDs.formUnion(snapshot.historicalIDs)
+        if let finalizeTs = snapshot.lastFinalizeInjectedAt {
+            lastFinalizeInjectedAt = finalizeTs
+        }
+        items = snapshot.items
+    }
+
+    private func buildHydratedTranscript(
+        baseItems: [ThreadItem],
+        slashPrompts: [(text: String, timestamp: Date)],
+        sessionId sid: String,
+        includeFinalize: Bool,
+        statusTail: String?
+    ) -> HydratedTranscript {
+        var hydrated = baseItems
+        var hydratedIDs = Set(baseItems.map(\.id))
+        insertSlashCommandPrompts(slashPrompts, into: &hydrated, historicalIDs: &hydratedIDs)
+
+        var finalizeTs: Date? = nil
+        if includeFinalize {
+            finalizeTs = insertFinalizeSummary(sessionId: sid, into: &hydrated, historicalIDs: &hydratedIDs)
+        }
+
+        if let statusTail {
+            let id = UUID()
+            hydrated.append(.status(id: id, text: statusTail))
+            hydratedIDs.insert(id)
+        }
+
+        return HydratedTranscript(
+            items: hydrated,
+            historicalIDs: hydratedIDs,
+            lastFinalizeInjectedAt: finalizeTs
+        )
+    }
+
+    private func insertFinalizeSummary(
+        sessionId sid: String,
+        into hydrated: inout [ThreadItem],
+        historicalIDs hydratedIDs: inout Set<UUID>
+    ) -> Date? {
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+            SoulSignposts.event("hydrateSnapshot.finalize.miss", "\(provLabel)")
+            return nil
+        }
+        let hasContent = (rec.intent?.isEmpty == false)
+            || (rec.summary?.isEmpty == false)
+            || (rec.rationale?.isEmpty == false)
+            || (rec.fixed?.isEmpty == false)
+            || (rec.nextStep?.isEmpty == false)
+        guard hasContent else {
+            SoulSignposts.event("hydrateSnapshot.finalize.empty", "\(provLabel)")
+            return nil
+        }
+
+        let finalizeTs = rec.timestamp ?? Date()
+        if hydrated.contains(where: { item in
+            guard case .finalize(_, _, _, _, _, _, let existingTs) = item else { return false }
+            return abs(existingTs.timeIntervalSince(finalizeTs)) < 1
+        }) {
+            SoulSignposts.event("hydrateSnapshot.finalize.duplicate", "\(provLabel)")
+            return finalizeTs
+        }
+
+        let id = UUID()
+        let card = ThreadItem.finalize(
+            id: id,
+            intent: rec.intent,
+            summary: rec.summary,
+            rationale: rec.rationale,
+            fixed: rec.fixed,
+            nextStep: rec.nextStep,
+            timestamp: finalizeTs
+        )
+        let insertAt = hydrated.firstIndex(where: { item in
+            guard let ts = ThreadController.itemTimestamp(item) else { return false }
+            return ts > finalizeTs
+        }) ?? hydrated.endIndex
+        hydrated.insert(card, at: insertAt)
+        hydratedIDs.insert(id)
+        SoulSignposts.event("hydrateSnapshot.finalize.appended", "\(provLabel)")
+        return finalizeTs
+    }
+
+    private func insertSlashCommandPrompts(
+        _ prompts: [(text: String, timestamp: Date)],
+        into hydrated: inout [ThreadItem],
+        historicalIDs hydratedIDs: inout Set<UUID>
+    ) {
+        guard !prompts.isEmpty else { return }
+
+        for prompt in prompts {
+            let dedupWindow: TimeInterval = 2
+            let alreadyPresent = hydrated.contains { item in
+                if case .userMessage(_, let text, let ts) = item,
+                   text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt.text,
+                   abs(ts.timeIntervalSince(prompt.timestamp)) <= dedupWindow {
+                    return true
+                }
+                return false
+            }
+            if alreadyPresent { continue }
+
+            let id = UUID()
+            let inserted: ThreadItem = .userMessage(id: id, text: prompt.text, timestamp: prompt.timestamp)
+            let insertAt = hydrated.firstIndex { item in
+                let ts: Date? = {
+                    if case .userMessage(_, _, let t) = item { return t }
+                    if case .agentMessage(_, _, _, let t) = item { return t }
+                    return nil
+                }()
+                return ts.map { $0 > prompt.timestamp } ?? false
+            } ?? hydrated.endIndex
+            hydrated.insert(inserted, at: insertAt)
+            hydratedIDs.insert(id)
+        }
     }
 
     /// SOUL-SOUL_DESKTOP-245 (Phase B, visibility helper). Records the

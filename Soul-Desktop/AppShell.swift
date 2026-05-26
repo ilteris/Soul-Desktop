@@ -3,7 +3,7 @@ import AppKit
 
 struct AppShell: View {
     var registryStore: SoulRegistryStore = LiveSoulRegistryStore.shared
-    @State var selectedProject: String? = nil
+    @State var workspace = SoulWorkspaceModel()
     /// User's appearance preference. Values: "system", "light", "dark".
     /// `system` means follow the macOS appearance (the SoulColor tokens
     /// already do that via dynamic NSColor); the other two force a side.
@@ -14,6 +14,7 @@ struct AppShell: View {
     /// background, no re-spawn, no re-hydration.
     @State var sessions = AppSessionCoordinator()
     @State var replay = AppReplayCoordinator()
+    @State var hydrationCache = SessionHydrationCache()
     /// Browser-style cross-project view history. ⌘[ / ⌘] walk this stack.
     @State var viewHistory = SessionViewHistory()
     /// True while `loadSession` is being driven by `goBack`/`goForward`. The
@@ -135,8 +136,14 @@ struct AppShell: View {
     }
 
     func currentProject() -> SoulProject? {
-        guard let key = selectedProject else { return nil }
-        return registryStore.projects().first { $0.id == key }
+        workspace.selectedProject
+    }
+
+    var selectedProjectBinding: Binding<String?> {
+        Binding(
+            get: { workspace.selectedProjectId },
+            set: { workspace.selectProject($0) }
+        )
     }
 
     /// The thread the canvas is currently showing. Multiple controllers
@@ -181,6 +188,51 @@ struct AppShell: View {
         withAnimation(sidePanelAnimation) {
             rightPane.setFilePreviewPath(path)
         }
+    }
+
+    func openPreviewPath(_ raw: String) {
+        let stripped = stripLineSuffix(raw)
+        let resolved = resolvePreviewPath(stripped)
+        var final = resolveEllipsisPath(resolved)
+        final = resolveProjectPrefixedPreviewPath(final, stripped: stripped)
+        final = resolveBarePreviewPath(final, stripped: stripped)
+        if rightPane.filePreviewPath == nil {
+            sidebarWasOpenBeforePreview = showSidebar
+            if showSidebar {
+                setSidebarVisible(false)
+            }
+        }
+        setFilePreviewPath(final)
+    }
+
+    private func resolvePreviewPath(_ stripped: String) -> String {
+        if stripped.hasPrefix("/") { return stripped }
+        if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
+        let base = thread?.project.path
+            ?? replay.controller?.project.path
+            ?? currentProject()?.path
+        guard let base else { return stripped }
+        return (base as NSString).appendingPathComponent(stripped)
+    }
+
+    private func resolveProjectPrefixedPreviewPath(_ current: String, stripped: String) -> String {
+        guard !FileManager.default.fileExists(atPath: current),
+              !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
+              let base = thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path
+        else { return current }
+        let baseName = (base as NSString).lastPathComponent
+        let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == Substring(baseName) else { return current }
+        let retry = (base as NSString).appendingPathComponent(String(parts[1]))
+        return FileManager.default.fileExists(atPath: retry) ? retry : current
+    }
+
+    private func resolveBarePreviewPath(_ current: String, stripped: String) -> String {
+        guard !FileManager.default.fileExists(atPath: current),
+              !stripped.hasPrefix("/"), !stripped.hasPrefix("~"), !stripped.contains("/"),
+              let match = findFileInKnownProjects(filename: stripped)
+        else { return current }
+        return match
     }
 
     var body: some View {
@@ -249,19 +301,12 @@ struct AppShell: View {
         }
         .onAppear {
             rightPane.reviewVisible = showReview
-            // SOUL-SOUL_DESKTOP-161: warm the @Observable project cache so
-            // any view (Composer, Sidebar, Toolbar) reading
-            // LiveSoulRegistryStore.shared.cachedActive/cachedProjects hits
-            // an in-memory array instead of a disk-stat sweep per body
-            // re-eval. Refresh is also triggered on window key-back via the
-            // notification below.
-            LiveSoulRegistryStore.shared.refresh()
+        }
+        .task {
+            await workspace.start()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            // SOUL-SOUL_DESKTOP-161: pick up project additions/archives made
-            // outside the app (e.g., direct edits to PROJECTS.json or
-            // wizard completions in another window).
-            LiveSoulRegistryStore.shared.refresh()
+            Task { await workspace.refreshProjects() }
         }
         // Top-center toast banner (lifted from SidebarView). Renders here
         // so it spans the whole window — visible regardless of which pane
@@ -294,62 +339,7 @@ struct AppShell: View {
         .animation(sidePanelAnimation, value: rightPane.reviewVisible)
         .animation(sidePanelAnimation, value: rightPane.filePreviewPath)
         .environment(\.openFilePreview) { raw in
-            // Strip `:LINE` or `:LINE:COL` suffixes that the linkifier
-            // produces for tool-call rows like `ThreadController.swift:1470`.
-            // Without this, the resolver looks for a file literally named
-            // `…swift:1470` and reports "file not found."
-            let stripped = stripLineSuffix(raw)
-            // Resolve relative paths (e.g. `Config/Channel-Dev.xcconfig`,
-            // bare `GEMINI.md`) against the active project's working dir.
-            // Absolute and tilde paths pass through untouched.
-            let resolved: String = {
-                if stripped.hasPrefix("/") { return stripped }
-                if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
-                let base = thread?.project.path
-                    ?? replay.controller?.project.path
-                    ?? currentProject()?.path
-                guard let base else { return stripped }
-                return (base as NSString).appendingPathComponent(stripped)
-            }()
-            // Some upstream text (e.g. agent responses) elides long filenames
-            // with U+2026 ellipsis like `…_097e4d72-…json`. Glob the parent
-            // dir for a single match before giving up.
-            var final = resolveEllipsisPath(resolved)
-            // Agents often prefix relative paths with the project basename
-            // (e.g. "soul/README.md" inside the ~/dotfiles/soul project),
-            // producing a doubled segment after join. If the join missed and
-            // the relative path's first segment matches the project base,
-            // retry by dropping that segment.
-            if !FileManager.default.fileExists(atPath: final),
-               !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
-               let base = thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path {
-                let baseName = (base as NSString).lastPathComponent
-                let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-                if parts.count == 2, parts[0] == Substring(baseName) {
-                    let retry = (base as NSString).appendingPathComponent(String(parts[1]))
-                    if FileManager.default.fileExists(atPath: retry) {
-                        final = retry
-                    }
-                }
-            }
-            // Bare filenames sometimes belong to a different project than the
-            // active one (e.g. agent references a file in another project it
-            // just mentioned). If the resolved path doesn't exist but the
-            // input was a bare filename, search known project roots for a
-            // single match before falling through to a "file not found."
-            if !FileManager.default.fileExists(atPath: final),
-               !stripped.hasPrefix("/"), !stripped.hasPrefix("~"), !stripped.contains("/") {
-                if let match = findFileInKnownProjects(filename: stripped) {
-                    final = match
-                }
-            }
-            if rightPane.filePreviewPath == nil {
-                sidebarWasOpenBeforePreview = showSidebar
-                if showSidebar {
-                    setSidebarVisible(false)
-                }
-            }
-            setFilePreviewPath(final)
+            openPreviewPath(raw)
         }
         .onChange(of: rightPane.filePreviewPath) { _, new in
             if new == nil, sidebarWasOpenBeforePreview, !showSidebar {
@@ -383,7 +373,7 @@ struct AppShell: View {
                     // ProjectChip menu without waiting for the next
                     // window-key-back notification.
                     LiveSoulRegistryStore.shared.refresh()
-                    selectedProject = newKey
+                    workspace.selectProject(newKey)
                 },
                 onCancel: { showNewProject = false }
             )
@@ -428,7 +418,7 @@ struct AppShell: View {
         }
         .background(SoulColor.bg)
         .preferredColorScheme(appearancePref == "dark" ? .dark : appearancePref == "light" ? .light : nil)
-        .onChange(of: selectedProject) { _, newKey in
+        .onChange(of: workspace.selectedProjectId) { _, newKey in
             // Project switch is purely a sidebar filter now — active threads
             // belong to their own project (carried on the ThreadController),
             // so clicking around in the sidebar doesn't tear them down.

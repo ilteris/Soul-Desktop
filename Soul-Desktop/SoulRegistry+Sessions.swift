@@ -185,18 +185,19 @@ extension SoulRegistry {
             let id = cand.id
             let shape = cand.shape
             let rec = cand.record
+            let hasFinalize = rec.has_finalize ?? (shape.finalizePath != nil)
             var s = SoulSession(id: id, project: key, timestamp: cand.recency)
             // For finalized rows, file activity is not necessarily chat
             // activity: opening a row can regenerate preamble/cache files
-            // inside the session dir. Start from the finalize JSON mtime
+            // inside the session dir. Start from the finalize mtime
             // and only move lastActivityAt forward with parsed event
             // timestamps below. Live rows still use the freshest file mtime
             // as a cheap activity fallback.
-            s.lastActivityAt = shape.finalizePath == nil ? cand.recency : shape.jsonMtime
+            s.lastActivityAt = hasFinalize ? shape.jsonMtime : cand.recency
 
             // Finalize metadata — kernel-supplied so we don't open the
-            // JSON ourselves. Falls back to the ledger if no finalize
-            // exists. SOUL-SOUL_DESKTOP-263.
+            // JSON ourselves. The kernel may source this from a ledger
+            // Finalize event or from legacy JSON. SOUL-SOUL_DESKTOP-263.
             if let finalize = rec.finalize {
                 if let ts = parseTimestamp(finalize.timestamp) {
                     s.lastActivityAt = max(s.lastActivityAt ?? .distantPast, ts)
@@ -267,7 +268,7 @@ extension SoulRegistry {
                 s.timestamp = started
             }
 
-            s.isLive = (shape.finalizePath == nil)
+            s.isLive = !hasFinalize
             // Stale: live session with no activity in 1 hour. Computed from
             // lastActivityAt (not the pinned sort timestamp below) so it tracks real
             // activity even though we freeze the sort key.
@@ -303,7 +304,7 @@ extension SoulRegistry {
             // prompt + reply) takes far longer than 60s to land, so the
             // legitimate "unread since finalize" signal still works.
             if s.isDirty, let h = shape.hooksMtime, let j = shape.jsonMtime,
-               shape.finalizePath != nil, h.timeIntervalSince(j) < 60 {
+               hasFinalize, h.timeIntervalSince(j) < 60 {
                 s.isDirty = false
             }
             s.replayable = rec.replayable ?? (shape.hooksPath != nil)
@@ -370,7 +371,7 @@ extension SoulRegistry {
             // Phase-D, new finalizes only land in the ledger — the legacy
             // file path is nil, so the old `finalizePath != nil` check
             // would mis-classify recent finalizes as unfinalized.
-            s.hasFinalize = rec.has_finalize ?? (shape.finalizePath != nil)
+            s.hasFinalize = hasFinalize
             s.sessionVisibility = sessionVisibility
             s.sessionKind = sessionKind
             s.visibilityReason = visibilityReason

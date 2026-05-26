@@ -1,0 +1,273 @@
+import Foundation
+import Observation
+
+struct WorkspaceSnapshot: Equatable {
+    var phase: Phase = .booting
+    var projects: [SoulProject] = []
+    var selectedProjectId: String? = nil
+    var sessionsByProject: [String: ProjectSessions] = [:]
+    var counts: [String: Int] = [:]
+    var staleProjects: Set<String> = []
+    var lastRefresh: [String: Date] = [:]
+
+    var selectedProject: SoulProject? {
+        guard let selectedProjectId else { return nil }
+        return projects.first { $0.id == selectedProjectId }
+    }
+
+    enum Phase: Equatable {
+        case booting
+        case ready
+        case empty
+        case failed(String)
+    }
+}
+
+struct ProjectSessions: Equatable {
+    var rows: [SoulSession]
+    var freshness: WorkspaceFreshness
+    var loadedAt: Date?
+}
+
+enum WorkspaceFreshness: Equatable {
+    case staleCache
+    case freshCache
+    case scanned
+}
+
+enum WorkspaceRefreshPriority {
+    case foreground
+    case background
+}
+
+struct SidebarFilters: Equatable {
+    var chatSourceFilter: String?
+    var hideUntitled: Bool
+    var showUnreadable: Bool
+    var showArchived: Bool
+}
+
+struct SidebarLiveOverlay {
+    var activeControllers: [ThreadController]
+    var draftSession: SoulSession?
+    var activeSessionId: String?
+    var activeProjectId: String?
+}
+
+protocol WorkspaceProjectService: Sendable {
+    func cachedProjects() -> [SoulProject]
+    func refreshProjects() async -> [SoulProject]
+}
+
+protocol WorkspaceSessionService: Sendable {
+    func cachedSessions(projectId: String, allowStale: Bool) async -> [SoulSession]?
+    func scanSessions(project: SoulProject) async -> [SoulSession]
+    func sessionCount(projectId: String) async -> Int
+    func warmCache(projectId: String, sessions: [SoulSession]) async
+}
+
+struct LiveWorkspaceProjectService: WorkspaceProjectService {
+    func cachedProjects() -> [SoulProject] {
+        LiveSoulRegistryStore.shared.cachedActive
+    }
+
+    func refreshProjects() async -> [SoulProject] {
+        await MainActor.run {
+            LiveSoulRegistryStore.shared.refresh()
+            return LiveSoulRegistryStore.shared.cachedActive
+        }
+    }
+}
+
+struct LiveWorkspaceSessionService: WorkspaceSessionService {
+    func cachedSessions(projectId: String, allowStale: Bool) async -> [SoulSession]? {
+        if allowStale {
+            return SoulRegistry.cachedSessionsStaleOK(forProject: projectId)
+        }
+        return SoulRegistry.cachedSessions(forProject: projectId)
+    }
+
+    func scanSessions(project: SoulProject) async -> [SoulSession] {
+        await Task.detached(priority: .userInitiated) {
+            SoulRegistry.allSessions(forProject: project.id, projectPath: project.path)
+        }.value
+    }
+
+    func sessionCount(projectId: String) async -> Int {
+        await Task.detached(priority: .utility) {
+            SoulRegistry.sessionCount(forProject: projectId)
+        }.value
+    }
+
+    func warmCache(projectId: String, sessions: [SoulSession]) async {
+        SoulRegistry.warmCache(forProject: projectId, sessions: sessions)
+    }
+}
+
+@MainActor
+@Observable
+final class SoulWorkspaceModel {
+    private static let selectedProjectDefaultsKey = "soul.selectedProjectId"
+
+    private(set) var snapshot: WorkspaceSnapshot
+
+    private let projectService: WorkspaceProjectService
+    private let sessionService: WorkspaceSessionService
+    private let persistSelection: Bool
+
+    private var generation = 0
+
+    init(
+        projectService: WorkspaceProjectService = LiveWorkspaceProjectService(),
+        sessionService: WorkspaceSessionService = LiveWorkspaceSessionService(),
+        persistedSelectedProjectId: String? = UserDefaults.standard.string(forKey: "soul.selectedProjectId"),
+        persistSelection: Bool = true
+    ) {
+        self.projectService = projectService
+        self.sessionService = sessionService
+        self.persistSelection = persistSelection
+
+        let projects = projectService.cachedProjects()
+        let selected = Self.resolveSelection(
+            persistedSelectedProjectId,
+            projects: projects
+        )
+        self.snapshot = WorkspaceSnapshot(
+            phase: projects.isEmpty ? .empty : .ready,
+            projects: projects,
+            selectedProjectId: selected
+        )
+    }
+
+    var selectedProjectId: String? { snapshot.selectedProjectId }
+    var selectedProject: SoulProject? { snapshot.selectedProject }
+
+    func project(id: String?) -> SoulProject? {
+        guard let id else { return nil }
+        return snapshot.projects.first { $0.id == id }
+    }
+
+    func start() async {
+        await refreshProjects()
+        await primeCachedSessions()
+    }
+
+    func selectProject(_ id: String?) {
+        let resolved = Self.resolveSelection(id, projects: snapshot.projects)
+        snapshot.selectedProjectId = resolved
+        persistSelectedProjectId(resolved)
+    }
+
+    func refreshProjects() async {
+        generation &+= 1
+        let currentGeneration = generation
+        let projects = await projectService.refreshProjects()
+        guard currentGeneration == generation else { return }
+        let selected = Self.resolveSelection(snapshot.selectedProjectId, projects: projects)
+        snapshot.projects = projects
+        snapshot.selectedProjectId = selected
+        snapshot.phase = projects.isEmpty ? .empty : .ready
+        persistSelectedProjectId(selected)
+    }
+
+    func handleProjectMutationCompleted() async {
+        await refreshProjects()
+    }
+
+    func invalidateSessions(projectId: String) {
+        snapshot.staleProjects.insert(projectId)
+    }
+
+    func refreshSessions(projectId: String, priority: WorkspaceRefreshPriority = .foreground) async {
+        guard let project = project(id: projectId) else { return }
+        let currentGeneration = generation
+        let rows = await sessionService.scanSessions(project: project)
+        guard currentGeneration == generation else { return }
+        guard !rows.isEmpty else { return }
+        await sessionService.warmCache(projectId: projectId, sessions: rows)
+        mergeSessions(projectId: projectId, rows: rows, freshness: .scanned)
+    }
+
+    func projectedRows(
+        for projectId: String,
+        filters: SidebarFilters,
+        overlay: SidebarLiveOverlay,
+        archivedIds: Set<String> = [],
+        starredIds: Set<String> = []
+    ) -> SidebarRowResolver.Output? {
+        let disk = snapshot.sessionsByProject[projectId]?.rows ?? []
+        guard !disk.isEmpty || !overlay.activeControllers.isEmpty || overlay.draftSession != nil else {
+            return nil
+        }
+        return SidebarRowResolver.resolve(
+            SidebarRowResolver.Inputs(
+                projectKey: projectId,
+                diskSessions: disk,
+                activeControllers: overlay.activeControllers,
+                draft: overlay.draftSession,
+                archivedIds: archivedIds,
+                starredIds: starredIds,
+                visibilityContext: SidebarRowResolver.VisibilityContext(
+                    archivedIds: archivedIds,
+                    showUnreadable: filters.showUnreadable,
+                    chatSourceFilter: filters.chatSourceFilter,
+                    hideUntitled: filters.hideUntitled
+                )
+            )
+        )
+    }
+
+    private func primeCachedSessions() async {
+        for project in snapshot.projects {
+            if let cached = await sessionService.cachedSessions(projectId: project.id, allowStale: false),
+               !cached.isEmpty {
+                mergeSessions(projectId: project.id, rows: cached, freshness: .freshCache)
+            } else if let stale = await sessionService.cachedSessions(projectId: project.id, allowStale: true),
+                      !stale.isEmpty {
+                mergeSessions(projectId: project.id, rows: stale, freshness: .staleCache)
+            }
+        }
+    }
+
+    private func mergeSessions(projectId: String, rows: [SoulSession], freshness: WorkspaceFreshness) {
+        let prior = snapshot.sessionsByProject[projectId]?.rows ?? []
+        let priorById = Dictionary(uniqueKeysWithValues: prior.map { ($0.id, $0) })
+        let merged = rows.map { fresh in
+            guard let old = priorById[fresh.id] else { return fresh }
+            var out = fresh
+            if fresh.promptCount == 0 && old.promptCount > 0 {
+                out.promptCount = old.promptCount
+            }
+            if fresh.transcriptTurns == 0 && old.transcriptTurns > 0 {
+                out.transcriptTurns = old.transcriptTurns
+            }
+            if fresh.visibleTurnCount == 0 && old.visibleTurnCount > 0 {
+                out.visibleTurnCount = old.visibleTurnCount
+            }
+            return out
+        }
+        snapshot.sessionsByProject[projectId] = ProjectSessions(
+            rows: merged,
+            freshness: freshness,
+            loadedAt: Date()
+        )
+        snapshot.staleProjects.remove(projectId)
+        snapshot.lastRefresh[projectId] = Date()
+    }
+
+    private func persistSelectedProjectId(_ id: String?) {
+        guard persistSelection else { return }
+        if let id {
+            UserDefaults.standard.set(id, forKey: Self.selectedProjectDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.selectedProjectDefaultsKey)
+        }
+    }
+
+    private static func resolveSelection(_ requested: String?, projects: [SoulProject]) -> String? {
+        if let requested, projects.contains(where: { $0.id == requested }) {
+            return requested
+        }
+        return projects.first?.id
+    }
+}

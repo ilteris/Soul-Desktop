@@ -339,18 +339,38 @@ extension SidebarView {
     }
 
     func moveSessionToKernelTrash(_ session: SoulSession) {
+        optimisticallyApplyLifecycle("trashed", to: session)
+        archivedExpanded[session.project] = false
+        onArchive(session)
         runKernelLifecycleCommand("trash", session: session) {
-            archivedExpanded[session.project] = false
-            onArchive(session)
         }
     }
 
     func restoreSessionFromKernelTrash(_ session: SoulSession) {
+        optimisticallyApplyLifecycle(nil, to: session)
         runKernelLifecycleCommand("restore", session: session)
     }
 
     func deleteSessionPermanently(_ session: SoulSession) {
+        optimisticallyRemoveSession(session)
         runKernelLifecycleCommand("delete", session: session)
+    }
+
+    private func optimisticallyApplyLifecycle(_ lifecycle: String?, to session: SoulSession) {
+        guard var rows = sessionsByProject[session.project],
+              let index = rows.firstIndex(where: { $0.id == session.id })
+        else { return }
+        rows[index].lifecycle = lifecycle
+        rows[index].trashedAt = lifecycle == "trashed" ? Date() : nil
+        sessionsByProject[session.project] = rows
+        rebuildResolvedRows(projectIds: Set([session.project]))
+    }
+
+    private func optimisticallyRemoveSession(_ session: SoulSession) {
+        guard var rows = sessionsByProject[session.project] else { return }
+        rows.removeAll { $0.id == session.id }
+        sessionsByProject[session.project] = rows
+        rebuildResolvedRows(projectIds: Set([session.project]))
     }
 
     private func runKernelLifecycleCommand(
@@ -368,6 +388,8 @@ extension SidebarView {
                 await loadProject(session.project)
             } catch {
                 NSLog("[sidebar] soul session \(command) failed for \(session.project)/\(session.id): \(error)")
+                registryStore.invalidateCache(forProject: session.project)
+                await loadProject(session.project)
             }
         }
     }

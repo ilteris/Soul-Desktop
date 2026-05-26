@@ -138,6 +138,9 @@ extension SidebarView {
         // is preserved without paying for a CLI hop every click.
         if registryStore.cachedSessions(forProject: projectId) != nil {
             projectLastFullScanAt[projectId] = Date()
+            if let rows = sessionsByProject[projectId] {
+                onPrewarmSessions(Array(rows.prefix(sessionPageSize)))
+            }
             return
         }
 
@@ -159,6 +162,7 @@ extension SidebarView {
             guard !rows.isEmpty else { return }
             self.sessionsByProject[projectId] = rows
             rebuildResolvedRows(projectIds: Set([projectId]))
+            onPrewarmSessions(Array(rows.prefix(sessionPageSize)))
         }
     }
 
@@ -213,6 +217,7 @@ extension SidebarView {
             }
             self.sessionsByProject[key] = merged
             rebuildResolvedRows(projectIds: Set([key]))
+            onPrewarmSessions(Array(merged.prefix(sessionPageSize)))
         }
     }
 

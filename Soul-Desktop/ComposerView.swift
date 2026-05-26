@@ -307,21 +307,9 @@ struct ComposerView: View {
                         CommandChip(command: cmd, onClear: clearCommand)
                             .padding(.top, 11)
                     }
-                    ZStack(alignment: .topLeading) {
-                        // SOUL-206: shimmer the placeholder. Hide AppKit's
-                        // own draw (empty string) and render our own
-                        // gradient-swept Text aligned to the same inset
-                        // when the prompt is empty.
-                        if prompt.isEmpty && activeCommand == nil {
-                            Text("Ask Soul anything. @ to use plugins or mention files")
-                                .font(SoulType.composer)
-                                .foregroundStyle(SoulColor.fgSubtle.opacity(0.7))
-                                .padding(.top, 12)
-                                .allowsHitTesting(false)
-                        }
                     ComposerTextField(
                         text: $prompt,
-                        placeholder: "",
+                        placeholder: activeCommand == nil ? "Ask Soul anything. @ to use plugins or mention files" : "",
                         onSubmit: submit,
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }
@@ -385,7 +373,6 @@ struct ComposerView: View {
                             onSelect: selectCommand
                         )
                     }
-                    } // end ZStack
                 }
                 .padding(.horizontal, 14)
 

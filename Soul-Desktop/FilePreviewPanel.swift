@@ -292,6 +292,16 @@ struct FilePreviewPanel: View {
             out.error = "File not found at \(url.path)"
             return out
         }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            let handoff = url.appendingPathComponent("handoff_body.md")
+            if FileManager.default.fileExists(atPath: handoff.path) {
+                return readFile(at: handoff)
+            }
+            out.error = "Path is a directory, not a readable file: \(url.path)"
+            return out
+        }
         do {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }

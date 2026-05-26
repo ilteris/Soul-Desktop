@@ -16,6 +16,7 @@ struct SidebarView: View {
     /// for the session (or hydrates from kernel ledger), then composes a
     /// branch-seed via background LLM and pre-fills the composer.
     var onBranch: (SoulSession, Provider) -> Void = { _, _ in }
+    var onPrewarmSessions: ([SoulSession]) -> Void = { _ in }
     var onOpenSettings: () -> Void = {}
     var onToggleSidebar: () -> Void = {}
     var activeReplaySessionId: String? = nil

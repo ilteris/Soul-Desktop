@@ -1,60 +1,63 @@
 import Foundation
 
-/// Watches a project's session directory for new finalize JSON files.
+/// Watches session storage for finalize changes.
 /// Fires `onChange` on main (debounced ~250ms) whenever the directory
 /// contents change, so the caller can re-run `latestFinalize(...)` and
 /// inject a `.finalize` ThreadItem if a record now exists for the live
 /// session id.
 ///
-/// SOUL-SOUL_DESKTOP-075 (b1): zero kernel coupling. The kernel still
-/// writes `~/soul_registry/sessions/<project>/<sid>.json` exactly as
-/// before; this watcher reacts to the dirent change.
+/// New kernel finalizes append a `Finalize` event to `<sid>/hooks.jsonl`;
+/// legacy finalizes wrote JSON into the project session root. Watch both
+/// so out-of-band finalizes surface without requiring a reopen.
 final class FinalizeWatcher {
-    private let directoryPath: String
-    private var fileDescriptor: CInt = -1
-    private var source: DispatchSourceFileSystemObject?
+    private let directoryPaths: [String]
+    private var fileDescriptors: [CInt] = []
+    private var sources: [DispatchSourceFileSystemObject] = []
     private let queue = DispatchQueue(label: "soul.finalize-watcher", qos: .utility)
     private var pending: DispatchWorkItem?
     private let onChange: () -> Void
 
-    init(directoryPath: String, onChange: @escaping () -> Void) {
-        self.directoryPath = directoryPath
+    init(directoryPaths: [String], onChange: @escaping () -> Void) {
+        self.directoryPaths = Array(Set(directoryPaths))
         self.onChange = onChange
+    }
+
+    convenience init(directoryPath: String, onChange: @escaping () -> Void) {
+        self.init(directoryPaths: [directoryPath], onChange: onChange)
     }
 
     func start() {
         stop()
-        // The dir may not exist yet for a brand-new project; create it so
-        // open() succeeds. Idempotent.
-        try? FileManager.default.createDirectory(
-            atPath: directoryPath,
-            withIntermediateDirectories: true
-        )
-        let fd = open(directoryPath, O_EVTONLY)
-        guard fd >= 0 else { return }
-        fileDescriptor = fd
-        let src = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .extend, .rename],
-            queue: queue
-        )
-        src.setEventHandler { [weak self] in self?.scheduleFire() }
-        src.setCancelHandler { [weak self] in
-            guard let self else { return }
-            if self.fileDescriptor >= 0 {
-                close(self.fileDescriptor)
-                self.fileDescriptor = -1
+        for directoryPath in directoryPaths {
+            // The dir may not exist yet for a brand-new project; create it so
+            // open() succeeds. Idempotent.
+            try? FileManager.default.createDirectory(
+                atPath: directoryPath,
+                withIntermediateDirectories: true
+            )
+            let fd = open(directoryPath, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            fileDescriptors.append(fd)
+            let src = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .extend, .rename],
+                queue: queue
+            )
+            src.setEventHandler { [weak self] in self?.scheduleFire() }
+            src.setCancelHandler {
+                close(fd)
             }
+            sources.append(src)
+            src.resume()
         }
-        source = src
-        src.resume()
     }
 
     func stop() {
         pending?.cancel()
         pending = nil
-        source?.cancel()
-        source = nil
+        sources.forEach { $0.cancel() }
+        sources.removeAll()
+        fileDescriptors.removeAll()
     }
 
     private func scheduleFire() {

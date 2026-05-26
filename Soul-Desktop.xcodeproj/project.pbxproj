@@ -252,7 +252,7 @@
 				A2B2B98B2FB0CD51004C6EEC /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				A2018E1A2FB51BB0000D1E87 /* XCRemoteSwiftPackageReference "Splash" */,
 				A2018E1D2FB51C35000D1E87 /* XCRemoteSwiftPackageReference "Highlightr" */,
-				C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "" */,
+				C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A2B2B68E2FB0145A004C6EEC /* Products */;
@@ -787,7 +787,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */ = {
+		C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Modules/SoulDesktopModules;
 		};
@@ -838,22 +838,22 @@
 		};
 		C0D3C0DE0000000000000023 /* SoulCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */;
 			productName = SoulCore;
 		};
 		C0D3C0DE0000000000000024 /* SoulACP */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */;
 			productName = SoulACP;
 		};
 		C0D3C0DE0000000000000026 /* SoulLedger */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */;
 			productName = SoulLedger;
 		};
 		C0D3C0DE0000000000000028 /* SoulRuntime */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "SoulDesktopModules" */;
+			package = C0D3C0DE0000000000000020 /* XCLocalSwiftPackageReference "Modules/SoulDesktopModules" */;
 			productName = SoulRuntime;
 		};
 /* End XCSwiftPackageProductDependency section */

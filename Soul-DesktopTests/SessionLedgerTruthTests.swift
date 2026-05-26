@@ -192,6 +192,60 @@ struct SessionLedgerTruthTests {
         }
     }
 
+    @Test func latestFinalizeReadsLedgerFinalizeEvent() throws {
+        try SessionLedgerTruthTests.withTempHome { _ in
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "Finalize",
+                "session_id": sid,
+                "timestamp": "2026-05-26T17:07:35.296852",
+                "intent": "Record PayPal loop status change",
+                "summary": "Updated PayPal application state.",
+                "rationale": "Recruiter confirmed the role is paused.",
+                "next_step": "Keep PayPal paused unless recruiter reopens.",
+                "fixed": ["SOUL-001"],
+                "source": "codex",
+                "status": "finalized",
+            ])
+            SoulRegistry.flushHooks()
+
+            let rec = try #require(SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid))
+            #expect(rec.intent == "Record PayPal loop status change")
+            #expect(rec.summary == "Updated PayPal application state.")
+            #expect(rec.rationale == "Recruiter confirmed the role is paused.")
+            #expect(rec.nextStep == "Keep PayPal paused unless recruiter reopens.")
+            #expect(rec.fixed == "SOUL-001")
+            #expect(rec.fixedIssues == ["SOUL-001"])
+            #expect(rec.handoffPath?.hasSuffix("/\(sid)/hooks.jsonl") == true)
+        }
+    }
+
+    @Test func latestFinalizePrefersLedgerEventOverLegacyJson() throws {
+        try SessionLedgerTruthTests.withTempHome { home in
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString
+            let dir = home.appendingPathComponent(".soul/sessions/\(project.id)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("""
+            {"timestamp":"2026-05-25T17:00:00Z","intent":"legacy json","summary":"old"}
+            """.utf8).write(to: dir.appendingPathComponent("\(sid).json"))
+
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "Finalize",
+                "session_id": sid,
+                "timestamp": "2026-05-26T17:07:35.296852",
+                "intent": "ledger event",
+                "summary": "new",
+            ])
+            SoulRegistry.flushHooks()
+
+            let rec = try #require(SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid))
+            #expect(rec.intent == "ledger event")
+            #expect(rec.summary == "new")
+        }
+    }
+
     @Test func freshAcceptedPromptAssignsSessionIdBeforeDispatch() {
         let controller = ThreadController(provider: .geminiCLI, project: SessionLedgerTruthTests.testProject())
 

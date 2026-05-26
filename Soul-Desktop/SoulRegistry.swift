@@ -1021,6 +1021,34 @@ enum SoulRegistry {
     static func latestFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
         // HOT PATH — see findNativeSessionID. Direct disk scan.
         let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
+        if let rec = latestLedgerFinalize(projectKey: projectKey, sessionId: sessionId) {
+            SoulSignposts.event("latestFinalize.ledger_hit", "\(sidLabel)")
+            return rec
+        }
+        return latestLegacyFinalize(projectKey: projectKey, sessionId: sessionId)
+    }
+
+    private static func latestLedgerFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return nil }
+
+        var latest: [String: Any]? = nil
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard line.contains("\"Finalize\""),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["event"] as? String == "Finalize"
+            else { continue }
+            latest = obj
+        }
+        guard let obj = latest else { return nil }
+        return finalizeRecord(from: obj, sessionId: sessionId, handoffPath: path)
+    }
+
+    private static func latestLegacyFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
+        let sidLabel = "\(projectKey):\(String(sessionId.prefix(8)))"
         let dirs = projectSessionDirs(projectKey)
         let fm = FileManager.default
         var candidates: [(dir: String, name: String)] = []
@@ -1046,10 +1074,14 @@ enum SoulRegistry {
             SoulSignposts.event("latestFinalize.parse_fail", "\(sidLabel) file=\(name)")
             return nil
         }
-        let fixedArray = obj["fixed_issues"] as? [String] ?? []
+        SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
+        return finalizeRecord(from: obj, sessionId: sessionId, handoffPath: "\(dir)/\(name)")
+    }
+
+    private static func finalizeRecord(from obj: [String: Any], sessionId: String, handoffPath: String?) -> FinalizeRecord {
+        let fixedArray = finalizeFixedIssues(from: obj)
         let fixedStr: String? = fixedArray.isEmpty ? nil : fixedArray.joined(separator: ", ")
         let decisions = obj["decisions_events"] as? [Any]
-        SoulSignposts.event("latestFinalize.hit", "\(sidLabel) file=\(name)")
         return FinalizeRecord(
             sessionId: sessionId,
             summary: obj["summary"] as? String,
@@ -1058,11 +1090,19 @@ enum SoulRegistry {
             fixed: fixedStr,
             nextStep: obj["next_step"] as? String,
             timestamp: parseTimestamp(obj["timestamp"] as? String),
-            handoffPath: "\(dir)/\(name)",
+            handoffPath: handoffPath,
             fixedIssues: fixedArray,
             decisionsCount: decisions?.count,
             parentId: obj["parent_id"] as? String
         )
+    }
+
+    private static func finalizeFixedIssues(from obj: [String: Any]) -> [String] {
+        if let arr = obj["fixed_issues"] as? [String] { return arr }
+        if let arr = obj["fixed"] as? [String] { return arr }
+        if let str = obj["fixed_issues"] as? String, !str.isEmpty { return [str] }
+        if let str = obj["fixed"] as? String, !str.isEmpty { return [str] }
+        return []
     }
 
     static func findTitle(projectKey: String, sessionId: String) -> String? {
@@ -1157,7 +1197,12 @@ enum SoulRegistry {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+    private static let kernelSecondsFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
@@ -1165,7 +1210,8 @@ enum SoulRegistry {
         guard let s, !s.isEmpty else { return nil }
         if let d = iso8601Fractional.date(from: s) { return d }
         if let d = iso8601Plain.date(from: s) { return d }
-        return kernelMicrosFormatter.date(from: s)
+        if let d = kernelMicrosFormatter.date(from: s) { return d }
+        return kernelSecondsFormatter.date(from: s)
     }
 
     static func mtime(_ path: String) -> Date {

@@ -166,26 +166,33 @@ extension AppShell {
                 .zIndex(1)
             }
             if sessions.activeThreadKey == nil {
-                HeroEmptyState(
-                    projectName: currentProject()?.name ?? "your project",
-                    projectPath: currentProject()?.path,
-                    currentProjectID: selectedProject ?? "",
-                    prompt: $prompt,
-                    onSend: { display, agent, extraBlocks in startThread(display: display, agent: agent, extraBlocks: extraBlocks) },
-                    onSelectProject: { selectedProject = $0 },
-                    onNewProject: openNewProjectWizard,
-                    devCommand: currentProject()?.devCommand,
-                    devURL: currentProject()?.devURL,
-                    devRunning: devServerRunning,
-                    onRunLocal: runLocal,
-                    pendingPermissionMode: $pendingPermissionMode,
-                    provider: harness,
-                    onPickHarness: onPickHarness,
-                    branchSeedLoading: branchSeedLoading,
-                    droppedAttachments: $emptyStateDroppedAttachments,
-                    isImageDropTargeted: $isImageDropTargeted
-                )
-                .zIndex(100)
+                switch workspace.snapshot.phase {
+                case .booting:
+                    ProgressView()
+                        .controlSize(.small)
+                        .zIndex(100)
+                case .empty, .failed, .ready:
+                    HeroEmptyState(
+                        projectName: currentProject()?.name ?? "your project",
+                        projectPath: currentProject()?.path,
+                        currentProjectID: workspace.selectedProjectId ?? "",
+                        prompt: $prompt,
+                        onSend: { display, agent, extraBlocks in startThread(display: display, agent: agent, extraBlocks: extraBlocks) },
+                        onSelectProject: { workspace.selectProject($0) },
+                        onNewProject: openNewProjectWizard,
+                        devCommand: currentProject()?.devCommand,
+                        devURL: currentProject()?.devURL,
+                        devRunning: devServerRunning,
+                        onRunLocal: runLocal,
+                        pendingPermissionMode: $pendingPermissionMode,
+                        provider: harness,
+                        onPickHarness: onPickHarness,
+                        branchSeedLoading: branchSeedLoading,
+                        droppedAttachments: $emptyStateDroppedAttachments,
+                        isImageDropTargeted: $isImageDropTargeted
+                    )
+                    .zIndex(100)
+                }
             }
         }
     }
@@ -194,13 +201,14 @@ extension AppShell {
     var sidebarPane: some View {
         ZStack(alignment: .leading) {
             SidebarView(
-                selectedProject: $selectedProject,
+                selectedProject: selectedProjectBinding,
                 onSelectSession: loadSession,
                 onReplaySession: startReplay,
                 onNewChat: { target in newChat(targetProjectID: target) },
                 onNewProject: openNewProjectWizard,
                 onArchive: { session in archiveSession(session) },
                 onBranch: { session, target in handleBranch(session: session, target: target) },
+                onPrewarmSessions: prewarmSessionHydration,
                 onOpenSettings: { showSettings = true },
                 onToggleSidebar: toggleSidebar,
                 activeReplaySessionId: replay.controller?.sessionId,
