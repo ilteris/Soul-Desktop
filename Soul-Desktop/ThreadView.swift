@@ -46,6 +46,8 @@ struct ThreadView: View {
     /// panel opens/closes (canvas shrinks/grows, rows re-wrap, absolute pixel
     /// offset lands on different content).
     @State private var canvasWidth: CGFloat = 0
+    @State private var pendingCanvasWidth: CGFloat = 0
+    @State private var canvasWidthRepinTask: Task<Void, Never>?
 
     /// SOUL-SOUL_DESKTOP-146: drag-target state lifted from ComposerView so
     /// the whole ThreadView accepts image/file drops, not just the composer
@@ -135,7 +137,6 @@ struct ThreadView: View {
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
-        .id(controller.transcriptLayoutNonce)
         // SOUL-LAYOUT-CYCLE-2: refuse animation contexts propagated from
         // above. AppShell attaches `.animation(sidePanelAnimation, value:
         // showSidebar / reviewVisible / filePreviewPath)` to the
@@ -222,6 +223,30 @@ struct ThreadView: View {
         .padding(.top, 8)
     }
 
+    @ViewBuilder
+    private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
+        if !bottomSentinelVisible {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("__bottom__", anchor: .bottom)
+                }
+            } label: {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SoulColor.fg)
+                    .frame(width: 30, height: 30)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(
+                        Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
+            }
+            .buttonStyle(.plain)
+            .help("Jump to bottom")
+            .transition(.opacity)
+        }
+    }
+
     private var controllerDroppedAttachments: Binding<[String]> {
         Binding(
             get: { controller.droppedAttachments },
@@ -234,7 +259,6 @@ struct ThreadView: View {
         let _ = SoulSignposts.event("ThreadView.body")
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ZStack {
                 ScrollView {
                     // SOUL-SOUL_DESKTOP-180: per-row spacing instead of a
                     // flat 18pt gap. Consecutive agent messages now sit
@@ -286,10 +310,19 @@ struct ThreadView: View {
                         Color.clear
                             .onAppear { canvasWidth = geo.size.width }
                             .onChange(of: geo.size.width) { _, newWidth in
-                                canvasWidth = newWidth
+                                guard abs(newWidth - canvasWidth) > 0.5 else { return }
+                                pendingCanvasWidth = newWidth
                             }
                     }
                 )
+                .onChange(of: pendingCanvasWidth) { _, newWidth in
+                    canvasWidthRepinTask?.cancel()
+                    canvasWidthRepinTask = Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(80))
+                        guard !Task.isCancelled else { return }
+                        canvasWidth = newWidth
+                    }
+                }
                 .onChange(of: canvasWidth) { _, _ in
                     // SOUL-SOUL_DESKTOP-188: with the anchor source-of-truth
                     // fixed (updateAnchor now searches the rendered list,
@@ -312,32 +345,19 @@ struct ThreadView: View {
                 // the controller on view detach so the next attach restores
                 // the right position.
                 .onDisappear {
+                    canvasWidthRepinTask?.cancel()
                     controller.scrollAnchorItemId = anchor.itemId
                 }
-                if !bottomSentinelVisible {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            proxy.scrollTo("__bottom__", anchor: .bottom)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(SoulColor.fg)
-                            .frame(width: 30, height: 30)
-                            .background(.regularMaterial, in: Circle())
-                            .overlay(
-                                Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
-                            )
-                            .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Jump to bottom")
-                    .padding(.trailing, 24)
-                    .padding(.bottom, 18)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .transition(.opacity)
+                HStack {
+                    Spacer(minLength: 0)
+                    jumpToBottomButton(proxy: proxy)
                 }
-                }
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .frame(height: 0, alignment: .bottomTrailing)
+                .offset(y: -18)
+                .zIndex(1)
             }
 
             composerSection
@@ -406,7 +426,7 @@ struct ThreadView: View {
     /// force the transcript to the bottom.
     private func followLiveTurn(proxy: ScrollViewProxy) {
         guard controller.isWorking, !controller.isHydrating, !userInteracting else { return }
-        guard bottomSentinelVisible || controller.scrollAnchorItemId == nil else { return }
+        guard bottomSentinelVisible else { return }
         DispatchQueue.main.async {
             proxy.scrollTo("__bottom__", anchor: .bottom)
         }
