@@ -64,30 +64,53 @@ extension ThreadController {
         }
         guard !userPrompts.isEmpty else { return }
 
-        let raw: String?
-        if let bundled = Self.bundledGeminiPrintSpawn() {
-            raw = await Self.runGeminiPrint(
-                executable: bundled.executable,
-                argumentsPrefix: bundled.argumentsPrefix,
-                users: userPrompts,
-                agent: firstAgent
-            )
-        } else if let gemini = which("gemini") {
-            raw = await Self.runGeminiPrint(
-                executable: gemini,
-                argumentsPrefix: [],
-                users: userPrompts,
-                agent: firstAgent
-            )
+        let candidate: (title: String, source: String)?
+        if provider == .codex,
+           let nativeId = nativeSessionId,
+           let codexTitle = await Self.codexThreadName(nativeThreadId: nativeId),
+           let title = Self.cleanedGeneratedTitle(codexTitle) {
+            candidate = (title, "codex")
         } else {
-            // Fallback: no `gemini` on PATH. Use the active ACP session so the
-            // feature still works, at the cost of polluting context with one
-            // meta-turn. Same prompt shape as the subprocess path.
-            raw = await sendSilent(Self.titleGenerationPrompt(users: userPrompts, agent: firstAgent))
+            let raw: String?
+            if let bundled = Self.bundledGeminiPrintSpawn() {
+                raw = await Self.runGeminiPrint(
+                    executable: bundled.executable,
+                    argumentsPrefix: bundled.argumentsPrefix,
+                    users: userPrompts,
+                    agent: firstAgent
+                )
+            } else if let gemini = which("gemini") {
+                raw = await Self.runGeminiPrint(
+                    executable: gemini,
+                    argumentsPrefix: [],
+                    users: userPrompts,
+                    agent: firstAgent
+                )
+            } else {
+                // Fallback: no `gemini` on PATH. Use the active ACP session so the
+                // feature still works, at the cost of polluting context with one
+                // meta-turn. Same prompt shape as the subprocess path.
+                raw = await sendSilent(Self.titleGenerationPrompt(users: userPrompts, agent: firstAgent))
+            }
+            guard let title = Self.cleanedGeneratedTitle(raw) else { return }
+            candidate = (title, "llm")
         }
+        guard let candidate else { return }
 
+        await MainActor.run { self.customTitle = candidate.title }
+        // Persist so the disk-driven sidebar surfaces it on the next scan,
+        // and so finalize/replay anchor on the same title the canvas shows.
+        // `source` lets future user-rename / provider-title precedence stay explicit.
+        SoulRegistry.appendHook(
+            projectKey: project.id,
+            sessionId: sid,
+            event: LedgerHookEvent.title(text: candidate.title, source: candidate.source).hookDictionary
+        )
+    }
+
+    private nonisolated static func cleanedGeneratedTitle(_ raw: String?) -> String? {
         guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty else { return }
+              !title.isEmpty else { return nil }
         // Strip the quotes / trailing punctuation the agent sometimes adds
         // despite the instruction. Cap length so the sidebar row doesn't
         // truncate mid-word.
@@ -99,17 +122,32 @@ extension ThreadController {
         // bad title can't get cached into the Title hook and re-loaded as
         // customTitle on every subsequent session open.
         title = SoulRegistry.stripCommandTags(title).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
+        guard !title.isEmpty,
+              !SessionTitleResolver.isPlaceholderTitle(title),
+              case .prose = SessionTitleResolver.classify(title)
+        else { return nil }
         if title.count > 60 { title = String(title.prefix(60)) }
-        await MainActor.run { self.customTitle = title }
-        // Persist so the disk-driven sidebar surfaces it on the next scan,
-        // and so finalize/replay anchor on the same title the canvas shows.
-        // `source: "llm"` so a future user-rename path can win on precedence.
-        SoulRegistry.appendHook(
-            projectKey: project.id,
-            sessionId: sid,
-            event: LedgerHookEvent.title(text: title, source: "llm").hookDictionary
-        )
+        return title
+    }
+
+    private nonisolated static func codexThreadName(nativeThreadId: String) async -> String? {
+        await Task.detached(priority: .utility) { () -> String? in
+            let path = NSHomeDirectory() + "/.codex/session_index.jsonl"
+            guard FileManager.default.fileExists(atPath: path),
+                  let blob = try? String(contentsOfFile: path, encoding: .utf8)
+            else { return nil }
+
+            var latest: String?
+            for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let data = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (obj["id"] as? String) == nativeThreadId,
+                      let title = obj["thread_name"] as? String
+                else { continue }
+                latest = title
+            }
+            return latest
+        }.value
     }
 
     /// Run `gemini -p` with a title-generation prompt that embeds the first
