@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 
 /// Global hover/active button treatment for the app. Behavior:
 /// - Suppresses macOS's default button chrome (same as `.plain`).
@@ -83,8 +82,6 @@ private struct SoulHoverButtonContent: View {
     let padding: CGFloat
     let paintHoverBackground: Bool
     let isActive: Bool
-    @AppStorage("soul.pointerCursors") private var pointerCursors: Bool = true
-    @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
     var body: some View {
@@ -100,13 +97,7 @@ private struct SoulHoverButtonContent: View {
             .animation(.easeInOut(duration: 0.12), value: hovering)
             .animation(.easeInOut(duration: 0.08), value: configuration.isPressed)
             .animation(.easeInOut(duration: 0.12), value: isActive)
-            .onHover { inside in
-                hovering = inside
-                updateCursor(inside: inside)
-            }
-            .onDisappear {
-                updateCursor(inside: false)
-            }
+            .onHover { hovering = $0 }
     }
 
     private func background() -> Color {
@@ -116,14 +107,5 @@ private struct SoulHoverButtonContent: View {
         if configuration.isPressed { return SoulColor.fg.opacity(0.16) }
         if isActive || hovering { return SoulColor.fg.opacity(0.08) }
         return .clear
-    }
-
-    private func updateCursor(inside: Bool) {
-        guard pointerCursors else { return }
-        if inside, isEnabled {
-            NSCursor.pointingHand.set()
-        } else {
-            NSCursor.arrow.set()
-        }
     }
 }
