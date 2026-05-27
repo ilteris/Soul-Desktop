@@ -273,6 +273,7 @@ extension ThreadController {
             // ACPClient; the rpcError / writeFailed / childTerminated
             // throws land in whichever send path was awaiting.
             appendAgentLog("[child terminated] \(cause)")
+            markProviderProcessTerminated(cause: cause)
             if isWorking {
                 isWorking = false
             }

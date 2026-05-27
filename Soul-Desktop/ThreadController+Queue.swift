@@ -59,6 +59,32 @@ func drainQueuedPromptAfterTurn() {
         codexItemMap.removeAll(keepingCapacity: true)
     }
 
+    func markProviderProcessTerminated(cause: String) {
+        logLifecycle("providerProcessTerminated", note: cause)
+        eventTask = nil
+        switch provider {
+        case .codex:
+            runtimes.codex = nil
+            codexActiveTurnId = nil
+            if let cont = codexTurnContinuation {
+                codexTurnContinuation = nil
+                cont.resume(throwing: NSError(
+                    domain: "Codex",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: cause]
+                ))
+            }
+        case .claude, .geminiCLI, .pi:
+            runtimes.acp = nil
+            supportsLoadSession = false
+        }
+        hasInitialized = false
+        openAgentMessageId = nil
+        openAgentThoughtId = nil
+        seenToolCallIds.removeAll(keepingCapacity: true)
+        codexItemMap.removeAll(keepingCapacity: true)
+    }
+
     func cancelActiveProviderTurn() async {
         let cancelRequest = ProviderRuntimeCancelRequest(
             session: runtimeSessionSnapshot(),

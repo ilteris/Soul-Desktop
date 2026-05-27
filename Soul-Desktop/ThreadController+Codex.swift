@@ -170,12 +170,8 @@ extension ThreadController {
         case .stderr(let line):
             print("[codex stderr] \(line)")
         case .terminated(let cause):
+            markProviderProcessTerminated(cause: cause)
             items.append(.error(id: UUID(), text: "codex child terminated: \(cause)"))
-            if let cont = codexTurnContinuation {
-                codexTurnContinuation = nil
-                cont.resume(throwing: NSError(domain: "Codex", code: 2,
-                                              userInfo: [NSLocalizedDescriptionKey: cause]))
-            }
         }
     }
 

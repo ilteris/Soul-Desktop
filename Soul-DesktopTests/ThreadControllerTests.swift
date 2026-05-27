@@ -108,6 +108,21 @@ struct ThreadControllerTests {
         #expect(controller._testTrackedToolCallCount == 0)
     }
 
+    @Test func testProviderTerminationInvalidatesReusableRuntimeState() async throws {
+        let controller = ThreadController(provider: .claude, project: Self.testProject())
+        controller.assignSessionId("kernel-session")
+        controller.nativeSessionId = "native-session"
+        controller.hasInitialized = true
+        controller.supportsLoadSession = true
+
+        controller.markProviderProcessTerminated(cause: "child closed stdout (EOF)")
+
+        #expect(controller.hasInitialized == false)
+        #expect(controller.supportsLoadSession == false)
+        #expect(controller.nativeSessionId == "native-session")
+        #expect(controller.sessionId == "kernel-session")
+    }
+
     @Test func testSetActiveThreadBumpsActivationNonceOnlyForSelectedThread() async throws {
         let project = Self.testProject()
         let first = ThreadController(provider: .geminiCLI, project: project)
