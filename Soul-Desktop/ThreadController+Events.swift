@@ -9,7 +9,7 @@ import SoulRuntime
 /// the spawn-time event task in `spawnAndInitialize`; it forks ACP
 /// session updates into `apply(_:)`, ACP requests into `handleACPRequest`,
 /// and stderr/termination into status rows. The title cluster
-/// (`sendSilent` + `generateTitle` + `runClaudePrint`) drives the
+/// (`sendSilent` + `generateTitle` + `runGeminiPrint`) drives the
 /// post-turn synthetic prompt that asks the agent for a short title and
 /// captures the reply silently (no canvas render).
 ///
@@ -65,15 +65,25 @@ extension ThreadController {
         guard !userPrompts.isEmpty else { return }
 
         let raw: String?
-        if let claude = which("claude") {
-            raw = await Self.runClaudePrint(executable: claude, users: userPrompts, agent: firstAgent)
+        if let bundled = Self.bundledGeminiPrintSpawn() {
+            raw = await Self.runGeminiPrint(
+                executable: bundled.executable,
+                argumentsPrefix: bundled.argumentsPrefix,
+                users: userPrompts,
+                agent: firstAgent
+            )
+        } else if let gemini = which("gemini") {
+            raw = await Self.runGeminiPrint(
+                executable: gemini,
+                argumentsPrefix: [],
+                users: userPrompts,
+                agent: firstAgent
+            )
         } else {
-            // Fallback: no `claude` on PATH. Use the active ACP session so the
+            // Fallback: no `gemini` on PATH. Use the active ACP session so the
             // feature still works, at the cost of polluting context with one
             // meta-turn. Same prompt shape as the subprocess path.
-            raw = await sendSilent(
-                "Summarize our conversation so far into a concise 3-5 word title. Respond with ONLY the title, no quotes, no prefix, no trailing punctuation."
-            )
+            raw = await sendSilent(Self.titleGenerationPrompt(users: userPrompts, agent: firstAgent))
         }
 
         guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -102,23 +112,22 @@ extension ThreadController {
         )
     }
 
-    /// Run `claude -p` with a title-generation prompt that embeds the first
+    /// Run `gemini -p` with a title-generation prompt that embeds the first
     /// few substantive user turns (and, when present, the first agent reply)
     /// as context.
     /// Returns trimmed stdout on success, nil on spawn/exit failure.
-    private static func runClaudePrint(executable: String, users: [String], agent: String?) async -> String? {
+    private static func runGeminiPrint(
+        executable: String,
+        argumentsPrefix: [String],
+        users: [String],
+        agent: String?
+    ) async -> String? {
         await Task.detached(priority: .userInitiated) { () -> String? in
-            let userContext = users.prefix(3).enumerated().map { idx, text in
-                "User \(idx + 1): \(text)"
-            }.joined(separator: "\n\n")
-            var prompt = "Produce a concise 3-5 word title for the following chat. Respond with ONLY the title — no quotes, no prefix, no trailing punctuation.\n\n\(userContext)"
-            if let agent, !agent.isEmpty {
-                prompt += "\n\nAssistant: \(agent)"
-            }
+            let prompt = titleGenerationPrompt(users: users, agent: agent)
 
             let p = Process()
             p.executableURL = URL(fileURLWithPath: executable)
-            p.arguments = ["-p", prompt]
+            p.arguments = argumentsPrefix + ["-p", prompt, "--output-format", "text"]
             var env = ProcessInfo.processInfo.environment
             env["SOUL_SESSION_VISIBILITY"] = "machine"
             env["SOUL_SESSION_KIND"] = "title_generation"
@@ -136,6 +145,50 @@ extension ThreadController {
             let data = out.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         }.value
+    }
+
+    private nonisolated static func bundledGeminiPrintSpawn() -> (executable: String, argumentsPrefix: [String])? {
+        guard let resources = Bundle.main.resourceURL else { return nil }
+        let entry = resources
+            .appendingPathComponent("GeminiCLI")
+            .appendingPathComponent("bundle")
+            .appendingPathComponent("gemini.js")
+            .path
+        guard FileManager.default.fileExists(atPath: entry),
+              let node = which("node") else {
+            return nil
+        }
+        return (node, [entry])
+    }
+
+    private nonisolated static func titleGenerationPrompt(users: [String], agent: String?) -> String {
+        let userContext = users.prefix(3).enumerated().map { idx, text in
+            "User \(idx + 1):\n\(text)"
+        }.joined(separator: "\n\n")
+
+        var prompt = """
+        Generate a title for this chat session.
+
+        Title copy should be glanceable and specific.
+        - Title: what this thread now is (state + object).
+        - Aim for 4-8 words.
+        - Explain what was built, fixed, decided, investigated, or requested.
+        - Prefer concrete nouns + verbs.
+        - Include a crisp status cue when helpful: blocked, needs decision, ready for review, fixed, verified.
+        - Avoid generic titles like "Update", "Done", "FYI", "Following up", "Chat", "Question", "Help", or "Untitled".
+        - Do not copy a long user prompt verbatim.
+
+        Respond with ONLY the title. No quotes, no prefix, no trailing punctuation.
+
+        Chat context:
+
+        \(userContext)
+        """
+
+        if let agent, !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            prompt += "\n\nAssistant:\n\(agent)"
+        }
+        return prompt
     }
 
     func handle(_ event: ACPClient.Event) {
