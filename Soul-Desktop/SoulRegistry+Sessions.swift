@@ -323,25 +323,27 @@ extension SoulRegistry {
                 }
             }
 
+            let providerTranscriptLoadable = projectPath.map {
+                canLoadCached(sessionId: id, projectKey: key, projectPath: $0, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
+            } ?? false
             if let loadable = rec.loadable {
-                s.loadable = loadable
-            } else if let path = projectPath {
-                s.loadable = canLoadCached(sessionId: id, projectKey: key, projectPath: path, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
+                s.loadable = loadable || providerTranscriptLoadable
             } else {
-                s.loadable = false
+                s.loadable = providerTranscriptLoadable
             }
 
+            let providerTranscriptTurns = countTranscriptTurns(
+                sessionId: id,
+                projectKey: key,
+                projectPath: projectPath,
+                sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
+                cache: dirCache,
+                nativeSessionIDs: nativeSessionIDs
+            )
             if let visible = rec.visible_turn_count {
-                s.transcriptTurns = visible
+                s.transcriptTurns = max(visible, providerTranscriptTurns)
             } else {
-                s.transcriptTurns = countTranscriptTurns(
-                    sessionId: id,
-                    projectKey: key,
-                    projectPath: projectPath,
-                    sessionDir: shape.sessionDir ?? sessionDir(projectKey: key, sessionId: id),
-                    cache: dirCache,
-                    nativeSessionIDs: nativeSessionIDs
-                )
+                s.transcriptTurns = providerTranscriptTurns
             }
 
             if s.promptCount == 0, rec.title_status == nil, rec.title_source == nil {
@@ -375,6 +377,15 @@ extension SoulRegistry {
             s.sessionVisibility = sessionVisibility
             s.sessionKind = sessionKind
             s.visibilityReason = visibilityReason
+            if s.promptCount == 0,
+               s.transcriptTurns > 0,
+               sessionVisibility == "machine",
+               sessionKind == "metadata_only" {
+                s.sessionVisibility = "human"
+                s.sessionKind = "conversation"
+                s.visibilityReason = "provider_transcript_conversation"
+                s.replayable = true
+            }
             s.delegationEventCount = delegationEventCount
             s.sessionStartPpid = sessionStartPpid
             s.partialCapture = partialCapture
