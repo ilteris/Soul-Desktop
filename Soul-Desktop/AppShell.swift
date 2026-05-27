@@ -425,10 +425,14 @@ struct AppShell: View {
         .background(SoulColor.bg)
         .preferredColorScheme(appearancePref == "dark" ? .dark : appearancePref == "light" ? .light : nil)
         .onChange(of: workspace.selectedProjectId) { _, newKey in
-            // Project switch is purely a sidebar filter now — active threads
-            // belong to their own project (carried on the ThreadController),
-            // so clicking around in the sidebar doesn't tear them down.
+            // Selecting a project row should route the composer to that
+            // project. Mounted threads stay alive in the background, but a
+            // different project's thread must not keep owning the canvas or
+            // the next send will append to the wrong session.
             devServerRunning = false
+            if let active = sessions.activeThread, active.project.id != newKey {
+                sessions.showProjectDraftOrEmpty(projectId: newKey)
+            }
         }
         .onChange(of: showTerminal) { _, isOpen in
             if !isOpen { devServerRunning = false }

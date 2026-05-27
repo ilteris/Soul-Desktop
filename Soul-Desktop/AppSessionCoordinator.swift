@@ -84,6 +84,15 @@ final class AppSessionCoordinator {
         }
     }
 
+    func showProjectDraftOrEmpty(projectId: String?) {
+        activeThreadKey = nil
+        if let draftSession, draftSession.project == projectId {
+            pendingActiveId = draftSession.id
+        } else {
+            pendingActiveId = nil
+        }
+    }
+
     private func bumpThreadRecency(_ key: String) {
         threadRecency.removeAll(where: { $0 == key })
         threadRecency.insert(key, at: 0)
