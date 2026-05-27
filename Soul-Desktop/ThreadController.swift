@@ -154,6 +154,7 @@ final class ThreadController {
     var lastError: String?
     var availableCommands: [SlashCommand] = []
     var customTitle: String? = nil
+    @ObservationIgnored var titleGenerationInFlight: Bool = false
     /// Bumped (any change) when the toolbar's pencil/⋯ "Rename" is clicked.
     /// `ThreadView` observes this and opens its rename alert. Using a counter
     /// instead of a Bool so back-to-back rename clicks work without an

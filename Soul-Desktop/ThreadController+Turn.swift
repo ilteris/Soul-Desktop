@@ -405,7 +405,8 @@ extension ThreadController {
             if substantiveUserPrompts.contains(title) { return false }
             return true
         }()
-        if substantiveUserPrompts.count == 1 && !hasUsableCustomTitle {
+        if substantiveUserPrompts.count == 1 && !hasUsableCustomTitle && !titleGenerationInFlight {
+            titleGenerationInFlight = true
             Task { await generateTitle() }
         }
     }

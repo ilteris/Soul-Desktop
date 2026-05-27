@@ -41,6 +41,7 @@ extension ThreadController {
     }
 
     func generateTitle() async {
+        defer { titleGenerationInFlight = false }
         guard let sid = sessionId else { return }
 
         // Snapshot the first real user prompts + first agent turn from items.
@@ -173,16 +174,51 @@ extension ThreadController {
             let out = Pipe(); let err = Pipe()
             p.standardOutput = out
             p.standardError = err
+
             do {
                 try p.run()
-                p.waitUntilExit()
             } catch {
                 return nil
             }
+
+            var outData = Data()
+            var errData = Data()
+            let drainQueue = DispatchQueue(label: "soul.title-generation.drain", attributes: .concurrent)
+            let outGroup = DispatchGroup()
+            let errGroup = DispatchGroup()
+            outGroup.enter()
+            errGroup.enter()
+            drainQueue.async {
+                outData = out.fileHandleForReading.readDataToEndOfFile()
+                outGroup.leave()
+            }
+            drainQueue.async {
+                errData = err.fileHandleForReading.readDataToEndOfFile()
+                errGroup.leave()
+            }
+
+            let waitTask = DispatchWorkItem {
+                p.waitUntilExit()
+            }
+            drainQueue.async(execute: waitTask)
+            if waitTask.wait(timeout: .now() + .seconds(20)) == .timedOut {
+                NSLog("[title-generation] Gemini title request timed out; terminating child")
+                p.terminate()
+                _ = waitTask.wait(timeout: .now() + .seconds(1))
+                _ = waitForTitlePipeDrain(outGroup)
+                _ = waitForTitlePipeDrain(errGroup)
+                _ = errData
+                return nil
+            }
+            _ = waitForTitlePipeDrain(outGroup)
+            _ = waitForTitlePipeDrain(errGroup)
             guard p.terminationStatus == 0 else { return nil }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
+            return String(data: outData, encoding: .utf8)
         }.value
+    }
+
+    private nonisolated static func waitForTitlePipeDrain(_ group: DispatchGroup) -> DispatchTimeoutResult {
+        group.wait(timeout: .now() + .seconds(1))
     }
 
     private nonisolated static func bundledGeminiPrintSpawn() -> (executable: String, argumentsPrefix: [String])? {
