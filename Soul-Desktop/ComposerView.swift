@@ -314,6 +314,7 @@ struct ComposerView: View {
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }
                         },
+                        preservesFocusedDraft: activeCommand == nil,
                         onTab: {
                             // Commit the top-matched slash command when the
                             // popover is open. Returns true to swallow Tab so
@@ -398,7 +399,6 @@ struct ComposerView: View {
                                 .background(SoulColor.surface, in: Circle())
                         }
                         .buttonStyle(.soulChip)
-                        .keyboardShortcut(.return, modifiers: [])
                         .help("Queue this message — will send when the current turn finishes")
                     } else {
                         Button(action: submit) {
@@ -407,7 +407,6 @@ struct ComposerView: View {
                                 .background(SoulColor.surface, in: Circle())
                         }
                         .buttonStyle(.soulChip)
-                        .keyboardShortcut(.return, modifiers: [])
                     }
                 }
                 .padding(.horizontal, 10)

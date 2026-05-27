@@ -135,6 +135,7 @@ struct ThreadView: View {
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
+        .id(controller.transcriptLayoutNonce)
         // SOUL-LAYOUT-CYCLE-2: refuse animation contexts propagated from
         // above. AppShell attaches `.animation(sidePanelAnimation, value:
         // showSidebar / reviewVisible / filePreviewPath)` to the

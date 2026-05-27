@@ -132,9 +132,17 @@ final class ThreadController {
     var items: [ThreadItem] = [] {
         didSet {
             itemsVersion &+= 1
+            if oldValue.count != items.count {
+                transcriptLayoutNonce &+= 1
+            }
             SoulSignposts.event("Flash.items.didSet", "old=\(oldValue.count) new=\(items.count)")
         }
     }
+    /// Observable layout invalidation for the SwiftUI transcript viewport.
+    /// The internal `itemsVersion` is intentionally ignored by Observation
+    /// for cache churn, but LazyVStack sometimes needs an explicit identity
+    /// bump when rows are inserted into a restored session.
+    var transcriptLayoutNonce: Int = 0
     var historicalIDs: Set<UUID> = []
     /// Per-thread composer draft text. Lives on the controller (not on
     /// AppShell) so keystrokes don't invalidate the whole app's view tree —

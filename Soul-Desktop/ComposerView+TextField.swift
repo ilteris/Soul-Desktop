@@ -22,6 +22,7 @@ struct ComposerTextField: NSViewRepresentable {
     let placeholder: String
     let onSubmit: () -> Void
     let onBackspaceWhenEmpty: () -> Void
+    var preservesFocusedDraft: Bool = true
     var onTab: (() -> Bool)? = nil
     /// Fires on Up-arrow when the field is empty. Returns true to consume
     /// the event (caret-up motion suppressed), false to fall through to
@@ -87,6 +88,7 @@ struct ComposerTextField: NSViewRepresentable {
             if text.isEmpty,
                !tv.string.isEmpty,
                tv.window?.firstResponder === tv,
+               preservesFocusedDraft,
                !tv.allowNextEmptySync {
                 return
             }
@@ -222,6 +224,24 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            super.insertNewline(sender)
+            return
+        }
+        allowNextEmptySync = true
+        onCommit?()
+    }
+
+    override func insertNewlineIgnoringFieldEditor(_ sender: Any?) {
+        if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            super.insertNewlineIgnoringFieldEditor(sender)
+            return
+        }
+        allowNextEmptySync = true
+        onCommit?()
     }
 
     override func draw(_ dirtyRect: NSRect) {
