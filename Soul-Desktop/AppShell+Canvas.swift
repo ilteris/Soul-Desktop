@@ -14,7 +14,6 @@ extension AppShell {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .soulPointerCursor()
         .help("Toggle sidebar (⌘B)")
         .padding(.leading, 78)
         .padding(.top, 8)
