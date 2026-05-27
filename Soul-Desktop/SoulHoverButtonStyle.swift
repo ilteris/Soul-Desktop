@@ -124,16 +124,11 @@ struct SoulPointerCursorModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // A one-shot onHover cursor update can be overwritten by the
-            // ScrollView/text-selection cursor underneath floating overlay
-            // buttons. Reassert on every hover movement so the topmost
-            // control wins the cursor race.
-            .onContinuousHover { phase in
+            .onHover { inside in
                 guard pointerCursors else { return }
-                switch phase {
-                case .active where isEnabled:
+                if inside, isEnabled {
                     NSCursor.pointingHand.set()
-                case .active, .ended:
+                } else {
                     NSCursor.arrow.set()
                 }
             }
