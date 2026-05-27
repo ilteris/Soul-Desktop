@@ -44,6 +44,7 @@ struct AppShell: View {
     @State private var codexSmokeModel = CodexSmokeViewModel()
     @State var showSettings = false
     @State var showNewProject = false
+    @State var projectListRefreshNonce: Int = 0
     @State var harness: Provider = .geminiCLI
 
     /// SOUL-SOUL_DESKTOP-237: presented when the user picks a different
@@ -368,12 +369,17 @@ struct AppShell: View {
             NewProjectWizard(
                 onCreated: { newKey in
                     showNewProject = false
-                    // SOUL-SOUL_DESKTOP-161: refresh the cached project
-                    // list so the new project appears in Composer's
-                    // ProjectChip menu without waiting for the next
-                    // window-key-back notification.
-                    LiveSoulRegistryStore.shared.refresh()
-                    workspace.selectProject(newKey)
+                    Task { @MainActor in
+                        // SOUL-SOUL_DESKTOP-326: project creation mutates the
+                        // registry outside the sidebar, so explicitly refresh
+                        // both workspace selection state and SidebarView's
+                        // local project snapshot. Without this, the new
+                        // project is present on disk but invisible until app
+                        // reload / key-window refresh.
+                        await workspace.handleProjectMutationCompleted()
+                        workspace.selectProject(newKey)
+                        projectListRefreshNonce &+= 1
+                    }
                 },
                 onCancel: { showNewProject = false }
             )

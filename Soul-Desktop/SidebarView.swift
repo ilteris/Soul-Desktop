@@ -52,6 +52,10 @@ struct SidebarView: View {
     /// chat" button). Distinguishes user-initiated chats from launch
     /// state restore.
     var newChatNonce: Int = 0
+    /// Bumped by AppShell after known project-list mutations, like creating a
+    /// project in NewProjectWizard. This keeps the sidebar explicit-refresh
+    /// based instead of watching PROJECTS.json continuously.
+    var projectListRefreshNonce: Int = 0
     // Seed projects synchronously from PROJECTS.json so the first render
     // already has data instead of flashing an empty "Projects" + "No chats"
     // header for the ~250ms until the async reload finishes.
@@ -190,6 +194,16 @@ struct SidebarView: View {
                         .background(SoulColor.surface, in: Capsule())
                 }
                 Spacer()
+                Button {
+                    Task { await reload() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SoulColor.fgMuted)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.soulHover)
+                .help("Refresh projects")
                 Button {
                     if let project = selectedProjectForMutation {
                         pendingProjectEdit = ProjectEditRequest(project: project)
@@ -366,6 +380,9 @@ struct SidebarView: View {
         .onChange(of: currentProvider) { _, _ in
             // Harness change → re-filter live rows. A row that's valid under
             // Claude isn't valid under Gemini-CLI (and vice-versa).
+            Task { await reload() }
+        }
+        .onChange(of: projectListRefreshNonce) { _, _ in
             Task { await reload() }
         }
         .onChange(of: sidebarProjectionInputSignature) { _, _ in

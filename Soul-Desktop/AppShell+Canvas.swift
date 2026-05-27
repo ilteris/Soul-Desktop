@@ -223,6 +223,7 @@ extension AppShell {
                 draftSession: sessions.draftSession,
                 activeThreads: sessions.mountedThreads,
                 newChatNonce: newChatNonce,
+                projectListRefreshNonce: projectListRefreshNonce,
                 repairToast: $repairToast
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
