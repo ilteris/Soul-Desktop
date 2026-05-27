@@ -429,7 +429,6 @@ struct AppShell: View {
             // belong to their own project (carried on the ThreadController),
             // so clicking around in the sidebar doesn't tear them down.
             devServerRunning = false
-            sessions.clearDraftIfProjectChanged(to: newKey)
         }
         .onChange(of: showTerminal) { _, isOpen in
             if !isOpen { devServerRunning = false }
