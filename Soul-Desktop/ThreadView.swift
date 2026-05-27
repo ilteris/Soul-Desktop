@@ -242,6 +242,7 @@ struct ThreadView: View {
                     .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
+            .soulPointerCursor()
             .help("Jump to bottom")
             .transition(.opacity)
         }

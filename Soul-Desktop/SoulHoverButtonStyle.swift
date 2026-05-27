@@ -47,8 +47,10 @@ struct SoulHoverButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         if chipMode {
             // Pure chrome-suppression. No contentShape, no scaleEffect, no
-            // onHover. The call-site's own background shape IS the hit region.
-            return AnyView(configuration.label)
+            // hover background. The call-site's own background shape IS the
+            // hit region. Cursor affordance is still safe because it does not
+            // alter layout or hit testing.
+            return AnyView(configuration.label.soulPointerCursor())
         }
         return AnyView(SoulHoverButtonContent(
             configuration: configuration,
@@ -102,11 +104,8 @@ private struct SoulHoverButtonContent: View {
             .animation(.easeInOut(duration: 0.12), value: isActive)
             .onHover { inside in
                 hovering = inside
-                updateCursor(inside: inside)
             }
-            .onDisappear {
-                updateCursor(inside: false)
-            }
+            .soulPointerCursor()
     }
 
     private func background() -> Color {
@@ -117,13 +116,31 @@ private struct SoulHoverButtonContent: View {
         if isActive || hovering { return SoulColor.fg.opacity(0.08) }
         return .clear
     }
+}
 
-    private func updateCursor(inside: Bool) {
-        guard pointerCursors else { return }
-        if inside, isEnabled {
-            NSCursor.pointingHand.set()
-        } else {
-            NSCursor.arrow.set()
-        }
+struct SoulPointerCursorModifier: ViewModifier {
+    @AppStorage("soul.pointerCursors") private var pointerCursors: Bool = true
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                guard pointerCursors else { return }
+                if inside, isEnabled {
+                    NSCursor.pointingHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+            .onDisappear {
+                guard pointerCursors else { return }
+                NSCursor.arrow.set()
+            }
+    }
+}
+
+extension View {
+    func soulPointerCursor() -> some View {
+        modifier(SoulPointerCursorModifier())
     }
 }
