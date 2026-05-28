@@ -111,6 +111,7 @@ extension AppShell {
         ) { providers in
             guard !self.replay.isActive else { return false }
             if let activeCtrl = self.sessions.activeThread {
+                guard activeCtrl.canAcceptComposerInput else { return false }
                 let new = DropAttachmentHandler.process(
                     providers: providers,
                     projectPath: activeCtrl.project.path,
@@ -157,10 +158,10 @@ extension AppShell {
                     prompt: sessions.bindingForDraft(ctrl.id),
                     onCancel: { cancelTurn() },
                     onPickHarness: onPickHarness,
+                    onBranchFromDisabled: { provider in branchFrom(ctrl, to: provider) },
                     branchSeedLoading: branchSeedLoading,
                     terminalActive: showTerminal,
-                    onToggleTerminal: toggleTerminal,
-                    isImageDropTargeted: $isImageDropTargeted
+                    onToggleTerminal: toggleTerminal
                 )
                 .environment(\.autoCompactController, autoCompact)
                 .zIndex(1)
@@ -168,8 +169,7 @@ extension AppShell {
             if sessions.activeThreadKey == nil {
                 switch workspace.snapshot.phase {
                 case .booting:
-                    ProgressView()
-                        .controlSize(.small)
+                    SparkleSpinner(tint: SoulColor.fgMuted, size: 12)
                         .zIndex(100)
                 case .empty, .failed, .ready:
                     HeroEmptyState(
@@ -188,8 +188,7 @@ extension AppShell {
                         provider: harness,
                         onPickHarness: onPickHarness,
                         branchSeedLoading: branchSeedLoading,
-                        droppedAttachments: $emptyStateDroppedAttachments,
-                        isImageDropTargeted: $isImageDropTargeted
+                        droppedAttachments: $emptyStateDroppedAttachments
                     )
                     .zIndex(100)
                 }

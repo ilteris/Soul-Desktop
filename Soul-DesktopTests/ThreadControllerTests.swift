@@ -19,6 +19,7 @@ struct ThreadControllerTests {
             devURL: nil
         )
         let controller = ThreadController(provider: .geminiCLI, project: project)
+        controller.isHydrating = false
         
         // Simulate a scroll anchor being set
         let midId = UUID()
@@ -161,6 +162,135 @@ struct ThreadControllerTests {
         #expect(second.activationNonce == secondNonceAfterMount)
     }
 
+    @Test func testSwitchingActiveThreadClearsComposerDraftOnlyForActivatedThread() async throws {
+        let project = Self.testProject()
+        let first = ThreadController(provider: .geminiCLI, project: project)
+        let second = ThreadController(provider: .codex, project: project)
+        let sessions = AppSessionCoordinator()
+
+        sessions.mount(first)
+        first.composerDraft = "draft in first"
+        sessions.mount(second)
+        second.composerDraft = "draft in second"
+
+        sessions.setActiveThread(first.id)
+
+        #expect(first.composerDraft.isEmpty)
+        #expect(second.composerDraft == "draft in second")
+
+        first.composerDraft = "new first draft"
+        sessions.setActiveThread(first.id)
+
+        #expect(first.composerDraft == "new first draft")
+    }
+
+    @Test func testMountedWorkingThreadIsNotEvictedWhenBrowsingOtherSessions() async throws {
+        let project = Self.testProject()
+        let working = ThreadController(provider: .geminiCLI, project: project)
+        working.assignSessionId("working-session")
+        working.isWorking = true
+        let second = ThreadController(provider: .codex, project: project)
+        let third = ThreadController(provider: .claude, project: project)
+        let fourth = ThreadController(provider: .pi, project: project)
+        let sessions = AppSessionCoordinator()
+
+        sessions.mount(working)
+        sessions.mount(second)
+        sessions.mount(third)
+        sessions.mount(fourth)
+
+        #expect(sessions.existingThread(sessionId: "working-session") === working)
+        #expect(sessions.threads[working.id] != nil)
+        #expect(sessions.threads.count == 3)
+    }
+
+    @Test func testComposerInputDisabledWhenControllerCannotAcceptTurns() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+
+        #expect(!controller.canAcceptComposerInput)
+        #expect(controller.acceptUserPrompt(display: "hello", agent: "hello") == nil)
+
+        controller.items.append(.agentMessage(id: UUID(), text: "visible hydrated row", complete: true, timestamp: Date()))
+        #expect(controller.canAcceptComposerInput)
+
+        controller.isHydrating = false
+        #expect(controller.canAcceptComposerInput)
+
+        controller.isTornDown = true
+        #expect(!controller.canAcceptComposerInput)
+        #expect(controller.acceptUserPrompt(display: "hello", agent: "hello") == nil)
+    }
+
+    @Test func testAttachmentOnlyPromptIsAcceptedWhenControllerIsLive() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+
+        let pending = controller.acceptUserPrompt(
+            display: "[Screenshot.png](file:///tmp/Screenshot.png)",
+            agent: "",
+            extraBlocks: [.image(mimeType: "image/png", base64: "abc")]
+        )
+
+        #expect(pending != nil)
+        #expect(controller.items.count == 1)
+        #expect(pending?.extraBlocks.count == 1)
+    }
+
+    @Test func testVisibleHydratingControllerStillAcceptsQueuedPrompt() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.items.append(.agentMessage(id: UUID(), text: "existing visible transcript", complete: true, timestamp: Date()))
+        controller.isWorking = true
+        controller.isHydrating = true
+
+        let pending = controller.acceptUserPrompt(display: "continue", agent: "continue")
+
+        #expect(pending == nil)
+        #expect(controller.items.count == 2)
+        #expect(controller.queuedPrompts.count == 1)
+        #expect(controller.scrollAnchorItemId == nil)
+    }
+
+    @Test func testClearQueueRemovesQueuedUserBubbles() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+
+        #expect(controller.items.count == 2)
+        #expect(controller.groupedItemsSplit.main.count == 1)
+        #expect(controller.groupedItemsSplit.queued.count == 1)
+
+        controller.clearQueue()
+
+        #expect(controller.queuedPrompts.isEmpty)
+        #expect(controller.items.count == 1)
+        #expect(controller.groupedItemsSplit.main.count == 1)
+        #expect(controller.groupedItemsSplit.queued.isEmpty)
+        if case .userMessage(_, let text, _) = controller.items[0] {
+            #expect(text == "active")
+        } else {
+            Issue.record("Expected active prompt to remain")
+        }
+    }
+
+    @Test func testClearQueueRemovesAllQueuedBubblesFromMainTranscript() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued one", agent: "queued one")
+        _ = controller.acceptUserPrompt(display: "queued two", agent: "queued two")
+
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active"])
+        #expect(controller.groupedItemsSplit.queued.compactMap(Self.userMessageText) == ["queued one", "queued two"])
+
+        controller.clearQueue()
+
+        #expect(controller.queuedPrompts.isEmpty)
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active"])
+        #expect(controller.groupedItemsSplit.queued.isEmpty)
+        #expect(controller.items.compactMap(Self.userMessageText) == ["active"])
+    }
+
     private static func testProject() -> SoulProject {
         SoulProject(
             id: "test",
@@ -173,5 +303,12 @@ struct ThreadControllerTests {
             devCommand: nil,
             devURL: nil
         )
+    }
+
+    private static func userMessageText(_ item: ThreadItem) -> String? {
+        if case .userMessage(_, let text, _) = item {
+            return text
+        }
+        return nil
     }
 }

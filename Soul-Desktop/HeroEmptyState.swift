@@ -19,7 +19,6 @@ struct HeroEmptyState: View {
     var branchSeedLoading: Bool = false
     @State private var builtInCommands: [SlashCommand] = []
     @Binding var droppedAttachments: [String]
-    @Binding var isImageDropTargeted: Bool
 
     var body: some View {
         VStack(spacing: 18) {
@@ -46,7 +45,6 @@ struct HeroEmptyState: View {
                 permissionMode: $pendingPermissionMode,
                 provider: provider,
                 onPickHarness: onPickHarness,
-                isImageDropTargeted: $isImageDropTargeted,
                 droppedAttachments: $droppedAttachments,
                 branchSeedLoading: branchSeedLoading
             )

@@ -43,8 +43,12 @@ final class AppSessionCoordinator {
     }
 
     func setActiveThread(_ key: String?) {
+        let switchingThreads = activeThreadKey != key
         activeThreadKey = key
         if let key {
+            if switchingThreads {
+                threads[key]?.composerDraft = ""
+            }
             threads[key]?.activationNonce &+= 1
             bumpThreadRecency(key)
         }
@@ -100,9 +104,12 @@ final class AppSessionCoordinator {
 
     private func evictOverflowThreads() {
         guard threadRecency.count > Self.maxMountedThreads else { return }
-        let overflow = Array(threadRecency.suffix(threadRecency.count - Self.maxMountedThreads))
+        let evictable = threadRecency.filter { key in
+            key != activeThreadKey && threads[key]?.isWorking != true
+        }
+        let overflowCount = max(0, threadRecency.count - Self.maxMountedThreads)
+        let overflow = Array(evictable.suffix(overflowCount))
         for key in overflow {
-            if key == activeThreadKey { continue }
             if let controller = threads[key] {
                 Task { await controller.teardown() }
             }

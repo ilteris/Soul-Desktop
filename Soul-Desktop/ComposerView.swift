@@ -52,6 +52,9 @@ struct ComposerView: View {
     /// Called when the user changes harness from the inline picker. Routes
     /// through AppShell which handles new-chat-on-switch semantics.
     var onPickHarness: (Provider) -> Void = { _ in }
+    var isSendEnabled: Bool = true
+    var disabledMessage: String? = nil
+    var onBranchFromDisabled: (Provider) -> Void = { _ in }
 
     @State private var showingCommandPalette = false
     @State private var activeCommand: SlashCommand? = nil
@@ -64,17 +67,10 @@ struct ComposerView: View {
     /// button's active-state tint so the affordance reads as engaged
     /// while the modal is up.
     @State private var filePickerOpen: Bool = false
-    /// True while a drag with at least one image URL is hovering the
-    /// composer. Drives the dashed accent overlay so the user knows the
-    /// drop will be accepted before they release. Owned by the parent so
-    /// the outer canvas drop target (ThreadView) can share the targeting
-    /// state with the composer's own `.onDrop`.
-    @Binding var isImageDropTargeted: Bool
     /// Files dropped onto the composer surface (or anywhere in the parent's
-    /// drop area — see ThreadView.swift / HeroEmptyState.swift). Rendered
+    /// drop area — see AppShell+Canvas.swift). Rendered
     /// as a row of chips above the text field; converted to markdown links
-    /// at submit time. Owned by the parent so multiple drop surfaces share
-    /// one attachment list.
+    /// at submit time.
     @Binding var droppedAttachments: [String]
     /// True while AppShell's branch-seed background LLM is composing the
     /// pre-fill text for a freshly-spawned cross-provider draft. Drives
@@ -86,8 +82,17 @@ struct ComposerView: View {
     @AppStorage("soul.composer.lastSent") private var lastSent: String = ""
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
 
-    private func submit() {
-        let trimmedArgs = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var hasSendableDraft: Bool {
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedAttachments.isEmpty
+    }
+
+    private func submit(currentText: String? = nil) {
+        guard isSendEnabled else { return }
+        if let currentText, currentText != prompt {
+            prompt = currentText
+        }
+        let sourceText = currentText ?? prompt
+        let trimmedArgs = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         let display: String
         let agent: String
         if let cmd = activeCommand {
@@ -212,12 +217,9 @@ struct ComposerView: View {
         return "[\(name)](\(url))"
     }
 
-    /// Forward a drop to the shared DropAttachmentHandler and append any
-    /// new paths to the parent-owned binding. Used by the composer's own
-    /// inner `.onDrop` (drops directly on the composer); the same helper
-    /// is also called from parents (ThreadView / HeroEmptyState) for the
-    /// wider canvas drop area.
-    private func handleProviderDrop(_ providers: [NSItemProvider]) -> Bool {
+    /// Forward selected files to the same attachment processor used by the
+    /// app-wide drop target.
+    private func attachProviders(_ providers: [NSItemProvider]) -> Bool {
         let new = DropAttachmentHandler.process(
             providers: providers,
             projectPath: projectPath,
@@ -239,6 +241,7 @@ struct ComposerView: View {
     /// its active state while the modal is up. `runModal()` would block
     /// the main thread and SwiftUI couldn't repaint.
     private func openFilePicker() {
+        guard isSendEnabled else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -252,7 +255,7 @@ struct ComposerView: View {
                 let providers = panel.urls.map { url in
                     NSItemProvider(object: url as NSURL)
                 }
-                _ = handleProviderDrop(providers)
+                _ = attachProviders(providers)
             }
         }
     }
@@ -279,6 +282,7 @@ struct ComposerView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(SoulColor.fg.opacity(0.08), in: Capsule())
+                        .contentShape(Capsule())
                     }
                     .buttonStyle(.soulChip)
                     .help("Cancel the current turn and send the next queued prompt now")
@@ -296,6 +300,15 @@ struct ComposerView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
+                if !isSendEnabled {
+                    DisabledComposerNotice(
+                        message: disabledMessage ?? "This session is read-only.",
+                        currentProvider: provider,
+                        onBranch: onBranchFromDisabled
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                }
                 if !droppedAttachments.isEmpty {
                     AttachmentChipRow(
                         paths: droppedAttachments,
@@ -312,7 +325,7 @@ struct ComposerView: View {
                     ComposerTextField(
                         text: $prompt,
                         placeholder: activeCommand == nil ? "Ask Soul anything. @ to use plugins or mention files" : "",
-                        onSubmit: submit,
+                        onSubmit: { currentText in submit(currentText: currentText) },
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }
                         },
@@ -376,6 +389,7 @@ struct ComposerView: View {
                             onSelect: selectCommand
                         )
                     }
+                    .disabled(!isSendEnabled)
                 }
                 .padding(.horizontal, 14)
 
@@ -386,29 +400,22 @@ struct ComposerView: View {
                         isActive: filePickerOpen,
                         action: openFilePicker
                     )
+                    .disabled(!isSendEnabled)
                     HarnessPicker(selection: provider, onSelect: onPickHarness)
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
                     SoulIcon(name: "mic", size: SoulMetric.iconLarge, color: SoulColor.fgMuted)
-                    if isWorking {
-                        // Both buttons visible while a turn is in flight:
-                        // stop ends the current turn; send queues the next.
+                    if isSendEnabled && isWorking && !hasSendableDraft {
                         StopButton(onCancel: onCancel)
-
-                        Button(action: submit) {
-                            SoulIcon(name: "arrow.up.to.line", size: SoulMetric.icon, color: SoulColor.fg)
-                                .frame(width: 22, height: 22)
-                                .background(SoulColor.surface, in: Circle())
-                        }
-                        .buttonStyle(.soulChip)
-                        .help("Queue this message — will send when the current turn finishes")
                     } else {
-                        Button(action: submit) {
+                        Button(action: { submit() }) {
                             SoulIcon(name: "arrow.up", size: SoulMetric.icon, color: SoulColor.fg)
                                 .frame(width: 22, height: 22)
                                 .background(SoulColor.surface, in: Circle())
                         }
                         .buttonStyle(.soulChip)
+                        .disabled(!isSendEnabled)
+                        .help(isWorking ? "Queue this message — will send when the current turn finishes" : "Send")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -419,18 +426,7 @@ struct ComposerView: View {
                 RoundedRectangle(cornerRadius: SoulMetric.radiusL)
                     .strokeBorder(SoulColor.border, lineWidth: 0.5)
             )
-            // SOUL-SOUL_DESKTOP-147: the dashed drop-target affordance moved
-            // to ThreadView so it traces the whole canvas (matching where
-            // drops are actually accepted). Composer keeps its inner
-            // `.onDrop` for direct-composer drops but no longer paints its
-            // own border — the canvas-wide one covers it.
-            .onDrop(
-                of: [.fileURL, .image, .png, .jpeg, .tiff, .gif],
-                isTargeted: $isImageDropTargeted
-            ) { providers in
-                handleProviderDrop(providers)
-            }
-
+            .opacity(isSendEnabled ? 1 : 0.55)
             HStack(spacing: 14) {
                 ProjectChip(
                     currentName: projectName,
@@ -475,6 +471,64 @@ struct ComposerView: View {
         .onChange(of: isWorking) { _, nowWorking in
             if !nowWorking { activeCommand = nil }
         }
+    }
+}
+
+private struct DisabledComposerNotice: View {
+    let message: String
+    let currentProvider: Provider
+    let onBranch: (Provider) -> Void
+
+    private var branchTargets: [Provider] {
+        Provider.allCases.filter { $0 != currentProvider }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(SoulColor.fgMuted)
+            Text(message)
+                .font(SoulFont.ui(11, weight: .medium))
+                .foregroundStyle(SoulColor.fgMuted)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Menu {
+                ForEach(branchTargets, id: \.self) { target in
+                    Button {
+                        onBranch(target)
+                    } label: {
+                        Label("Branch to \(target.label)", systemImage: "arrow.triangle.branch")
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Branch")
+                        .font(SoulFont.ui(11, weight: .semibold))
+                }
+                .foregroundStyle(SoulColor.fg)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(SoulColor.surface, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(SoulColor.border, lineWidth: 0.5)
+                )
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .help("Start a new session from this conversation")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(SoulColor.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SoulColor.border.opacity(0.8), lineWidth: 0.5)
+        )
     }
 }
 

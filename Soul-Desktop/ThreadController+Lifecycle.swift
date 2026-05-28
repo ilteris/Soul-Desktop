@@ -218,6 +218,7 @@ extension ThreadController {
 
     func teardown() async {
         logLifecycle("teardown", note: "controller torn down (e.g. row deselected)")
+        isTornDown = true
         finalizeWatcher?.stop()
         finalizeWatcher = nil
         // SOUL-SOUL_DESKTOP-245 (cleanup from -243): cancel any in-flight

@@ -110,7 +110,8 @@ public struct ProviderRuntimePromptRequest<Attachment: Equatable & Sendable>: Eq
     }
 
     public var canDispatch: Bool {
-        session.rpcSessionID != nil && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        session.rpcSessionID != nil
+            && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 }
 

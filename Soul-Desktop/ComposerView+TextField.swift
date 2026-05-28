@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 struct ComposerTextField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let onSubmit: () -> Void
+    let onSubmit: (String) -> Void
     let onBackspaceWhenEmpty: () -> Void
     var preservesFocusedDraft: Bool = true
     var onTab: (() -> Bool)? = nil
@@ -152,7 +152,7 @@ final class ClampedComposerScrollView: NSScrollView {
 
 private final class BackspaceInterceptingTextView: NSTextView {
     var onBackspaceWhenEmpty: (() -> Void)?
-    var onCommit: (() -> Void)?
+    var onCommit: ((String) -> Void)?
     /// Fired on plain Tab key. Returns true to consume the event, false to
     /// let the default focus-traversal behavior run. Used to commit the
     /// slash command popover's top match without forcing a Space keystroke.
@@ -211,9 +211,9 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         if (event.keyCode == 36 || event.keyCode == 76),
-           !event.modifierFlags.contains(.shift) {
+            !event.modifierFlags.contains(.shift) {
             allowNextEmptySync = true
-            onCommit?()
+            onCommit?(string)
             return
         }
         if event.keyCode == 48, onTab?() == true {
@@ -232,7 +232,7 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         allowNextEmptySync = true
-        onCommit?()
+        onCommit?(string)
     }
 
     override func insertNewlineIgnoringFieldEditor(_ sender: Any?) {
@@ -241,7 +241,7 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         allowNextEmptySync = true
-        onCommit?()
+        onCommit?(string)
     }
 
     override func draw(_ dirtyRect: NSRect) {

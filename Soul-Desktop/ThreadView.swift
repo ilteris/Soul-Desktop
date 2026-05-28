@@ -8,6 +8,7 @@ struct ThreadView: View {
     var onCancel: () -> Void = {}
     var onPickHarness: (Provider) -> Void = { _ in }
     var onNewChat: () -> Void = {}
+    var onBranchFromDisabled: (Provider) -> Void = { _ in }
     var branchSeedLoading: Bool = false
     var terminalActive: Bool = false
     var onToggleTerminal: () -> Void = {}
@@ -49,12 +50,6 @@ struct ThreadView: View {
     @State private var pendingCanvasWidth: CGFloat = 0
     @State private var canvasWidthRepinTask: Task<Void, Never>?
     @State private var transcriptScrollView: NSScrollView?
-
-    /// SOUL-SOUL_DESKTOP-146: drag-target state lifted from ComposerView so
-    /// the whole ThreadView accepts image/file drops, not just the composer
-    /// chip strip. Bound into ComposerView so the chips render and submit
-    /// behavior stays unchanged.
-    @Binding var isImageDropTargeted: Bool
 
     /// AppShell-owned auto-compact watcher. Threaded in via environment
     /// (see AutoCompactController.swift) so we don't widen ThreadView's
@@ -159,6 +154,7 @@ struct ThreadView: View {
     // in reasonable time.
     @ViewBuilder
     private var composerSection: some View {
+        let composerEnabled = controller.canAcceptComposerInput
         VStack(spacing: 8) {
             // Auto-compact "Compacting…" banner. The AppShell-owned
             // AutoCompactController publishes a banner string while a
@@ -189,11 +185,15 @@ struct ThreadView: View {
                     // runloop tick as the Enter keystroke. Async tail
                     // (ensureSession + ACP prompt) runs in a Task so it
                     // doesn't block the composer's keyDown handler.
-                    guard !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+                    guard controller.canAcceptComposerInput else { return false }
+                    guard !display.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !extraBlocks.isEmpty
+                    else { return false }
+                    let itemCountBefore = controller.items.count
                     if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
                         Task { await controller.dispatchPending(pending) }
                     }
-                    return true
+                    return controller.items.count > itemCountBefore
                 },
                   supportsImageAttachments: controller.supportsImageAttachments,
                 onCancel: onCancel,
@@ -213,7 +213,11 @@ struct ThreadView: View {
                 ),
                 provider: controller.provider,
                 onPickHarness: onPickHarness,
-                isImageDropTargeted: $isImageDropTargeted,
+                isSendEnabled: composerEnabled,
+                disabledMessage: composerEnabled
+                    ? nil
+                    : (controller.isTornDown ? "This session is no longer attached to a live agent." : "This session is still loading."),
+                onBranchFromDisabled: onBranchFromDisabled,
                 droppedAttachments: controllerDroppedAttachments,
                 branchSeedLoading: branchSeedLoading
             )

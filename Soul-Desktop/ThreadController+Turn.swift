@@ -40,6 +40,7 @@ extension ThreadController {
     /// previously perceptible as a brief freeze before the bubble appeared.
     func acceptUserPrompt(display: String, agent: String, extraBlocks: [ContentBlock] = []) -> QueuedPrompt? {
         SoulSignposts.event("Flash.acceptUserPrompt.enter", "len=\(display.count) itemsBefore=\(items.count)")
+        guard canAcceptComposerInput else { return nil }
         let trimmedDisplay = display.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAgent = agent.trimmingCharacters(in: .whitespacesAndNewlines)
         // SOUL-SOUL-096: guard both display AND agent text. Guarding only
@@ -47,7 +48,7 @@ extension ThreadController {
         // rows to hooks.jsonl. soul/35d273e1 had 10 empties between two
         // real prompts. Mirrors event_mapper.substantive() in
         // ~/dotfiles/soul/app_server/event_mapper.py:71.
-        guard !trimmedAgent.isEmpty, !trimmedDisplay.isEmpty else { return nil }
+        guard !trimmedDisplay.isEmpty, (!trimmedAgent.isEmpty || !extraBlocks.isEmpty) else { return nil }
         if sessionId == nil {
             sessionId = id
         }

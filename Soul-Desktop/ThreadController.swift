@@ -372,6 +372,15 @@ final class ThreadController {
     /// mount — they own their own loading affordance.
     var isHydrating: Bool = true
 
+    /// True after this controller has been explicitly torn down. A normal
+    /// composer must not be mounted against a torn-down controller; the user
+    /// can branch or reopen into a fresh controller instead.
+    var isTornDown: Bool = false
+
+    var canAcceptComposerInput: Bool {
+        !isTornDown && (!isHydrating || !items.isEmpty)
+    }
+
     /// Set when a gemini-CLI `session/load` fails on a corrupted chat file
     /// (force-quit mid-write etc.). AppShell observes this and surfaces a
     /// recovery sheet with one-click actions: Replay the kernel ledger,

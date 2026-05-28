@@ -31,6 +31,11 @@ struct ProviderRuntimeContractsTests {
 
         #expect(ProviderRuntimePromptRequest<String>(session: session, text: "hello").canDispatch)
         #expect(!ProviderRuntimePromptRequest<String>(session: session, text: " \n ").canDispatch)
+        #expect(ProviderRuntimePromptRequest<String>(
+            session: session,
+            text: " \n ",
+            attachments: ["image-block"]
+        ).canDispatch)
         #expect(!ProviderRuntimePromptRequest<String>(
             session: ProviderRuntimeSession(provider: .geminiCLI, projectPath: "/tmp/project"),
             text: "hello"

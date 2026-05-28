@@ -161,6 +161,7 @@ func drainQueuedPromptAfterTurn() {
     /// Drop any queued-but-not-yet-sent prompts. Wired into `cancel()` and
     /// surfaced via a clear-X on the queue chip in the composer.
     func clearQueue() {
+        let queuedItemIDs = Set(queuedPrompts.map(\.itemId))
         var queueState = TurnQueueState(
             isWorking: isWorking,
             queuedCount: queuedPrompts.count,
@@ -168,6 +169,14 @@ func drainQueuedPromptAfterTurn() {
         )
         queueState.clearQueuedPrompts()
         queuedPrompts.removeAll()
+        if !queuedItemIDs.isEmpty {
+            items.removeAll { item in
+                if case .userMessage(let id, _, _) = item {
+                    return queuedItemIDs.contains(id)
+                }
+                return false
+            }
+        }
         steerPending = queueState.steerPending
     }
 
