@@ -296,12 +296,14 @@ struct ThreadView: View {
                     if !controller.isHydrating {
                         performScrollRestore(proxy: proxy)
                     }
+                    repairTranscriptScrollView(reason: "appear")
                 }
                 .onChange(of: controller.activationNonce) { _, _ in
                     guard !controller.isHydrating else { return }
                     suppressAnchorWrites = true
                     anchor.itemId = controller.scrollAnchorItemId
                     performScrollRestore(proxy: proxy)
+                    repairTranscriptScrollView(reason: "activation")
                 }
                 // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
                 // changes (right side panel opens / closes / resizes).
@@ -346,6 +348,7 @@ struct ThreadView: View {
                 }
                 .onChange(of: controller.items.count) { _, _ in
                     followLiveTurn(proxy: proxy)
+                    repairTranscriptScrollView(reason: "items")
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores
@@ -419,10 +422,54 @@ struct ThreadView: View {
             if let id = anchorId {
                 proxy.scrollTo(id, anchor: .top)
             }
+            repairTranscriptScrollView(reason: "restore")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 suppressAnchorWrites = false
                 let splitNow = controller.groupedItemsSplit
                 updateAnchor(in: splitNow.main)
+            }
+        }
+    }
+
+    /// AppKit occasionally preserves an invalid clip-view origin while
+    /// SwiftUI has already rebuilt the LazyVStack document. The symptom is a
+    /// blank transcript that reappears as soon as the user resizes the window
+    /// (resize forces AppKit layout + scroll bounds clamping). Do that repair
+    /// directly on attach/activation/content growth instead of remounting the
+    /// whole transcript.
+    private func repairTranscriptScrollView(reason: String, retries: Int = 2) {
+        DispatchQueue.main.async {
+            guard let scrollView = transcriptScrollView else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        repairTranscriptScrollView(reason: reason, retries: retries - 1)
+                    }
+                }
+                return
+            }
+            let clip = scrollView.contentView
+            scrollView.needsLayout = true
+            scrollView.documentView?.needsLayout = true
+            scrollView.layoutSubtreeIfNeeded()
+            scrollView.documentView?.layoutSubtreeIfNeeded()
+
+            guard let documentView = scrollView.documentView else { return }
+            let documentHeight = max(documentView.bounds.height, documentView.frame.height)
+            let clipHeight = clip.bounds.height
+            if documentHeight > 0, clipHeight > 0 {
+                let maxY = max(0, documentHeight - clipHeight)
+                let currentY = clip.bounds.origin.y
+                let clampedY = min(max(0, currentY), maxY)
+                if abs(clampedY - currentY) > 0.5 {
+                    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clampedY))
+                }
+                scrollView.reflectScrolledClipView(clip)
+            }
+
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    repairTranscriptScrollView(reason: reason, retries: retries - 1)
+                }
             }
         }
     }

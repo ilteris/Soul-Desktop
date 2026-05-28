@@ -377,10 +377,14 @@ extension SoulRegistry {
             s.sessionVisibility = sessionVisibility
             s.sessionKind = sessionKind
             s.visibilityReason = visibilityReason
+            let desktopMetadataOnly = rec.has_desktop_signature == true
+                || rec.origin == "desktop"
+                || rec.writer == "soul-desktop"
             if s.promptCount == 0,
                s.transcriptTurns > 0,
                sessionVisibility == "machine",
-               sessionKind == "metadata_only" {
+               sessionKind == "metadata_only",
+               !desktopMetadataOnly {
                 let transcriptPrompt = findFirstTranscriptPrompt(
                     sessionId: id,
                     projectKey: key,

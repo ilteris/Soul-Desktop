@@ -38,6 +38,38 @@ struct SessionLedgerTruthTests {
         }
     }
 
+    @Test func desktopMetadataOnlyNativeBindingIsNotRescuedByProviderTranscript() throws {
+        try SessionLedgerTruthTests.withTempHome { home in
+            let fm = FileManager.default
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString.lowercased()
+            let nativeId = UUID().uuidString.lowercased()
+            let hooksDir = home.appendingPathComponent("soul_registry/sessions/\(project.id)/\(sid)")
+            try fm.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+            let hooks = """
+            {"event":"SessionOwner","writer":"soul-desktop","provider":"claude","session_id":"\(sid)","timestamp":"2026-05-28T02:43:27Z"}
+            {"event":"NativeSessionID","provider":"claude","native_session_id":"\(nativeId)","session_id":"\(sid)","timestamp":"2026-05-28T02:43:49Z"}
+
+            """
+            try hooks.write(to: hooksDir.appendingPathComponent("hooks.jsonl"), atomically: true, encoding: .utf8)
+
+            let claudeDir = home.appendingPathComponent(".claude/projects/-tmp-soul")
+            try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+            let transcript = """
+            {"type":"user","message":{"content":"Our soul CLI commands should be included in the system instructions."}}
+            {"type":"assistant","message":{"content":"Added the hydrator block."}}
+
+            """
+            try transcript.write(to: claudeDir.appendingPathComponent("\(nativeId).jsonl"), atomically: true, encoding: .utf8)
+
+            let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
+            #expect(session.sessionVisibility == "machine")
+            #expect(session.sessionKind == "metadata_only")
+            #expect(session.transcriptTurns > 0)
+            #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
+        }
+    }
+
     @Test func explicitMachineVisibilityHidesConversationRow() throws {
         let project = SessionLedgerTruthTests.testProject()
         var session = SoulSession(
