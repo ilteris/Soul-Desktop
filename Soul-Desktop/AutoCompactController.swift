@@ -63,6 +63,11 @@ final class AutoCompactController {
     /// at instance creation. ⌘⇧K still works when this is false.
     @ObservationIgnored private let enabled: Bool
 
+    /// Threshold/rearm/debounce policy loaded from compact_policy.json
+    /// (SPEC-126). Falls back to defaults if file is missing/malformed
+    /// so the controller stays usable on a bare checkout.
+    @ObservationIgnored private let policy: CompactPolicy
+
     init() {
         let key = "soul.autocompact.enabled"
         // CFPreferences returns nil if never set — default ON.
@@ -71,6 +76,7 @@ final class AutoCompactController {
         } else {
             self.enabled = true
         }
+        self.policy = CompactPolicy.load()
     }
 
     /// Called by AppShell on every contextUsage fraction change.
@@ -87,12 +93,14 @@ final class AutoCompactController {
         // threshold.
         let now = Date()
         guard now.timeIntervalSince(lastEvaluation) >= 5 else { return }
-        // Only fire on upward crossing of 0.50 — don't re-fire on every
-        // additional 0.01 above. The kernel will also debounce, but
-        // skipping the shell-out here keeps the trace clean. The 0.95
-        // re-arm is a safety net: if usage somehow climbs that high
-        // without a compact landing (debounced, errored), try again.
-        guard frac >= 0.50, lastEvaluatedFraction < 0.50 || frac >= 0.95 else {
+        // Threshold + rearm sourced from compact_policy.json so the
+        // Swift and Python halves can't drift. Fire on upward crossing
+        // of `threshold`; re-arm at `rearm` as a safety net if usage
+        // climbs that high without a compact landing.
+        let providerPolicy = policy.forProvider(thread.provider.rawValue)
+        let threshold = providerPolicy.threshold
+        let rearm = providerPolicy.rearm
+        guard frac >= threshold, lastEvaluatedFraction < threshold || frac >= rearm else {
             lastEvaluatedFraction = frac
             return
         }
@@ -293,5 +301,58 @@ extension AutoCompactController {
                 return nil
             }
         }
+    }
+}
+
+// MARK: - Policy
+
+/// Mirror of `~/dotfiles/soul/config/compact_policy.json` (SPEC-126).
+/// Loaded once at controller init. Kernel reads the same file via
+/// `kernel/commands/soul_autocompact.py::_load_policy`, so threshold
+/// changes propagate to both halves without recompiling.
+struct CompactPolicy {
+    struct ProviderPolicy {
+        let threshold: Double
+        let rearm: Double
+    }
+
+    let defaultThreshold: Double
+    let debounceSeconds: Int
+    let perProvider: [String: ProviderPolicy]
+
+    static let fallback = CompactPolicy(
+        defaultThreshold: 0.50,
+        debounceSeconds: 60,
+        perProvider: [:]
+    )
+
+    func forProvider(_ key: String) -> ProviderPolicy {
+        if let p = perProvider[key] { return p }
+        return ProviderPolicy(threshold: defaultThreshold, rearm: 0.95)
+    }
+
+    static func load() -> CompactPolicy {
+        let path = ("~/dotfiles/soul/config/compact_policy.json" as NSString).expandingTildeInPath
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            NSLog("[autocompact] policy file missing at \(path) — using fallback")
+            return .fallback
+        }
+        let defaultThreshold = (obj["default_threshold"] as? Double) ?? 0.50
+        let debounce = (obj["debounce_seconds"] as? Int) ?? 60
+        var perProvider: [String: ProviderPolicy] = [:]
+        if let raw = obj["per_provider"] as? [String: [String: Any]] {
+            for (key, payload) in raw {
+                let threshold = (payload["threshold"] as? Double) ?? defaultThreshold
+                let rearm = (payload["rearm"] as? Double) ?? 0.95
+                perProvider[key] = ProviderPolicy(threshold: threshold, rearm: rearm)
+            }
+        }
+        return CompactPolicy(
+            defaultThreshold: defaultThreshold,
+            debounceSeconds: debounce,
+            perProvider: perProvider
+        )
     }
 }
