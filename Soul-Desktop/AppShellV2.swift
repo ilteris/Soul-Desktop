@@ -235,11 +235,22 @@ struct AppShellV2: View {
                     .lineLimit(1)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    assistantBubble("Ask about this project, the active work, recent runs, or what to do next.", isUser: false)
-                    ForEach(pulseModel.assistantMessages) { message in
-                        assistantBubble(message.text, isUser: message.isUser)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        assistantBubble("Ask about this project, the active work, recent runs, or what to do next.", isUser: false)
+                        ForEach(pulseModel.assistantMessages) { message in
+                            assistantBubble(message.text, isUser: message.isUser)
+                                .id(message.id)
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id("assistant-bottom")
+                    }
+                }
+                .onChange(of: pulseModel.assistantMessages.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo("assistant-bottom", anchor: .bottom)
                     }
                 }
             }
@@ -253,6 +264,10 @@ struct AppShellV2: View {
                     .textFieldStyle(.plain)
                     .font(SoulFont.ui(13))
                     .lineLimit(1...4)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        askControlPanelAssistant()
+                    }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 9)
                     .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: SoulMetric.radiusM))
@@ -1383,8 +1398,7 @@ struct AppShellV2: View {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if events.isEmpty {
                         HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
+                            SparkleSpinner(tint: SoulColor.fgMuted, size: 11)
                             Text("Waiting for stream events...")
                                 .font(SoulFont.ui(12))
                                 .foregroundStyle(SoulColor.fgMuted)
@@ -1402,8 +1416,7 @@ struct AppShellV2: View {
                                         .font(.system(size: 11, weight: .semibold))
                                         .foregroundStyle(.red)
                                 } else {
-                                    ProgressView()
-                                        .controlSize(.small)
+                                    SparkleSpinner(tint: SoulColor.fgMuted, size: 11)
                                 }
                                 Text(isStalled ? "stream idle for \(idleDurationText(operation))" : "stream open")
                                     .font(SoulFont.code(10))
@@ -1544,8 +1557,7 @@ struct AppShellV2: View {
     private func statusBadge(_ status: SoulOperation.Status) -> some View {
         HStack(spacing: 5) {
             if status == .running {
-                ProgressView()
-                    .controlSize(.mini)
+                SparkleSpinner(tint: status.tint, size: 9)
             }
             Text(status.label)
                 .font(SoulFont.code(10))

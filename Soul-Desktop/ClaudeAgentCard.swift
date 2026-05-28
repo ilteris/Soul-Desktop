@@ -186,9 +186,7 @@ struct ClaudeAgentCard: View {
                     .foregroundStyle(SoulColor.fgSubtle)
                 Spacer()
                 if !isTerminal && !isHistorical {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
+                    SparkleSpinner(tint: SoulColor.fgMuted, size: 10)
                 }
                 Text(statusLabel)
                     .font(SoulFont.ui(11, weight: .medium))

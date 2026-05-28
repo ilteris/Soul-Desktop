@@ -73,7 +73,7 @@ struct ReplayView: View {
 
     private var loadingState: some View {
         VStack(spacing: 8) {
-            ProgressView().controlSize(.small)
+            SparkleSpinner(tint: SoulColor.fgMuted, size: 12)
             Text("loading replay…")
                 .font(SoulFont.ui(11))
                 .foregroundStyle(SoulColor.fgSubtle)

@@ -108,10 +108,12 @@ struct SubagentCard: View {
         }
         .onDisappear {
             tailer?.stop()
+            tailer = nil
         }
         .onChange(of: status) { _, newStatus in
             if newStatus == "completed" || newStatus == "failed" || newStatus == "error" || newStatus == "stopped" {
                 tailer?.stop()
+                tailer = nil
             }
         }
         .onChange(of: subagentId) { _, _ in
@@ -144,9 +146,7 @@ struct SubagentCard: View {
                     .foregroundStyle(SoulColor.fg)
                 Spacer()
                 if !isTerminal && !isHistorical {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
+                    SparkleSpinner(tint: SoulColor.fgMuted, size: 10)
                 }
                 Text(statusLabel)
                     .font(SoulFont.ui(11, weight: .medium))
