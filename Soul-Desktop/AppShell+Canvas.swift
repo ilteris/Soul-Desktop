@@ -73,31 +73,39 @@ extension AppShell {
     }
 
     var mainCanvas: some View {
-        VStack(spacing: 0) {
-            // SOUL-249: CanvasToolbar removed — items now live in the native
-            // window .toolbar { } block on AppShell. If the native toolbar
-            // is reverted, restore the CanvasToolbar(...) call here.
-            ZStack {
-                SoulColor.bg.ignoresSafeArea()
-                if let replay = replay.controller {
-                    ReplayView(controller: replay, onExit: exitReplay)
-                } else {
-                    mountedThreadsCanvas
+        ZStack {
+            VStack(spacing: 0) {
+                // SOUL-249: CanvasToolbar removed — items now live in the native
+                // window .toolbar { } block on AppShell. If the native toolbar
+                // is reverted, restore the CanvasToolbar(...) call here.
+                ZStack {
+                    SoulColor.bg.ignoresSafeArea()
+                    if let replay = replay.controller {
+                        ReplayView(controller: replay, onExit: exitReplay)
+                    } else {
+                        mountedThreadsCanvas
+                    }
+                }
+                if showTerminal {
+                    terminalSection
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            if showTerminal {
-                terminalSection
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            .overlay(alignment: .topTrailing) {
+                if !rightPane.isOpen, !replay.isActive {
+                    CanvasInfoOverlay(
+                        projectPath: thread?.project.path ?? currentProject()?.path,
+                        projectName: thread?.project.name ?? currentProject()?.name,
+                        projectKey: thread?.project.id ?? currentProject()?.id
+                    )
+                    .allowsHitTesting(true)
+                }
             }
-        }
-        .overlay(alignment: .topTrailing) {
-            if !rightPane.isOpen, !replay.isActive {
-                CanvasInfoOverlay(
-                    projectPath: thread?.project.path ?? currentProject()?.path,
-                    projectName: thread?.project.name ?? currentProject()?.name,
-                    projectKey: thread?.project.id ?? currentProject()?.id
-                )
-                .allowsHitTesting(true)
+
+            if isImageDropTargeted && !replay.isActive {
+                CanvasDropOverlay()
+                    .zIndex(10_000)
+                    .allowsHitTesting(false)
             }
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
@@ -130,21 +138,6 @@ extension AppShell {
                 guard !new.isEmpty else { return false }
                 self.emptyStateDroppedAttachments.append(contentsOf: new)
                 return true
-            }
-        }
-        .overlay {
-            if isImageDropTargeted && !replay.isActive {
-                ZStack {
-                    SoulColor.accent.opacity(0.08)
-                    RoundedRectangle(cornerRadius: SoulMetric.radiusL)
-                        .strokeBorder(
-                            SoulColor.accent,
-                            style: StrokeStyle(lineWidth: 2, dash: [8, 5])
-                        )
-                        .padding(8)
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
             }
         }
     }
@@ -227,5 +220,23 @@ extension AppShell {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct CanvasDropOverlay: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(SoulColor.accent.opacity(0.08))
+                .ignoresSafeArea()
+
+            RoundedRectangle(cornerRadius: SoulMetric.radiusL)
+                .strokeBorder(
+                    SoulColor.accent,
+                    style: StrokeStyle(lineWidth: 2, dash: [8, 5])
+                )
+                .padding(8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
