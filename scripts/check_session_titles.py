@@ -37,7 +37,7 @@ def normalize(text: str) -> str:
 
 def load_project(project: str) -> list[dict]:
     out = subprocess.check_output(
-        ["/Users/ilteris/dotfiles/soul/bin/soul", "session", "list", "-p", project, "--json"],
+        ["/Users/ilteris/dotfiles/soul/bin/soul", "session", "list", "-p", project, "--json", "--full"],
         text=True,
     )
     data = json.loads(out)

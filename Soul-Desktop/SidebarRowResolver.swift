@@ -98,9 +98,19 @@ enum SidebarRowResolver {
 
         // 2. Visibility filter (rules inlined below; see shouldShow).
         var byId: [String: SoulSession] = [:]
+        var hiddenDiskIds = Set<String>()
         byId.reserveCapacity(diskSessions.count)
         for s in diskSessions {
-            guard shouldShow(s, in: ctx) else { continue }
+            guard shouldShow(s, in: ctx) else {
+                // Only kernel-classified hidden/machine rows are allowed to
+                // suppress a live controller with the same id. Legacy
+                // "no conversation yet" disk shells should still be revived
+                // by a mounted controller that has live items.
+                if s.sessionVisibility == "machine" || s.sessionVisibility == "hidden" {
+                    hiddenDiskIds.insert(s.id)
+                }
+                continue
+            }
             byId[s.id] = s
         }
 
@@ -113,6 +123,9 @@ enum SidebarRowResolver {
                 continue
             }
             let sid = ctrl.sessionId ?? "thread-\(ctrl.id)"
+            if hiddenDiskIds.contains(sid) {
+                continue
+            }
             if let existing = byId[sid] {
                 // Live overlay on the existing disk row. Preserve disk
                 // metadata (writer, source, isLive) — opening a row to
@@ -120,7 +133,9 @@ enum SidebarRowResolver {
                 // session. Only overwrite fields the live ctrl owns.
                 var merged = existing
                 let t = ctrl.displayTitle
-                if !t.isEmpty { merged.title = t }
+                if shouldOverlayTitle(liveTitle: t, diskTitle: existing.title) {
+                    merged.title = t
+                }
                 merged.liveProvider = ctrl.provider.rawValue
                 merged.lastActivityAt = max(
                     existing.lastActivityAt ?? existing.timestamp,
@@ -139,11 +154,20 @@ enum SidebarRowResolver {
                 }
                 byId[sid] = merged
             } else {
+                let liveIntent = ctrl.items.compactMap { item -> String? in
+                    guard case .userMessage(_, let text, _) = item else { return nil }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if case .bareSlash = SessionTitleResolver.classify(trimmed) {
+                        return trimmed
+                    }
+                    return nil
+                }.first
                 byId[sid] = SoulSession(
                     id: sid,
                     project: ctrl.project.id,
                     timestamp: ctrl.startedAt,
                     title: ctrl.displayTitle,
+                    intent: liveIntent,
                     source: ctrl.provider.rawValue,
                     isLive: true,
                     writer: .soulDesktop,
@@ -206,6 +230,18 @@ enum SidebarRowResolver {
         return Array(byId.values)
     }
 
+    private static func shouldOverlayTitle(liveTitle: String, diskTitle: String?) -> Bool {
+        let live = liveTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !live.isEmpty, !SessionTitleResolver.isPlaceholderTitle(live) else {
+            return false
+        }
+        let disk = diskTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if disk.isEmpty || SessionTitleResolver.isPlaceholderTitle(disk) {
+            return true
+        }
+        return live != disk
+    }
+
     private static func mergedDiskSession(_ a: SoulSession, _ b: SoulSession) -> SoulSession {
         func score(_ s: SoulSession) -> Int {
             (s.promptCount > 0 ? 1_000_000 : 0)
@@ -248,6 +284,20 @@ enum SidebarRowResolver {
         if out.titleStatus == nil { out.titleStatus = other.titleStatus }
         if out.liveProvider == nil { out.liveProvider = other.liveProvider }
         if out.worktreePath == nil { out.worktreePath = other.worktreePath }
+        let visibilityRank: [String: Int] = [
+            "hidden": 3,
+            "machine": 2,
+            "human": 1,
+        ]
+        if let otherVisibility = other.sessionVisibility {
+            let outRank = out.sessionVisibility.flatMap { visibilityRank[$0] } ?? 0
+            let otherRank = visibilityRank[otherVisibility] ?? 0
+            if otherRank > outRank {
+                out.sessionVisibility = otherVisibility
+                out.sessionKind = other.sessionKind
+                out.visibilityReason = other.visibilityReason
+            }
+        }
         if out.sessionVisibility == nil { out.sessionVisibility = other.sessionVisibility }
         if out.sessionKind == nil { out.sessionKind = other.sessionKind }
         if out.visibilityReason == nil { out.visibilityReason = other.visibilityReason }
@@ -281,6 +331,15 @@ enum SidebarRowResolver {
         if let visibility = session.sessionVisibility {
             if visibility == "machine" || visibility == "hidden" {
                 return traceDrop("1-kernel-visibility-\(visibility)", session.id)
+            }
+
+            // Test/fixture ledgers can contain only UserPrompt-style hooks,
+            // which the kernel reasonably tags as human partial captures.
+            // Without any provider identity or writer provenance, though,
+            // they are not resumable user chats and should not pollute the
+            // normal sidebar as "hello"/"first" rows.
+            if isUnownedPartialCapture(session) {
+                return traceDrop("1a-unowned-partial-capture", session.id)
             }
 
             if !ctx.showUnreadable, !(session.loadable || session.replayable) {
@@ -357,6 +416,16 @@ enum SidebarRowResolver {
             traceWrite("PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) pc=\(session.promptCount) tt=\(session.transcriptTurns) writer=\(session.writer.rawValue) loadable=\(session.loadable) replayable=\(session.replayable)")
         }
         return true
+    }
+
+    private static func isUnownedPartialCapture(_ session: SoulSession) -> Bool {
+        let provider = session.provider ?? session.source ?? session.liveProvider
+        let hasKnownProvider = provider.map { !$0.isEmpty && $0 != "unknown" } ?? false
+        return session.sessionKind == "partial_capture"
+            && session.partialCapture
+            && !session.hasFinalize
+            && session.writer == .unknown
+            && !hasKnownProvider
     }
 
     // Per-resolve thread-local project key for trace attribution. Set by

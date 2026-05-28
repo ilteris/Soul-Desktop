@@ -38,6 +38,7 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// decoded through the session-list model. `intent` remains the finalize
     /// intent; sidebar/header code should not derive display labels from it.
     var title: String?
+    var firstUserPrompt: String? = nil
     var rawTitle: String? = nil
     var titleSource: String? = nil
     var titleStatus: String? = nil
@@ -160,6 +161,10 @@ struct SoulSlashCommandSemantics: Hashable, Codable {
 }
 
 enum SoulRegistry {
+    /// Bump when the sidebar session list contract changes in a way that
+    /// makes older persisted rows unsafe to paint before a fresh kernel scan.
+    private static let diskCacheSchemaVersion = 2
+
     nonisolated(unsafe) static var homePath: String = NSHomeDirectory()
     nonisolated(unsafe) static var soulPath: String = homePath + "/dotfiles/soul"
     /// SOUL-265 (2026-05-23): SOUL_HOME default reverted from `~/.soul` to
@@ -262,14 +267,15 @@ enum SoulRegistry {
             return hit.sessions
         }
         cacheLock.unlock()
-        // Fall through to disk cache, ignoring the stamp mismatch. If the
-        // schema decodes, the data is renderable — every field is optional
-        // or has a default.
+        // Fall through to disk cache, ignoring the stamp mismatch. We still
+        // require the current schema version so rows written before kernel
+        // visibility classification do not briefly reappear as stale UI.
         let path = diskCachePath(forProject: key)
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         guard let env = try? dec.decode(DiskCacheEnvelope.self, from: data) else { return nil }
+        guard env.schemaVersion == diskCacheSchemaVersion else { return nil }
         // Warm in-memory so subsequent reads don't re-decode the file.
         // Use the on-disk stamp so a true fresh scan can still spot the
         // mismatch and overwrite us.
@@ -310,8 +316,28 @@ enum SoulRegistry {
     }
 
     private struct DiskCacheEnvelope: Codable {
+        var schemaVersion: Int = diskCacheSchemaVersion
         let stamp: TimeInterval
         let sessions: [SoulSession]
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+            case stamp
+            case sessions
+        }
+
+        init(stamp: TimeInterval, sessions: [SoulSession]) {
+            self.schemaVersion = SoulRegistry.diskCacheSchemaVersion
+            self.stamp = stamp
+            self.sessions = sessions
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
+            self.stamp = try container.decode(TimeInterval.self, forKey: .stamp)
+            self.sessions = try container.decode([SoulSession].self, forKey: .sessions)
+        }
     }
 
     private static func readDiskCache(forProject key: String, expecting stamp: Date) -> [SoulSession]? {
@@ -320,6 +346,7 @@ enum SoulRegistry {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         guard let env = try? dec.decode(DiskCacheEnvelope.self, from: data) else { return nil }
+        guard env.schemaVersion == diskCacheSchemaVersion else { return nil }
         // Mtime mismatch → cache is stale, ignore. Fresh scan will overwrite.
         guard abs(env.stamp - stamp.timeIntervalSince1970) < 0.001 else { return nil }
         return env.sessions
@@ -341,9 +368,8 @@ enum SoulRegistry {
     /// the newest child hooks.jsonl mtime (catches in-place appends — which
     /// don't bump the parent dir mtime and were previously serving stale
     /// rows after a session crossed the visibility threshold or was newly
-    /// touched). Bounded to the first 64 entries to keep this O(1)-ish on
-    /// projects with hundreds of sessions; the dir-mtime fallback still
-    /// catches the case where a fresh session dir is created.
+    /// touched). Scans every child directory because visibility/classifier
+    /// migrations can affect old rows that are not among the newest names.
     private static func projectStamp(key: String) -> Date {
         var newest = Date.distantPast
         for dir in projectSessionDirs(key) {
@@ -352,7 +378,7 @@ enum SoulRegistry {
             guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
                 continue
             }
-            for entry in entries.prefix(64) {
+            for entry in entries {
                 guard UUID(uuidString: entry) != nil else { continue }
                 let hooksPath = "\(dir)/\(entry)/hooks.jsonl"
                 let m = mtime(hooksPath)

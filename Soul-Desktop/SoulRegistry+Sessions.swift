@@ -17,12 +17,12 @@ typealias SessionListRecord = LedgerSessionListRecord
 
 extension SoulRegistry {
 
-    /// Single shell-out to `soul session list -p <key> --json`. Returns nil
+    /// Single shell-out to `soul session list -p <key> --json --include-machine`. Returns nil
     /// on CLI failure (executable missing, non-zero exit, decode error) —
     /// callers degrade to empty. SOUL-SOUL_DESKTOP-263.
     static func loadSessionListPayload(projectKey: String) -> SessionListPayload? {
         let trace = UserDefaults.standard.bool(forKey: "soul.sidebar.trace")
-        guard let data = SoulCLI.runSync(["session", "list", "-p", projectKey, "--json"]) else {
+        guard let data = SoulCLI.runSync(["session", "list", "-p", projectKey, "--json", "--include-machine"]) else {
             if trace { NSLog("[sidebar-load] FAIL project=\(projectKey) reason=cli-returned-nil") }
             return nil
         }
@@ -221,6 +221,7 @@ extension SoulRegistry {
             s.toolCallCount = rec.tool_call_count ?? 0
             s.visibleTurnCount = rec.visible_turn_count ?? 0
             s.hasConversation = rec.has_conversation
+            s.firstUserPrompt = rec.first_user_prompt
             s.rawTitle = rec.raw_title
             s.titleSource = rec.title_source
             s.titleStatus = rec.title_status
@@ -377,28 +378,6 @@ extension SoulRegistry {
             s.sessionVisibility = sessionVisibility
             s.sessionKind = sessionKind
             s.visibilityReason = visibilityReason
-            let desktopMetadataOnly = rec.has_desktop_signature == true
-                || rec.origin == "desktop"
-                || rec.writer == "soul-desktop"
-            if s.promptCount == 0,
-               s.transcriptTurns > 0,
-               sessionVisibility == "machine",
-               sessionKind == "metadata_only",
-               !desktopMetadataOnly {
-                let transcriptPrompt = findFirstTranscriptPrompt(
-                    sessionId: id,
-                    projectKey: key,
-                    projectPath: projectPath,
-                    cache: dirCache,
-                    nativeSessionIDs: nativeSessionIDs
-                )
-                if transcriptPrompt.map(isLocalOnlySlashPrompt) != true {
-                    s.sessionVisibility = "human"
-                    s.sessionKind = "conversation"
-                    s.visibilityReason = "provider_transcript_conversation"
-                    s.replayable = true
-                }
-            }
             s.delegationEventCount = delegationEventCount
             s.sessionStartPpid = sessionStartPpid
             s.partialCapture = partialCapture

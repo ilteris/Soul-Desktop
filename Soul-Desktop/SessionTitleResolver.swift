@@ -112,7 +112,9 @@ enum SessionTitleResolver {
         if let summary = inputs.branchSummary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
             return truncate(summary)
         }
-        if let agent = inputs.firstAgentLine?.trimmingCharacters(in: .whitespacesAndNewlines), !agent.isEmpty {
+        if let agent = inputs.firstAgentLine?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agent.isEmpty,
+           case .prose = classify(agent) {
             return truncate(agent)
         }
 
@@ -355,7 +357,9 @@ enum SessionTitleResolver {
                 return name
             case .skillExpansion:
                 let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                if isMachineScaffold(trimmed) || looksLikeAbsolutePathOutput(trimmed) {
+                if isMachineScaffold(trimmed)
+                    || isStructuredSkillScaffold(trimmed)
+                    || looksLikeAbsolutePathOutput(trimmed) {
                     continue
                 }
                 if let stub = shortestSentenceInFirstParagraph(prompt) {

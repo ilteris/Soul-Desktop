@@ -33,7 +33,7 @@ struct SessionLedgerTruthTests {
             SoulRegistry.flushHooks()
 
             let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
-            #expect(session.promptCount == 0)
+            #expect(session.sessionVisibility == "machine")
             #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
         }
     }
@@ -65,7 +65,37 @@ struct SessionLedgerTruthTests {
             let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
             #expect(session.sessionVisibility == "machine")
             #expect(session.sessionKind == "metadata_only")
-            #expect(session.transcriptTurns > 0)
+            #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
+        }
+    }
+
+    @Test func externalMetadataOnlyNativeBindingStaysHiddenWhenKernelSaysMachine() throws {
+        try SessionLedgerTruthTests.withTempHome { home in
+            let fm = FileManager.default
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString.lowercased()
+            let nativeId = UUID().uuidString.lowercased()
+            let hooksDir = home.appendingPathComponent("soul_registry/sessions/\(project.id)/\(sid)")
+            try fm.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+            let hooks = """
+            {"event":"SessionOwner","writer":"terminal","provider":"claude","session_id":"\(sid)","timestamp":"2026-05-28T02:43:27Z"}
+            {"event":"NativeSessionID","provider":"claude","native_session_id":"\(nativeId)","session_id":"\(sid)","timestamp":"2026-05-28T02:43:49Z"}
+
+            """
+            try hooks.write(to: hooksDir.appendingPathComponent("hooks.jsonl"), atomically: true, encoding: .utf8)
+
+            let claudeDir = home.appendingPathComponent(".claude/projects/-tmp-soul")
+            try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+            let transcript = """
+            {"type":"user","message":{"content":"Fix the sidebar session routing regression."}}
+            {"type":"assistant","message":{"content":"I traced and fixed the routing issue."}}
+
+            """
+            try transcript.write(to: claudeDir.appendingPathComponent("\(nativeId).jsonl"), atomically: true, encoding: .utf8)
+
+            let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
+            #expect(session.sessionVisibility == "machine")
+            #expect(session.sessionKind == "metadata_only")
             #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
         }
     }
@@ -110,6 +140,7 @@ struct SessionLedgerTruthTests {
             project: project.id,
             timestamp: Date(),
             title: "Partial but visible by contract",
+            source: "claude",
             eventCount: 2,
             promptCount: 2,
             loadable: true,
@@ -122,6 +153,27 @@ struct SessionLedgerTruthTests {
         session.hasConversation = false
 
         #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == true)
+    }
+
+    @Test func unownedKernelPartialCaptureIsHiddenAsFixtureNoise() throws {
+        let project = SessionLedgerTruthTests.testProject()
+        var session = SoulSession(
+            id: UUID().uuidString,
+            project: project.id,
+            timestamp: Date(),
+            title: "hello",
+            eventCount: 2,
+            promptCount: 1,
+            loadable: true,
+            replayable: true
+        )
+        session.sessionVisibility = "human"
+        session.sessionKind = "partial_capture"
+        session.visibilityReason = "partial_capture"
+        session.partialCapture = true
+        session.writer = .unknown
+
+        #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
     }
 
     @Test func kernelHiddenVisibilityWinsOverConversationContent() throws {
@@ -218,8 +270,7 @@ struct SessionLedgerTruthTests {
             """.utf8).write(to: finalize)
 
             let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
-            #expect(session.promptCount == 0)
-            #expect(session.eventCount == 0)
+            #expect(session.sessionVisibility == "machine")
             #expect(SidebarRowResolver.shouldShow(session, in: Self.defaultCtx) == false)
         }
     }
@@ -280,6 +331,7 @@ struct SessionLedgerTruthTests {
 
     @Test func freshAcceptedPromptAssignsSessionIdBeforeDispatch() {
         let controller = ThreadController(provider: .geminiCLI, project: SessionLedgerTruthTests.testProject())
+        controller.isHydrating = false
 
         let pending = controller.acceptUserPrompt(display: "hello", agent: "hello")
 
@@ -295,6 +347,7 @@ struct SessionLedgerTruthTests {
 
     @Test func queuedPromptEditReportsAcceptanceOnlyWhenQueueStillOwnsItem() {
         let controller = ThreadController(provider: .geminiCLI, project: SessionLedgerTruthTests.testProject())
+        controller.isHydrating = false
         controller.isWorking = true
         _ = controller.acceptUserPrompt(display: "first", agent: "first")
         _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
@@ -377,7 +430,7 @@ struct SessionLedgerTruthTests {
             skillHint: nil
         ))
 
-        #expect(title == "when I do `/pulse` I get this error in the xcode console. wh…")
+        #expect(title == "when I do /pulse I get this error in the xcode console. when…")
     }
 
     @Test func promptCopyCustomTitleDoesNotWinOverAgentFallback() {
@@ -543,6 +596,42 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.first?.title == "Restore missing sidebar rows")
     }
 
+    @Test func resolverMergesDuplicateDiskRowsWithMachineVisibilityWinning() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        var human = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: #"23:55:24 ← wire: {"jsonrpc":"2.0","method":"session/update"}"#,
+            source: Provider.codex.rawValue,
+            eventCount: 3,
+            promptCount: 1,
+            loadable: true,
+            replayable: true
+        )
+        human.sessionVisibility = "human"
+        human.sessionKind = "partial_capture"
+
+        var machine = human
+        machine.promptCount = 0
+        machine.sessionVisibility = "machine"
+        machine.sessionKind = "acp_wire_trace"
+        machine.visibilityReason = "acp_wire_trace"
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [human, machine],
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.isEmpty)
+    }
+
     @Test func activeControllerOverlayPromotesLiveGeneratedTitle() {
         let sid = UUID().uuidString
         let project = SessionLedgerTruthTests.testProject()
@@ -579,6 +668,37 @@ struct SessionLedgerTruthTests {
         let row = resolved.active.first
         #expect(row?.title == "Register Task: Portfolio Project and MDX Case Study")
         #expect(row?.intent == "/pulse")
+    }
+
+    @Test func activeControllerOverlayDoesNotReplaceDiskTitleWithPlaceholder() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        var disk = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Saved Meta Design Producer Job Notes",
+            loadable: true,
+            replayable: true
+        )
+        disk.promptCount = 2
+        disk.transcriptTurns = 2
+        let controller = ThreadController(provider: .claude, project: project)
+        controller.sessionId = sid
+        controller.isHydrating = true
+        controller.items = []
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [disk],
+            activeControllers: [controller],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.first?.title == "Saved Meta Design Producer Job Notes")
     }
 
     @Test func kernelLifecyclePartitionsTrashedRowsOutOfActiveList() {
@@ -723,6 +843,7 @@ struct SessionLedgerTruthTests {
         let oldRegistry = SoulRegistry.registryPath
         let oldSoulRegistryEnv = ProcessInfo.processInfo.environment["SOUL_REGISTRY"]
         let oldSoulHomeEnv = ProcessInfo.processInfo.environment["SOUL_HOME"]
+        SoulRegistry.invalidateCache()
 
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
@@ -744,6 +865,7 @@ struct SessionLedgerTruthTests {
             SoulRegistry.soulPath = oldSoul
             SoulRegistry.soulHomePath = oldSoulHome
             SoulRegistry.registryPath = oldRegistry
+            SoulRegistry.invalidateCache()
             try? fm.removeItem(at: tempDir)
         }
 

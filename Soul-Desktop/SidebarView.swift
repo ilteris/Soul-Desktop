@@ -346,8 +346,9 @@ struct SidebarView: View {
             )
         }
         .alert(item: $pendingDelete) { ctx in
-            Alert(
-                title: Text(ctx.permanently ? "Delete chat permanently?" : "Move chat to Trash?"),
+            let name = sessionDisplayName(ctx.session)
+            return Alert(
+                title: Text(ctx.permanently ? "Delete “\(name)” permanently?" : "Move “\(name)” to Trash?"),
                 message: Text(ctx.permanently
                     ? "Permanently deletes the kernel session and its indexed artifacts. This cannot be undone."
                     : "Moves the session into the kernel trash lifecycle state so it can be restored."),
@@ -656,5 +657,23 @@ struct SidebarView: View {
         }
         .padding(16)
         .frame(minWidth: 420)
+    }
+
+    /// Human-readable label for the trash/delete confirmation alert. Mirrors
+    /// the sidebar row fallback chain so users see the same name they clicked.
+    func sessionDisplayName(_ session: SoulSession) -> String {
+        let raw = (session.title ?? session.intent ?? session.summary ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stripped = SoulRegistry.stripCommandTags(raw)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = stripped
+        let noise = CharacterSet(charactersIn: "#[]-*> ")
+        while let first = s.unicodeScalars.first, noise.contains(first) {
+            s.removeFirst()
+        }
+        if let nl = s.firstIndex(of: "\n") { s = String(s[..<nl]) }
+        if s.isEmpty { return "untitled · \(session.id.prefix(8))…" }
+        if s.count > 80 { return String(s.prefix(80)) + "…" }
+        return s
     }
 }
