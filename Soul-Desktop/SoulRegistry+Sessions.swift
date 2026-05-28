@@ -381,10 +381,19 @@ extension SoulRegistry {
                s.transcriptTurns > 0,
                sessionVisibility == "machine",
                sessionKind == "metadata_only" {
-                s.sessionVisibility = "human"
-                s.sessionKind = "conversation"
-                s.visibilityReason = "provider_transcript_conversation"
-                s.replayable = true
+                let transcriptPrompt = findFirstTranscriptPrompt(
+                    sessionId: id,
+                    projectKey: key,
+                    projectPath: projectPath,
+                    cache: dirCache,
+                    nativeSessionIDs: nativeSessionIDs
+                )
+                if transcriptPrompt.map(isLocalOnlySlashPrompt) != true {
+                    s.sessionVisibility = "human"
+                    s.sessionKind = "conversation"
+                    s.visibilityReason = "provider_transcript_conversation"
+                    s.replayable = true
+                }
             }
             s.delegationEventCount = delegationEventCount
             s.sessionStartPpid = sessionStartPpid
@@ -570,6 +579,26 @@ extension SoulRegistry {
             }
         }
         return nil
+    }
+
+    private static func isLocalOnlySlashPrompt(_ raw: String) -> Bool {
+        let stripped = stripCommandTags(raw)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard stripped.hasPrefix("/") else { return false }
+        let command = stripped.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).first.map(String.init) ?? stripped
+        return [
+            "/clear",
+            "/compact",
+            "/finalize",
+            "/help",
+            "/init",
+            "/login",
+            "/logout",
+            "/pulse",
+            "/quit",
+            "/reset",
+        ].contains(command)
     }
 
     /// Process-lifetime memoization of `countTranscriptTurns` results,

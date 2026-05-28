@@ -14,6 +14,42 @@ struct SlashCommand: Identifiable, Hashable {
     let description: String?
     let inputHint: String?
     var id: String { name }
+
+    var isSoulSlashCommand: Bool {
+        Self.soulSlashCommandNames.contains(name.lowercased())
+    }
+
+    private static let soulSlashCommandNames: Set<String> = [
+        "decision",
+        "delegate",
+        "finalize",
+        "pulse",
+        "recall",
+    ]
+}
+
+extension Array where Element == SlashCommand {
+    func deduplicatedByName() -> [SlashCommand] {
+        var commands: [SlashCommand] = []
+        var indexesByName: [String: Int] = [:]
+
+        for command in self {
+            let key = command.name.lowercased()
+            if let index = indexesByName[key] {
+                let existing = commands[index]
+                commands[index] = SlashCommand(
+                    name: existing.name,
+                    description: existing.description ?? command.description,
+                    inputHint: existing.inputHint ?? command.inputHint
+                )
+            } else {
+                indexesByName[key] = commands.count
+                commands.append(command)
+            }
+        }
+
+        return commands
+    }
 }
 
 /// Optional structured payload attached to a tool call. Today this carries
@@ -487,9 +523,13 @@ final class ThreadController {
                 line = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             }
             // Strip simple inline markdown
-            line = line.replacingOccurrences(of: "**", with: "")
+            line = line.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
+                       .replacingOccurrences(of: "**", with: "")
                        .replacingOccurrences(of: "`", with: "")
-            if !line.isEmpty { return line }
+            let generic = line.trimmingCharacters(in: CharacterSet(charactersIn: ".!")).lowercased()
+            if !line.isEmpty && !["fixed", "done", "ok", "okay", "updated", "complete", "completed"].contains(generic) {
+                return line
+            }
         }
         return nil
     }

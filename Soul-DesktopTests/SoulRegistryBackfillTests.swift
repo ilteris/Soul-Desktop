@@ -25,8 +25,8 @@ struct SoulRegistryBackfillTests {
         
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
-        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
+        SoulRegistry.soulHomePath = SoulRegistry.registryPath
         
         defer {
             SoulRegistry.homePath = oldHome
@@ -88,7 +88,7 @@ struct SoulRegistryBackfillTests {
             // as snake_case `native_session_id` (was `nativeId` in older
             // schemas — kept both forms in findNativeSessionID for back-compat,
             // but writes are snake_case only).
-            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
+            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"NativeSessionID\""))
             #expect(updatedHooks.contains("\"native_session_id\":\"\(nativeId)\""))
             #expect(updatedHooks.contains("\"source\":\"backfill\""))
@@ -212,7 +212,7 @@ struct SoulRegistryBackfillTests {
             }
             // BackfillAmbiguous appendHook is async; flush before reading.
             SoulRegistry.flushHooks()
-            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
+            let updatedHooks = try String(contentsOfFile: home.appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl").path)
             #expect(updatedHooks.contains("\"event\":\"BackfillAmbiguous\""))
         }
     }
@@ -332,7 +332,7 @@ struct SoulRegistryBackfillTests {
             SoulRegistry.flushHooks()
 
             let hooksPath = home
-                .appendingPathComponent(".soul/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")
+                .appendingPathComponent("soul_registry/sessions/\(projectKey)/\(sessionId)/hooks.jsonl")
                 .path
             let line = try String(contentsOfFile: hooksPath)
             #expect(line.contains("\"timestamp\""))

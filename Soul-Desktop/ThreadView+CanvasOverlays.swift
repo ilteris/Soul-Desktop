@@ -23,8 +23,6 @@ struct FinalizeCard: View {
     let nextStep: String?
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-100: confirm the FinalizeCard materialized.
-        let _ = SoulSignposts.event("FinalizeCard.body")
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
@@ -259,9 +257,9 @@ struct WorkingIndicator: View {
                                 .background(Color.orange.opacity(0.12), in: Capsule())
                             }
                             .buttonStyle(.soulChip)
-                            .help(controller.queuedPrompts.isEmpty
-                                  ? "Cancel the stalled turn and unblock the thread"
-                                  : "Cancel the stalled turn and dispatch the next queued message")
+                            .accessibilityHint(Text(verbatim: controller.queuedPrompts.isEmpty
+                                ? "Cancel the stalled turn and unblock the thread"
+                                : "Cancel the stalled turn and dispatch the next queued message"))
                         }
                     }
                 }

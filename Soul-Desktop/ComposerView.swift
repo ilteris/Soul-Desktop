@@ -187,8 +187,10 @@ struct ComposerView: View {
 
     private var matchedCommands: [SlashCommand] {
         guard let q = slashQuery else { return [] }
-        if q.isEmpty { return commands }
-        return commands.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        let matches = q.isEmpty
+            ? commands
+            : commands.filter { $0.name.localizedCaseInsensitiveContains(q) }
+        return Array(matches.prefix(5))
     }
 
     private func selectCommand(_ cmd: SlashCommand) {
@@ -462,7 +464,7 @@ struct ComposerView: View {
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.soulHover)
-                .help(terminalActive ? "Hide terminal" : "Show terminal")
+                .accessibilityLabel(Text(verbatim: terminalActive ? "Hide terminal" : "Show terminal"))
             }
             .padding(.horizontal, 4)
             .task(id: projectPath ?? "") { branchName = await GitInfo.currentBranch(at: projectPath) }

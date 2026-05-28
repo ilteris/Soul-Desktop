@@ -15,7 +15,10 @@ enum SkillsRegistry {
             let description = parseFrontmatterDescription(at: manifest)
             return SlashCommand(name: name, description: description, inputHint: nil)
         }
-        return commands.sorted { $0.name < $1.name }
+        return commands
+            .filter(\.isSoulSlashCommand)
+            .deduplicatedByName()
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     /// Returns the SKILL.md body (everything past the closing `---` of the

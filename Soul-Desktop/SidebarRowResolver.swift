@@ -120,7 +120,7 @@ enum SidebarRowResolver {
                 // session. Only overwrite fields the live ctrl owns.
                 var merged = existing
                 let t = ctrl.displayTitle
-                if !t.isEmpty { merged.intent = t }
+                if !t.isEmpty { merged.title = t }
                 merged.liveProvider = ctrl.provider.rawValue
                 merged.lastActivityAt = max(
                     existing.lastActivityAt ?? existing.timestamp,

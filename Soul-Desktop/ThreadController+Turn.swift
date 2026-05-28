@@ -390,7 +390,9 @@ extension ThreadController {
         // actual prompt, so raw count is not a safe trigger.
         let substantiveUserPrompts = items.compactMap { item -> String? in
             guard case .userMessage(_, let text, _) = item else { return nil }
-            let cleaned = SoulRegistry.stripCommandTags(text).trimmingCharacters(in: .whitespacesAndNewlines)
+            let stripped = SoulRegistry.stripCommandTags(text)
+            let cleaned = SessionTitleResolver.titleCandidateText(fromPrompt: stripped)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard case .prose = SessionTitleResolver.classify(cleaned),
                   !SessionTitleResolver.isPlaceholderTitle(cleaned)
             else { return nil }
@@ -402,7 +404,7 @@ extension ThreadController {
                   !SessionTitleResolver.isPlaceholderTitle(title),
                   case .prose = SessionTitleResolver.classify(title)
             else { return false }
-            if substantiveUserPrompts.contains(title) { return false }
+            if SessionTitleResolver.isPromptCopyTitle(title, prompts: substantiveUserPrompts) { return false }
             return true
         }()
         if substantiveUserPrompts.count == 1 && !hasUsableCustomTitle && !titleGenerationInFlight {

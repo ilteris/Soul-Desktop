@@ -839,7 +839,10 @@ extension ThreadController {
                 inputHint: hint
             )
         }
-        availableCommands = cmds.sorted { $0.name < $1.name }
+        availableCommands = cmds
+            .filter(\.isSoulSlashCommand)
+            .deduplicatedByName()
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func insertPlan(_ payload: JSONValue) {

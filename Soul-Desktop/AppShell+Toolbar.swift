@@ -284,7 +284,8 @@ struct AgentLogChip: View {
             .padding(.vertical, 3)
         }
         .buttonStyle(.soulChip)
-        .help("Agent log (\(controller.agentLogCount) lines)")
+        .accessibilityLabel(Text(verbatim: "Agent log"))
+        .accessibilityValue(Text(verbatim: "\(controller.agentLogCount) lines"))
         .popover(isPresented: $showing, arrowEdge: .top) {
             AgentLogPanel(lines: controller.agentLog + controller.traceLog)
         }
@@ -326,7 +327,8 @@ struct ContextUsageChip: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .help(usage.tooltipText)
+        .accessibilityLabel(Text(verbatim: "Context usage"))
+        .accessibilityValue(Text(verbatim: usage.tooltipText))
     }
 }
 
@@ -398,7 +400,8 @@ struct SessionStatsChip: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .help("\(toolCount) tool calls · \(chapterCount) prompts · \(elapsedLabel) span")
+        .accessibilityLabel(Text(verbatim: "Session stats"))
+        .accessibilityValue(Text(verbatim: "\(toolCount) tool calls, \(chapterCount) turns, \(elapsedLabel) span"))
     }
 }
 

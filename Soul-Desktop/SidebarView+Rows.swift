@@ -406,7 +406,8 @@ private struct ReplayProgressChip: View {
             }
         }
         .clipShape(Capsule())
-        .help("\(index) of \(total) · \(prompts) prompts · \(replies) replies")
+        .accessibilityLabel(Text(verbatim: "Replay progress"))
+        .accessibilityValue(Text(verbatim: "\(index) of \(total), \(prompts) prompts, \(replies) replies"))
     }
 
     private var clampedProgress: Double {

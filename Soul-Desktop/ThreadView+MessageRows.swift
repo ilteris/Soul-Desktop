@@ -27,17 +27,11 @@ struct AgentThoughtRow: View {
 
     /// Parse `text` as inline markdown (the AttributedString markdown
     /// initializer handles `**bold**`, `*italic*`, `` `code` ``, links,
-    /// etc.). Falls back to plain text on parse failure. Cached implicitly
-    /// by SwiftUI's view-identity diffing — the Text rebuilds only when
-    /// `text` actually changes.
+    /// etc.). Falls back to plain text on parse failure. Route through
+    /// MarkdownView's explicit cache; SwiftUI view identity does not cache
+    /// computed-property markdown parsing across body evaluations.
     private var thoughtAttributed: AttributedString {
-        if let a = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return a
-        }
-        return AttributedString(text)
+        MarkdownView.attributedInline(text)
     }
 
     var body: some View {
@@ -126,8 +120,6 @@ struct AgentMessageRow: View, Equatable {
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: agent-bubble scroll-perf telemetry.
-        let _ = SoulSignposts.event("AgentMessageRow.body")
         let mutedFg = SoulColor.fg.opacity(0.62)
         VStack(alignment: .leading, spacing: 4) {
             // SOUL-SOUL_DESKTOP-162: .equatable() short-circuits body

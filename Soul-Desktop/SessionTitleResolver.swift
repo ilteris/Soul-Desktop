@@ -64,12 +64,21 @@ enum SessionTitleResolver {
     // MARK: - Public API
 
     static func resolve(_ inputs: Inputs) -> String {
+        let customTitleWasPromptCopy = inputs.customTitle.map {
+            isPromptCopyTitle($0, prompts: inputs.prompts)
+        } ?? false
+        let finalizeIntentWasPromptCopy = inputs.finalizeIntent.map {
+            isPromptCopyTitle($0, prompts: inputs.prompts)
+        } ?? false
+        let shouldPreferAgentFallback = customTitleWasPromptCopy || finalizeIntentWasPromptCopy
+
         // 1. Explicit customTitle wins, unless it is a harness/resume
         // scaffold. Those can leak into Title hooks on resume/hydrate and
         // must not replace the user's sidebar title.
         if let t = inputs.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
            !t.isEmpty,
-           !isPlaceholderTitle(t) {
+           !isPlaceholderTitle(t),
+           !isPromptCopyTitle(t, prompts: inputs.prompts) {
             if case .prose = classify(t) {
                 return truncate(t)
             }
@@ -78,16 +87,24 @@ enum SessionTitleResolver {
         // 2. finalize.intent if it's prose (skill-expansion intents are noise).
         if let intent = inputs.finalizeIntent?.trimmingCharacters(in: .whitespacesAndNewlines),
            !intent.isEmpty,
-           !isPlaceholderTitle(intent) {
+           !isPlaceholderTitle(intent),
+           !isPromptCopyTitle(intent, prompts: inputs.prompts) {
             if case .prose = classify(intent) {
                 return truncate(intent)
             }
         }
 
+        if shouldPreferAgentFallback,
+           let agent = inputs.firstAgentLine?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agent.isEmpty {
+            return truncate(agent)
+        }
+
         // 3. First prose user prompt (look at up to 3).
         for prompt in inputs.prompts.prefix(3) {
-            if case .prose = classify(prompt) {
-                return truncate(prompt)
+            let titleText = titleCandidateText(fromPrompt: prompt)
+            if case .prose = classify(titleText) {
+                return truncate(titleText)
             }
         }
 
@@ -113,6 +130,9 @@ enum SessionTitleResolver {
     static func classify(_ prompt: String) -> PromptKind {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            return .skillExpansion
+        }
 
         // Bare /cmd: single token starting with `/`, no internal whitespace.
         if trimmed.hasPrefix("/") {
@@ -126,6 +146,9 @@ enum SessionTitleResolver {
         // skill invocation with `<command-name>foo</command-name>` plus
         // ancillary tags. Format is harness-controlled and stable across
         // skill edits — a structural signal, not a prose match.
+        if codexUserRequestText(trimmed) != nil {
+            return .skillExpansion
+        }
         if trimmed.contains("<command-name>") {
             return .skillExpansion
         }
@@ -135,6 +158,9 @@ enum SessionTitleResolver {
         // are not user intent, and showing them as titles makes sidebar
         // rows look like raw harness XML instead of conversations.
         if isMachineScaffold(trimmed) {
+            return .skillExpansion
+        }
+        if isStructuredSkillScaffold(trimmed) {
             return .skillExpansion
         }
         if looksLikeAbsolutePathOutput(trimmed) {
@@ -176,11 +202,63 @@ enum SessionTitleResolver {
     private static let titleMaxChars = 60
 
     private static func truncate(_ text: String) -> String {
-        let oneLine = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespaces)
+        let oneLine = oneLineTitleText(text)
         if oneLine.count <= titleMaxChars { return oneLine }
         return String(oneLine.prefix(titleMaxChars)) + "…"
+    }
+
+    private static func oneLineTitleText(_ text: String) -> String {
+        stripInlineMarkdownLinks(text)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func stripInlineMarkdownLinks(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\([^)]+\)"#) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var output = text
+        for match in regex.matches(in: text, range: range).reversed() {
+            guard match.numberOfRanges >= 2,
+                  let full = Range(match.range(at: 0), in: output),
+                  let label = Range(match.range(at: 1), in: output)
+            else { continue }
+            output.replaceSubrange(full, with: String(output[label]))
+        }
+        return output
+    }
+
+    static func isPromptCopyTitle(_ title: String, prompts: [String]) -> Bool {
+        let cleanedTitle = oneLineTitleText(title)
+        guard !cleanedTitle.isEmpty else { return false }
+        let normalizedTitle = normalizeForPromptCopy(cleanedTitle)
+        for prompt in prompts {
+            let promptText = titleCandidateText(fromPrompt: prompt)
+            let promptOneLine = oneLineTitleText(promptText)
+            guard !promptOneLine.isEmpty else { continue }
+            if normalizedTitle == normalizeForPromptCopy(promptOneLine) {
+                return true
+            }
+            if normalizedTitle == normalizeForPromptCopy(truncate(promptOneLine)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func titleCandidateText(fromPrompt prompt: String) -> String {
+        codexUserRequestText(prompt) ?? prompt
+    }
+
+    private static func normalizeForPromptCopy(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "…", with: "")
+            .replacingOccurrences(of: "...", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     private static func looksLikeAbsolutePathOutput(_ text: String) -> Bool {
@@ -189,6 +267,23 @@ enum SessionTitleResolver {
         if text.contains(":") { return true }
         if text.count > 20 && !text.contains(where: { $0.isWhitespace }) { return true }
         return false
+    }
+
+    private static func codexUserRequestText(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let marker = "## My request for Codex:"
+        guard trimmed.hasPrefix("# Files mentioned by the user:"),
+              let markerRange = trimmed.range(of: marker)
+        else { return nil }
+        var request = String(trimmed[markerRange.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !request.isEmpty else { return nil }
+        let stopMarkers = ["\n## ", "\n# ", "\n<image ", "\n</image>"]
+        if let stopIndex = stopMarkers.compactMap({ request.range(of: $0)?.lowerBound }).min() {
+            request = String(request[..<stopIndex])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return request.isEmpty ? nil : request
     }
 
     static func isPlaceholderTitle(_ text: String) -> Bool {
@@ -207,6 +302,44 @@ enum SessionTitleResolver {
             || (text.contains("<environment_context>") && text.contains("</environment_context>"))
             || text.hasPrefix("<cwd>")
             || text.contains("<cwd>")
+    }
+
+    private static func isStructuredSkillScaffold(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: #" +"#, with: " ", options: .regularExpression)
+            .lowercased()
+
+        if normalized.hasPrefix("### [ friction extraction rubric") {
+            return true
+        }
+
+        if normalized.hasPrefix("# overview generate 0 to 3 hyperpersonalized suggestions") {
+            return true
+        }
+
+        if normalized.contains("1. **execution**:")
+            && normalized.contains("2. **report**:") {
+            return true
+        }
+
+        if normalized.hasPrefix("you are a skeptical auditor")
+            && normalized.contains("finalized session metadata") {
+            return true
+        }
+
+        if normalized.hasPrefix("you are teddy")
+            && normalized.contains("registry pulse") {
+            return true
+        }
+
+        let hasLongPersonaPreamble = normalized.hasPrefix("you are ")
+            && trimmed.count >= 240
+        let hasAuditOrRegistryStructure = normalized.contains("soul os idioms")
+            || normalized.contains("registry pulse")
+            || normalized.contains("finalized session metadata")
+        return hasLongPersonaPreamble && hasAuditOrRegistryStructure
     }
 
     /// Try to lift a short descriptor from the first prompt that classifies

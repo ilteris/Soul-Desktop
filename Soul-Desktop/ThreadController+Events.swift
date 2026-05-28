@@ -53,7 +53,9 @@ extension ThreadController {
         for item in items {
             switch item {
             case .userMessage(_, let text, _):
-                let cleaned = SoulRegistry.stripCommandTags(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                let stripped = SoulRegistry.stripCommandTags(text)
+                let cleaned = SessionTitleResolver.titleCandidateText(fromPrompt: stripped)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 if case .prose = SessionTitleResolver.classify(cleaned), !SessionTitleResolver.isPlaceholderTitle(cleaned) {
                     userPrompts.append(cleaned)
                 }
@@ -65,38 +67,29 @@ extension ThreadController {
         }
         guard !userPrompts.isEmpty else { return }
 
-        let candidate: (title: String, source: String)?
-        if provider == .codex,
-           let nativeId = nativeSessionId,
-           let codexTitle = await Self.codexThreadName(nativeThreadId: nativeId),
-           let title = Self.cleanedGeneratedTitle(codexTitle) {
-            candidate = (title, "codex")
+        let raw: String?
+        if let bundled = Self.bundledGeminiPrintSpawn() {
+            raw = await Self.runGeminiPrint(
+                executable: bundled.executable,
+                argumentsPrefix: bundled.argumentsPrefix,
+                users: userPrompts,
+                agent: firstAgent
+            )
+        } else if let gemini = which("gemini") {
+            raw = await Self.runGeminiPrint(
+                executable: gemini,
+                argumentsPrefix: [],
+                users: userPrompts,
+                agent: firstAgent
+            )
         } else {
-            let raw: String?
-            if let bundled = Self.bundledGeminiPrintSpawn() {
-                raw = await Self.runGeminiPrint(
-                    executable: bundled.executable,
-                    argumentsPrefix: bundled.argumentsPrefix,
-                    users: userPrompts,
-                    agent: firstAgent
-                )
-            } else if let gemini = which("gemini") {
-                raw = await Self.runGeminiPrint(
-                    executable: gemini,
-                    argumentsPrefix: [],
-                    users: userPrompts,
-                    agent: firstAgent
-                )
-            } else {
-                // Fallback: no `gemini` on PATH. Use the active ACP session so the
-                // feature still works, at the cost of polluting context with one
-                // meta-turn. Same prompt shape as the subprocess path.
-                raw = await sendSilent(Self.titleGenerationPrompt(users: userPrompts, agent: firstAgent))
-            }
-            guard let title = Self.cleanedGeneratedTitle(raw) else { return }
-            candidate = (title, "llm")
+            // Fallback: no `gemini` on PATH. Use the active ACP session so the
+            // feature still works, at the cost of polluting context with one
+            // meta-turn. Same prompt shape as the subprocess path.
+            raw = await sendSilent(Self.titleGenerationPrompt(users: userPrompts, agent: firstAgent))
         }
-        guard let candidate else { return }
+        guard let title = Self.cleanedGeneratedTitle(raw, userPrompts: userPrompts) else { return }
+        let candidate = (title: title, source: "generated")
 
         await MainActor.run { self.customTitle = candidate.title }
         // Persist so the disk-driven sidebar surfaces it on the next scan,
@@ -109,7 +102,7 @@ extension ThreadController {
         )
     }
 
-    private nonisolated static func cleanedGeneratedTitle(_ raw: String?) -> String? {
+    private nonisolated static func cleanedGeneratedTitle(_ raw: String?, userPrompts: [String]) -> String? {
         guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !title.isEmpty else { return nil }
         // Strip the quotes / trailing punctuation the agent sometimes adds
@@ -125,31 +118,18 @@ extension ThreadController {
         title = SoulRegistry.stripCommandTags(title).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty,
               !SessionTitleResolver.isPlaceholderTitle(title),
+              !SessionTitleResolver.isPromptCopyTitle(title, prompts: userPrompts),
               case .prose = SessionTitleResolver.classify(title)
         else { return nil }
         if title.count > 60 { title = String(title.prefix(60)) }
         return title
     }
 
-    private nonisolated static func codexThreadName(nativeThreadId: String) async -> String? {
-        await Task.detached(priority: .utility) { () -> String? in
-            let path = NSHomeDirectory() + "/.codex/session_index.jsonl"
-            guard FileManager.default.fileExists(atPath: path),
-                  let blob = try? String(contentsOfFile: path, encoding: .utf8)
-            else { return nil }
-
-            var latest: String?
-            for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard let data = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      (obj["id"] as? String) == nativeThreadId,
-                      let title = obj["thread_name"] as? String
-                else { continue }
-                latest = title
-            }
-            return latest
-        }.value
+#if DEBUG
+    nonisolated static func _testCleanedGeneratedTitle(_ raw: String?, userPrompts: [String]) -> String? {
+        cleanedGeneratedTitle(raw, userPrompts: userPrompts)
     }
+#endif
 
     /// Run `gemini -p` with a title-generation prompt that embeds the first
     /// few substantive user turns (and, when present, the first agent reply)

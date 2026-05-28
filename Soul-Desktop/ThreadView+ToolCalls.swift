@@ -30,8 +30,6 @@ struct ToolCallRow: View {
     }
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: tool-call scroll-perf telemetry.
-        let _ = SoulSignposts.event("ToolCallRow.body")
         VStack(alignment: .leading, spacing: 6) {
             if let path = filePath {
                 FileChipRow(

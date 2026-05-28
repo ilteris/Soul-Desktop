@@ -46,10 +46,6 @@ struct MarkdownView: View, Equatable {
     }
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: scroll-perf telemetry. MarkdownView is
-        // suspected to dominate AgentMessageRow's body cost during scroll.
-        // Per-body event so we can quantify materialization rate.
-        let _ = SoulSignposts.event("MarkdownView.body")
         // SOUL-SOUL_DESKTOP-167: cross-paragraph selection. SwiftUI's
         // `.textSelection(.enabled)` lets you drag *within* a single `Text`
         // but not across sibling `Text`s in a VStack. The user's complaint

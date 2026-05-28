@@ -109,8 +109,8 @@ struct CodexRequestHandlingTests {
         let oldRegistry = SoulRegistry.registryPath
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
-        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
+        SoulRegistry.soulHomePath = SoulRegistry.registryPath
         defer {
             SoulRegistry.homePath = oldHome
             SoulRegistry.soulPath = oldSoul
@@ -157,7 +157,7 @@ struct CodexRequestHandlingTests {
         SoulRegistry.flushHooks()
 
         let hooksPath = tempDir
-            .appendingPathComponent(".soul/sessions/\(project.id)/\(sessionId)/hooks.jsonl")
+            .appendingPathComponent("soul_registry/sessions/\(project.id)/\(sessionId)/hooks.jsonl")
             .path
         let hooks = try String(contentsOfFile: hooksPath, encoding: .utf8)
         #expect(hooks.contains("\"event\":\"CodexApproval\""))
@@ -183,8 +183,8 @@ struct CodexRequestHandlingTests {
         let oldRegistry = SoulRegistry.registryPath
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
-        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
+        SoulRegistry.soulHomePath = SoulRegistry.registryPath
         defer {
             SoulRegistry.homePath = oldHome
             SoulRegistry.soulPath = oldSoul

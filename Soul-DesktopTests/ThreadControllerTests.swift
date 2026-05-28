@@ -67,6 +67,26 @@ struct ThreadControllerTests {
         #expect(controller.displayTitle == "Here is the list of files:")
     }
 
+    @Test func generatedTitleRejectsCopiedPromptText() {
+        let prompt = "I am running soul-desktop in production and it went into beachball mode again!"
+
+        #expect(ThreadController._testCleanedGeneratedTitle(prompt, userPrompts: [prompt]) == nil)
+        #expect(ThreadController._testCleanedGeneratedTitle("Fix Production Beachball", userPrompts: [prompt]) == "Fix Production Beachball")
+    }
+
+    @Test func titleGenerationExtractsCodexEnvelopeRequest() {
+        let envelope = """
+        # Files mentioned by the user:
+
+        ## Screenshot.png: /var/folders/example/Screenshot.png
+
+        ## My request for Codex:
+        why do I get this when I try to resume?
+        """
+
+        #expect(SessionTitleResolver.titleCandidateText(fromPrompt: envelope) == "why do I get this when I try to resume?")
+    }
+
     @Test func testPiReplayToolCallsDoNotArmTimeoutWatchdog() async throws {
         let controller = ThreadController(provider: .pi, project: Self.testProject())
 

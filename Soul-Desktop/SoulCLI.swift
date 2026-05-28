@@ -331,6 +331,14 @@ enum SoulCLI {
         env["PATH"] = dirs.joined(separator: ":")
         env["HOME"] = home
         env["SOUL_PATH"] = "\(home)/dotfiles/soul"
+        // ProcessInfo.environment is a launch-time snapshot. Tests and some
+        // embedding paths swizzle these with setenv() before invoking the
+        // kernel CLI, so read the live process environment explicitly.
+        for key in ["SOUL_HOME", "SOUL_REGISTRY", "SOUL_PATH"] {
+            if let value = getenv(key).map({ String(cString: $0) }), !value.isEmpty {
+                env[key] = value
+            }
+        }
         return env
     }
 }

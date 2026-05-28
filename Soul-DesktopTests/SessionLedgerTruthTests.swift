@@ -178,7 +178,7 @@ struct SessionLedgerTruthTests {
         try SessionLedgerTruthTests.withTempHome { home in
             let project = SessionLedgerTruthTests.testProject()
             let sid = UUID().uuidString
-            let dir = home.appendingPathComponent(".soul/sessions/\(project.id)")
+            let dir = home.appendingPathComponent("soul_registry/sessions/\(project.id)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let finalize = dir.appendingPathComponent("\(sid).json")
             try Data("""
@@ -225,7 +225,7 @@ struct SessionLedgerTruthTests {
         try SessionLedgerTruthTests.withTempHome { home in
             let project = SessionLedgerTruthTests.testProject()
             let sid = UUID().uuidString
-            let dir = home.appendingPathComponent(".soul/sessions/\(project.id)")
+            let dir = home.appendingPathComponent("soul_registry/sessions/\(project.id)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try Data("""
             {"timestamp":"2026-05-25T17:00:00Z","intent":"legacy json","summary":"old"}
@@ -327,6 +327,118 @@ struct SessionLedgerTruthTests {
         #expect(title == "Fix app server title cleanup")
     }
 
+    @Test func codexFilesMentionedEnvelopeUsesRequestForTitle() {
+        let codexEnvelope = """
+        # Files mentioned by the user:
+
+        ## Screenshot 2026-05-27 at 8.13.05 PM.png: /var/folders/example/Screenshot.png
+
+        ## My request for Codex:
+        when I do `/pulse` I get this error in the xcode console. when I start typing `/` I see too many commands
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: nil,
+            finalizeIntent: nil,
+            prompts: [codexEnvelope],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "when I do `/pulse` I get this error in the xcode console. wh…")
+    }
+
+    @Test func promptCopyCustomTitleDoesNotWinOverAgentFallback() {
+        let prompt = "a problem that I notice is if I resize the application window, it jumps the scroll to the middle of the view. investigate"
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: prompt,
+            finalizeIntent: nil,
+            prompts: [prompt],
+            firstAgentLine: "Patched transcript resize anchoring in ThreadView.swift.",
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Patched transcript resize anchoring in ThreadView.swift.")
+    }
+
+    @Test func codexFilesEnvelopePromptCopyCustomTitleDoesNotWin() {
+        let codexEnvelope = """
+        # Files mentioned by the user:
+
+        ## Screenshot.png: /var/folders/example/Screenshot.png
+
+        ## My request for Codex:
+        why do I get this when I try to resume?
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: "why do I get this when I try to resume?",
+            finalizeIntent: nil,
+            prompts: [codexEnvelope],
+            firstAgentLine: "Fixed Codex resume handling",
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Fixed Codex resume handling")
+    }
+
+    @Test func codexOverviewEnvelopeDoesNotBecomeResolvedTitle() {
+        let codexOverview = """
+        # Overview
+
+        Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /Users/ilteris/Code/Soul-Desktop
+
+        Get an understanding of the user's intent and goals by deeply viewing their connected apps.
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: nil,
+            finalizeIntent: nil,
+            prompts: [codexOverview, "Fix the session title resolver"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Fix the session title resolver")
+    }
+
+    @Test func jsonAssistantFallbackDoesNotBecomeResolvedTitle() {
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: nil,
+            finalizeIntent: nil,
+            prompts: ["# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions"],
+            firstAgentLine: #"{"suggestions":[{"title":"Extract project mutations"}]}"#,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "New chat")
+    }
+
+    @Test func registryPulseScaffoldDoesNotBecomeResolvedTitle() {
+        let pulseScaffold = """
+        You are Teddy, the Systems Architect. Perform a Registry Pulse.
+
+        1. **Execution**:
+           - Call the kernel:
+             `python3 ~/dotfiles/soul/kernel/commands/pulse.py`
+
+        2. **Report**:
+           - Summarize the active task, pending tasks, and recent session activity shown in the output.
+        """
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: pulseScaffold,
+            finalizeIntent: nil,
+            prompts: [pulseScaffold, "Check stalled tasks"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Check stalled tasks")
+    }
+
     @Test func absolutePathOutputDoesNotBecomeResolvedTitle() {
         let pathOutput = "/Users/ilteris/.zshrc:668: command not found: foo"
         let title = SessionTitleResolver.resolve(.init(
@@ -397,6 +509,44 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.first?.id == sid)
         #expect(resolved.active.first?.promptCount == 3)
         #expect(resolved.active.first?.title == "Restore missing sidebar rows")
+    }
+
+    @Test func activeControllerOverlayPromotesLiveGeneratedTitle() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        let disk = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            intent: "/pulse",
+            loadable: true,
+            replayable: true
+        )
+        let controller = ThreadController(provider: .geminiCLI, project: project)
+        controller.sessionId = sid
+        controller.items = [
+            .userMessage(id: UUID(), text: "/pulse", timestamp: Date(timeIntervalSince1970: 100)),
+            .userMessage(
+                id: UUID(),
+                text: "register a task for pick a portfolio project and draft first real MDX case study",
+                timestamp: Date(timeIntervalSince1970: 101)
+            )
+        ]
+        controller.customTitle = "Register Task: Portfolio Project and MDX Case Study"
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [disk],
+            activeControllers: [controller],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        let row = resolved.active.first
+        #expect(row?.title == "Register Task: Portfolio Project and MDX Case Study")
+        #expect(row?.intent == "/pulse")
     }
 
     @Test func kernelLifecyclePartitionsTrashedRowsOutOfActiveList() {
@@ -544,20 +694,12 @@ struct SessionLedgerTruthTests {
 
         SoulRegistry.homePath = tempDir.path
         SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
-        SoulRegistry.soulHomePath = tempDir.appendingPathComponent(".soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
+        SoulRegistry.soulHomePath = SoulRegistry.registryPath
         // The Swift-side `SoulRegistry.*Path` swizzle only steers in-process
-        // file I/O. `allSessions` now subprocesses to `soul session list
-        // --json` (kernel CLI), and that child reads from BOTH
-        // SOUL_HOME/sessions (primary) AND SOUL_REGISTRY/sessions (legacy)
-        // — see soul_session_view.py:39-40.
-        //
-        // `appendHook` writes to `primarySessionsRoot = soulHomePath/sessions`
-        // — so SOUL_HOME for the kernel child must match `soulHomePath`,
-        // not `registryPath` (those resolve to different temp subdirs).
-        // SOUL_REGISTRY points at `registryPath` so the legacy fallback
-        // also lands inside the temp tree (defense in depth — primary
-        // scan should already hit).
+        // file I/O. `allSessions` subprocesses to `soul session list --json`,
+        // and the current kernel scans strictly SOUL_REGISTRY/sessions.
+        // Keep Desktop's primary write root and the kernel read root aligned.
         setenv("SOUL_HOME", SoulRegistry.soulHomePath, 1)
         setenv("SOUL_REGISTRY", SoulRegistry.registryPath, 1)
 

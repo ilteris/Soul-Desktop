@@ -48,6 +48,7 @@ struct ThreadView: View {
     @State private var canvasWidth: CGFloat = 0
     @State private var pendingCanvasWidth: CGFloat = 0
     @State private var canvasWidthRepinTask: Task<Void, Never>?
+    @State private var transcriptScrollView: NSScrollView?
 
     /// SOUL-SOUL_DESKTOP-146: drag-target state lifted from ComposerView so
     /// the whole ThreadView accepts image/file drops, not just the composer
@@ -255,8 +256,6 @@ struct ThreadView: View {
     }
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: permanent scroll-perf telemetry.
-        let _ = SoulSignposts.event("ThreadView.body")
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -270,6 +269,9 @@ struct ThreadView: View {
                 }
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(.hidden)
+                .background(NSScrollViewConfigurator { sv in
+                    transcriptScrollView = sv
+                })
                 .onScrollPhaseChange { _, newPhase, context in
                     // Track interaction state so sticky-follow can yield
                     // to manual scroll.
@@ -311,6 +313,10 @@ struct ThreadView: View {
                             .onAppear { canvasWidth = geo.size.width }
                             .onChange(of: geo.size.width) { _, newWidth in
                                 guard abs(newWidth - canvasWidth) > 0.5 else { return }
+                                if transcriptScrollView?.window?.inLiveResize == true {
+                                    canvasWidth = newWidth
+                                    return
+                                }
                                 pendingCanvasWidth = newWidth
                             }
                     }
@@ -522,8 +528,6 @@ struct ThreadItemRow: View {
     var nestedChildren: [ThreadItem] = []
 
     var body: some View {
-        // SOUL-SOUL_DESKTOP-099: per-item scroll-perf telemetry.
-        let _ = SoulSignposts.event("ThreadItemRow.body")
         // Note: historical dimming is pushed into per-component foreground colors so the row layer
         // stays opaque — Core Animation disables subpixel text AA on translucent layers, which
         // shows up as slightly blurry / shimmering text during fractional-offset trackpad scroll.
