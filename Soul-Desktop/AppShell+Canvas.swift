@@ -91,6 +91,7 @@ extension AppShell {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 if !rightPane.isOpen, !replay.isActive {
                     CanvasInfoOverlay(

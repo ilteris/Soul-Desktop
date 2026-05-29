@@ -350,9 +350,9 @@ struct ThreadView: View {
                         proxy.scrollTo(id, anchor: .top)
                     }
                 }
-                .onChange(of: controller.items.count) { _, _ in
+                .onChange(of: controller.transcriptLayoutNonce) { _, _ in
                     followLiveTurn(proxy: proxy)
-                    repairTranscriptScrollView(reason: "items")
+                    repairTranscriptScrollView(reason: "layout")
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores

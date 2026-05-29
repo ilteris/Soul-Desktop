@@ -168,9 +168,7 @@ final class ThreadController {
     var items: [ThreadItem] = [] {
         didSet {
             itemsVersion &+= 1
-            if oldValue.count != items.count {
-                transcriptLayoutNonce &+= 1
-            }
+            transcriptLayoutNonce &+= 1
             SoulSignposts.event("Flash.items.didSet", "old=\(oldValue.count) new=\(items.count)")
         }
     }
