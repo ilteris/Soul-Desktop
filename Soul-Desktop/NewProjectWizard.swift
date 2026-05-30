@@ -17,7 +17,7 @@ struct NewProjectWizard: View {
 
     private static let defaultManagerBrief = "Standard architectural oversight."
     private static let defaultHarness = "teddy-architect@v1"
-    private static let leadModel = "gemini-3.1-pro-preview"
+    private static let leadModel = "gemini-3.5-flash"
     private static let helperModel = "gemini-3-flash-preview"
 
     private let tierHints: [Int: String] = [
