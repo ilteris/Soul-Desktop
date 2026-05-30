@@ -11,9 +11,28 @@ extension ThreadController {
 
 func drainQueuedPromptAfterTurn() {
         guard let next = popNextQueuedPromptForDispatch() else { return }
+        beginQueuedRedispatch(next)
         Task { [weak self] in
-            await self?.send(display: next.display, agent: next.agent, extraBlocks: next.extraBlocks)
+            await self?.dispatchPending(next)
         }
+    }
+
+    /// Synchronous prep to re-dispatch a prompt that was already accepted and
+    /// logged when it was queued. Reclaims the active turn, restarts the stall
+    /// watchdog, and moves the parked bubble to the end — mirroring the
+    /// in-loop queued-turn setup in `dispatchPending`.
+    ///
+    /// SOUL-SOUL_DESKTOP-357: the previous drain re-sent through `send()`,
+    /// which re-entered `acceptUserPrompt` and wrote a SECOND identical
+    /// `UserPrompt` hook (and appended a second bubble) ~250ms after the
+    /// queue-time write — the "doubled prompt / doubled session" symptom.
+    /// `next` is already in the ledger and `dispatchPending` never re-logs,
+    /// so dispatching it directly keeps the safety-net drain without the dup.
+    func beginQueuedRedispatch(_ next: QueuedPrompt) {
+        isWorking = true
+        turnStartedAt = Date()
+        startStallWatchdog()
+        relocateQueuedBubbleToEnd(next)
     }
 
     func popNextQueuedPromptForDispatch() -> QueuedPrompt? {
