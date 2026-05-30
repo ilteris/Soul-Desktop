@@ -149,16 +149,42 @@ public actor ACPClient {
             let resp = try decode(NewSessionResponse.self, from: result)
             return resp.sessionId
         }
-        var p: [String: JSONValue] = ["cwd": .string(cwd)]
-        if !mcpServers.isEmpty,
-           let data = try? encoder.encode(mcpServers),
-           let val = try? decoder.decode(JSONValue.self, from: data) {
-            p["mcpServers"] = val
-        }
-        p["_meta"] = .object(["systemPrompt": .string(systemPrompt!)])
+        let mcpServersJSON: JSONValue? = {
+            guard !mcpServers.isEmpty,
+                  let data = try? encoder.encode(mcpServers),
+                  let val = try? decoder.decode(JSONValue.self, from: data) else { return nil }
+            return val
+        }()
+        let p = Self.newSessionParams(
+            cwd: cwd,
+            mcpServersJSON: mcpServersJSON,
+            systemPrompt: systemPrompt!
+        )
         let result = try await call(method: "session/new", params: p)
         let resp = try decode(NewSessionResponse.self, from: result)
         return resp.sessionId
+    }
+
+    /// Build the `session/new` params for the `_meta.systemPrompt` path.
+    ///
+    /// `mcpServers` is a required field of `session/new` — `NewSessionRequest`
+    /// serializes it unconditionally, and claude-agent-acp rejects a request
+    /// that omits it with `-32602 Invalid params`. This branch must therefore
+    /// always emit the key, defaulting to an empty array when no servers are
+    /// configured. SOUL-SOUL_DESKTOP-356: previously dropping it when empty
+    /// wedged every Claude stall/stop-recovery, since that is the only path
+    /// that carries an `_meta.systemPrompt` and most sessions run zero MCP
+    /// servers. Pure so the param shape is unit-testable without a transport.
+    static func newSessionParams(
+        cwd: String,
+        mcpServersJSON: JSONValue?,
+        systemPrompt: String
+    ) -> [String: JSONValue] {
+        [
+            "cwd": .string(cwd),
+            "mcpServers": mcpServersJSON ?? .array([]),
+            "_meta": .object(["systemPrompt": .string(systemPrompt)]),
+        ]
     }
 
     public func newSession(id sid: String, cwd: String, mcpServers: [McpServer] = []) async throws -> String {
@@ -167,11 +193,17 @@ public actor ACPClient {
         // enforces kernel identity from frame zero.
         var p: [String: JSONValue] = ["cwd": .string(cwd)]
         p["sessionId"] = .string(sid)
-        if !mcpServers.isEmpty {
-            if let data = try? encoder.encode(mcpServers),
-               let val = try? decoder.decode(JSONValue.self, from: data) {
-                p["mcpServers"] = val
-            }
+        // SOUL-SOUL_DESKTOP-356: `mcpServers` is required by `session/new`;
+        // always emit it (empty array when none) or claude-agent-acp returns
+        // `-32602 Invalid params`. Same omission class as the `_meta` branch
+        // above. Currently uncalled, but kept consistent so a future caller
+        // can't reintroduce the wedge.
+        if !mcpServers.isEmpty,
+           let data = try? encoder.encode(mcpServers),
+           let val = try? decoder.decode(JSONValue.self, from: data) {
+            p["mcpServers"] = val
+        } else {
+            p["mcpServers"] = .array([])
         }
         let result = try await call(method: "session/new", params: p)
         let resp = try decode(NewSessionResponse.self, from: result)
