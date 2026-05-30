@@ -41,22 +41,6 @@ struct ContextUsage {
         return min(1, Double(tokens) / Double(max))
     }
 
-    var visualFraction: Double {
-        let t = Double(tokens)
-        let m = Double(max)
-        guard m > 0, t > 0 else { return 0 }
-        if m >= 1_000_000 {
-            let softThreshold = 100_000.0
-            if t <= softThreshold {
-                return (t / softThreshold) * 0.6
-            } else {
-                let remaining = (t - softThreshold) / (m - softThreshold)
-                return 0.6 + (remaining * 0.4)
-            }
-        }
-        return min(1.0, t / m)
-    }
-
     var shortLabel: String {
         let prefix = isEstimate ? "~" : ""
         if tokens >= 1_000_000 { return prefix + String(format: "%.1fM", Double(tokens) / 1_000_000) }

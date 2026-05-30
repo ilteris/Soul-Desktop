@@ -119,6 +119,9 @@ enum SidebarRowResolver {
         // shell — it must have a session id, items, or queued prompts.
         // Otherwise an empty new-chat shell would show up as a ghost row.
         for ctrl in inputs.activeControllers {
+            guard ctrl.project.id.lowercased() == inputs.projectKey.lowercased() else {
+                continue
+            }
             guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
                 continue
             }
@@ -181,7 +184,7 @@ enum SidebarRowResolver {
         }
 
         // 4. Draft (user hit "New chat", no first send yet). Always active.
-        if let draft = inputs.draft {
+        if let draft = inputs.draft, draft.project.lowercased() == inputs.projectKey.lowercased() {
             byId[draft.id] = draft
         }
 

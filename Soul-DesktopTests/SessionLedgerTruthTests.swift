@@ -773,6 +773,48 @@ struct SessionLedgerTruthTests {
         #expect(row?.taskSubject == "Lift task association")
     }
 
+    @Test func resolverFiltersActiveControllersAndDraftByProjectKey() {
+        let projectA = SessionLedgerTruthTests.testProject()
+        let projectB = SoulProject(
+            id: "ilteriskaplan.com",
+            name: "ilteriskaplan.com",
+            path: "/tmp/ilteris",
+            pillar: "Platform",
+            tier: 1,
+            status: "active",
+            primaryHost: nil,
+            devCommand: nil,
+            devURL: nil
+        )
+
+        let controllerB = ThreadController(provider: .geminiCLI, project: projectB)
+        controllerB.sessionId = "session-b"
+        controllerB.items = [
+            .userMessage(id: UUID(), text: "Hello B", timestamp: Date())
+        ]
+
+        let draftB = SoulSession(
+            id: "draft-b",
+            project: projectB.id,
+            timestamp: Date(),
+            title: "Draft B",
+            loadable: true,
+            replayable: true
+        )
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: projectA.id,
+            diskSessions: [],
+            activeControllers: [controllerB],
+            draft: draftB,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.isEmpty)
+    }
+
 
 
     private static func testProject() -> SoulProject {

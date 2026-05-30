@@ -153,7 +153,7 @@ struct ThreadView: View {
     // cost; splitting it into its own builder lets the main body type-check
     // in reasonable time.
     @ViewBuilder
-    private var composerSection: some View {
+    private func composerSection(proxy: ScrollViewProxy) -> some View {
         let composerEnabled = controller.canAcceptComposerInput
         VStack(spacing: 8) {
             // Auto-compact "Compacting…" banner. The AppShell-owned
@@ -193,7 +193,19 @@ struct ThreadView: View {
                     if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
                         Task { await controller.dispatchPending(pending) }
                     }
-                    return controller.items.count > itemCountBefore
+                    let accepted = controller.items.count > itemCountBefore
+                    if accepted {
+                        userInteracting = false // Reset manual scroll override so following can activate
+                        DispatchQueue.main.async {
+                            proxy.scrollTo("__bottom__", anchor: .bottom)
+                            repairTranscriptScrollView(reason: "send")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                proxy.scrollTo("__bottom__", anchor: .bottom)
+                                repairTranscriptScrollView(reason: "send_settled")
+                            }
+                        }
+                    }
+                    return accepted
                 },
                   supportsImageAttachments: controller.supportsImageAttachments,
                 onCancel: onCancel,
@@ -260,8 +272,8 @@ struct ThreadView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
                 ScrollView {
                     // SOUL-SOUL_DESKTOP-180: per-row spacing instead of a
                     // flat 18pt gap. Consecutive agent messages now sit
@@ -385,9 +397,9 @@ struct ThreadView: View {
                 .frame(height: 0, alignment: .bottomTrailing)
                 .offset(y: -18)
                 .zIndex(1)
-            }
 
-            composerSection
+                composerSection(proxy: proxy)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
 

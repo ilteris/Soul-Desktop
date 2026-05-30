@@ -324,7 +324,7 @@ struct ContextUsageChip: View {
                 Circle()
                     .stroke(SoulColor.border, lineWidth: 1.5)
                 Circle()
-                    .trim(from: 0, to: CGFloat(usage.visualFraction))
+                    .trim(from: 0, to: CGFloat(usage.fraction))
                     .stroke(tone, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
