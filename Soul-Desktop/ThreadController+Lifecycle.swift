@@ -264,6 +264,36 @@ extension ThreadController {
         try await task.value
     }
 
+    /// SOUL-SOUL_DESKTOP-358: `ensureSession()` can throw an invalid-session
+    /// rpcError — `session/new` or `session/load` failing during stop/stall
+    /// recovery or resume. That throw used to escape straight to
+    /// `dispatchPending`'s generic catch and paint a raw "Invalid params" row,
+    /// bypassing the transparent recovery the prompt loop already performs
+    /// (`ThreadController+Turn.swift`, the `isInvalidSessionRPC` catch).
+    ///
+    /// Retry once on a clean fresh session: tear the child down, drop the
+    /// stale native id and the resume flag so the retry takes the plain
+    /// `session/new` path (no stale id to re-reject), and surface a status
+    /// row matching the prompt-loop UX. If the retry also fails, the error
+    /// propagates to the caller's catch and is surfaced as before — we don't
+    /// loop indefinitely.
+    func ensureSessionResilient() async throws {
+        do {
+            try await ensureSession()
+        } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
+            logLifecycle("ensureSessionResilient.retry", note: "code=\(rpc.code) msg=\(rpc.message)")
+            items.append(.status(id: UUID(), text: "ℹ \(rpc.message) — re-establishing session"))
+            await resetProviderProcessAfterInterruptedTurn()
+            // No in-flight prompt was awaiting here (the failure was at session
+            // establishment, before any prompt), so don't let the teardown's
+            // suppress flag swallow a genuine error on the retry turn.
+            suppressNextInterruptedTurnError = false
+            nativeSessionId = nil
+            pendingResumeOnFirstSend = false
+            try await ensureSession()
+        }
+    }
+
     private func _ensureSessionImpl() async throws {
         logLifecycle("ensureSession enter",
                      note: "hasInitialized=\(hasInitialized) runtimes.acp=\(runtimes.acp != nil) runtimes.codex=\(runtimes.codex != nil) sessionId=\(sessionId ?? "nil") nativeSessionId=\(nativeSessionId ?? "nil") pendingResumeOnFirstSend=\(pendingResumeOnFirstSend)")

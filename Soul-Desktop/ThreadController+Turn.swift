@@ -178,7 +178,7 @@ extension ThreadController {
         var current: QueuedPrompt? = initial
         var isFirstTurn = true
         do {
-            try await ensureSession()
+            try await ensureSessionResilient()
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
                 guard let sid = sessionId else { return }
