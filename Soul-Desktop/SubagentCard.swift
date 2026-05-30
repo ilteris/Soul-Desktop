@@ -186,6 +186,22 @@ struct SubagentCard: View {
                     .padding(.trailing, 4)
                 collapseControl
             }
+        } else if !isTerminal {
+            let lines = lastLines(trimmed, count: 4)
+            VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(SoulColor.fgMuted)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 4)
+                expandControl(charCount: trimmed.count)
+            }
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(preview(trimmed, maxChars: 280))

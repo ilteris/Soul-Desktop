@@ -115,6 +115,7 @@ final class SoulWorkspaceModel {
     private let sessionService: WorkspaceSessionService
     private let persistSelection: Bool
 
+    private var registryWatcher: RegistryWatcher?
     private var generation = 0
 
     init(
@@ -156,6 +157,7 @@ final class SoulWorkspaceModel {
         let resolved = Self.resolveSelection(id, projects: snapshot.projects)
         snapshot.selectedProjectId = resolved
         persistSelectedProjectId(resolved)
+        updateWatcher()
     }
 
     func refreshProjects() async {
@@ -168,6 +170,7 @@ final class SoulWorkspaceModel {
         snapshot.selectedProjectId = selected
         snapshot.phase = projects.isEmpty ? .empty : .ready
         persistSelectedProjectId(selected)
+        updateWatcher()
     }
 
     func handleProjectMutationCompleted() async {
@@ -186,6 +189,18 @@ final class SoulWorkspaceModel {
         guard !rows.isEmpty else { return }
         await sessionService.warmCache(projectId: projectId, sessions: rows)
         mergeSessions(projectId: projectId, rows: rows, freshness: .scanned)
+    }
+
+    private func updateWatcher() {
+        if let key = snapshot.selectedProjectId {
+            registryWatcher = RegistryWatcher.watchSessions(forProject: key) { [weak self] in
+                Task { @MainActor [weak self] in
+                    await self?.refreshSessions(projectId: key, priority: .background)
+                }
+            }
+        } else {
+            registryWatcher = nil
+        }
     }
 
     func projectedRows(

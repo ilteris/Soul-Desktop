@@ -229,4 +229,14 @@ public struct LedgerHookEvent: Equatable, Sendable {
             "permission_mode": .string(permissionMode),
         ])
     }
+
+    public static func worktreeCreated(
+        path: String,
+        branchName: String
+    ) -> LedgerHookEvent {
+        LedgerHookEvent(name: "WorktreeCreated", fields: [
+            "path": .string(path),
+            "branchName": .string(branchName),
+        ])
+    }
 }

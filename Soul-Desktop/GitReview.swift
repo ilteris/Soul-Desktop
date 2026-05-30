@@ -33,6 +33,12 @@ struct GitDiffFile: Identifiable {
 
 struct GitError: Error { let message: String }
 
+struct GitCommit: Identifiable {
+    let id = UUID()
+    let hash: String
+    let message: String
+}
+
 struct GitReviewSnapshot {
     var branch: String?
     var upstream: String?
@@ -41,8 +47,9 @@ struct GitReviewSnapshot {
     var files: [GitDiffFile]
     var untracked: [String]
     var prStatus: String?
+    var recentCommits: [GitCommit]
 
-    static let empty = GitReviewSnapshot(branch: nil, upstream: nil, additions: 0, deletions: 0, files: [], untracked: [], prStatus: nil)
+    static let empty = GitReviewSnapshot(branch: nil, upstream: nil, additions: 0, deletions: 0, files: [], untracked: [], prStatus: nil, recentCommits: [])
 }
 
 @MainActor
@@ -199,7 +206,7 @@ final class GitReviewModel: ObservableObject {
         return .success(GitReviewSnapshot(
             branch: branch, upstream: upstream,
             additions: adds, deletions: dels, files: files,
-            untracked: untracked, prStatus: nil
+            untracked: untracked, prStatus: nil, recentCommits: []
         ))
     }
 

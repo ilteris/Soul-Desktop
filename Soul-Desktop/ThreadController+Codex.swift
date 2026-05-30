@@ -63,7 +63,7 @@ extension ThreadController {
                 event: LedgerHookEvent.nativeSessionID(
                     provider: Provider.codex.rawValue,
                     nativeID: threadId,
-                    cwd: project.path
+                    cwd: activeProjectPath
                 ).hookDictionary
             )
         }
@@ -595,7 +595,7 @@ extension ThreadController {
                 provider: Provider.codex.rawValue,
                 codexItemType: itemType,
                 status: status,
-                cwd: locationHint ?? project.path
+                cwd: locationHint ?? activeProjectPath
             ).hookDictionary
         )
     }

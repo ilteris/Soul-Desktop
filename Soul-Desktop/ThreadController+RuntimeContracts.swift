@@ -18,7 +18,7 @@ extension ThreadController {
     func runtimeSessionSnapshot() -> ProviderRuntimeSession {
         ProviderRuntimeSession(
             provider: provider.agentProvider,
-            projectPath: project.path,
+            projectPath: activeProjectPath,
             kernelSessionID: sessionId,
             nativeSessionID: nativeSessionId
         )
@@ -67,14 +67,15 @@ extension ThreadController {
     }
 
     func runtimeHydrationPreparer() -> RuntimeHydrationPreparer {
-        { provider, projectKey, projectPath, sessionID in
+        { [weak self] provider, projectKey, projectPath, sessionID in
             guard let appProvider = provider.appProvider else {
                 return RuntimeHydrationResult(log: ["runtime hydration skipped: unknown provider \(provider.rawValue)"])
             }
+            let actualPath = await self?.activeProjectPath ?? projectPath
             let result = await SoulHydration.prepare(
                 provider: appProvider,
                 projectKey: projectKey,
-                projectPath: projectPath,
+                projectPath: actualPath,
                 sessionId: sessionID
             )
             return RuntimeHydrationResult(env: result.env, log: result.log)

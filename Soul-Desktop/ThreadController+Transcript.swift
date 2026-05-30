@@ -17,8 +17,8 @@ extension ThreadController {
         guard transcriptWatcher == nil else { return }
         guard let kernelSid = sessionId else { return }
 
-        let cwd = project.path.hasSuffix("/")
-            ? String(project.path.dropLast()) : project.path
+        let cwd = activeProjectPath.hasSuffix("/")
+            ? String(activeProjectPath.dropLast()) : activeProjectPath
         let encoded = cwd.replacingOccurrences(of: "/", with: "-")
         let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects/\(encoded)")
 

@@ -578,7 +578,7 @@ extension ThreadController {
                     }
                     if toolCallPreviousLineCount[toolId] == nil,
                        let path = block["path"]?.stringValue {
-                        let abs = path.hasPrefix("/") ? path : (project.path as NSString).appendingPathComponent(path)
+                        let abs = path.hasPrefix("/") ? path : (activeProjectPath as NSString).appendingPathComponent(path)
                         toolCallPreviousLineCount[toolId] = previousLineCount(atPath: abs)
                     }
                     let prev = toolCallPreviousLineCount[toolId]
@@ -905,7 +905,7 @@ extension ThreadController {
         guard let p = raw, !p.isEmpty else { return nil }
         if p.hasPrefix("/") { return p }
         if p.hasPrefix("~") { return (p as NSString).expandingTildeInPath }
-        return (project.path as NSString).appendingPathComponent(p)
+        return (activeProjectPath as NSString).appendingPathComponent(p)
     }
 
     /// Sync line count for a file. Returns 0 if missing — callers treat 0 as

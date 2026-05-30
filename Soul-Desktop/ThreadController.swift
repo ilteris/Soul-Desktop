@@ -156,7 +156,12 @@ indirect enum ThreadItem: Identifiable, Hashable {
 final class ThreadController {
     let id: String = UUID().uuidString.lowercased()
     let provider: Provider
-    let project: SoulProject
+    var project: SoulProject
+    /// The active project path, resolving to a session-specific Git worktree path if one exists on disk,
+    /// otherwise falling back to the canonical project directory path.
+    var activeProjectPath: String {
+        project.path
+    }
     @ObservationIgnored var ledger: ThreadLedger = LiveThreadLedger.shared
     /// Best-effort wall-clock moment the underlying *session* started. For a
     /// fresh thread this is the instantiation time; AppShell overwrites it on
@@ -967,6 +972,73 @@ final class ThreadController {
         }
     }
 
+    /// Dynamically forks the active session into a session-specific Git worktree
+    /// on a unique provider branch. Gated by `isWorking` status.
+    func forkToWorktree() async {
+        guard let sid = sessionId else {
+            self.items.append(.error(id: UUID(), text: "Cannot fork: No active session ID found."))
+            return
+        }
+        guard !isWorking else {
+            self.items.append(.error(id: UUID(), text: "Cannot fork: The agent is currently active. Please wait for the turn to complete."))
+            return
+        }
+
+        self.items.append(.status(id: UUID(), text: "Creating isolated Git worktree for this session..."))
+
+        let rawTitle = customTitle ?? displayTitle
+        let cleanTitle = rawTitle.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let titleSlug = cleanTitle.isEmpty ? "untitled" : String(cleanTitle.prefix(40))
+        let shortSid = String(sid.prefix(8))
+        let branchName = "\(provider.rawValue)/\(titleSlug)-\(shortSid)"
+
+        let homeDir = NSHomeDirectory()
+        let worktreePath = (homeDir as NSString).appendingPathComponent(".soul/worktrees/\(project.id)/\(sid)")
+
+        do {
+            try await GitWorktreeService.addWorktree(
+                projectPath: project.path,
+                worktreePath: worktreePath,
+                branchName: branchName
+            )
+
+            // Append WORKTREE_CREATED event to hooks
+            SoulRegistry.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: LedgerHookEvent.worktreeCreated(
+                    path: worktreePath,
+                    branchName: branchName
+                ).hookDictionary
+            )
+
+            // Update local project.path to point to the new worktree
+            self.project.path = worktreePath
+
+            self.items.append(.status(
+                id: UUID(),
+                text: "↗ Forked successfully! Active directory isolated to branch: \(branchName)"
+            ))
+        } catch {
+            self.items.append(.error(
+                id: UUID(),
+                text: "❌ Fork into worktree failed: \(error.localizedDescription). Running in main working tree."
+            ))
+
+            // Append WORKTREE_FALLBACK event to hooks
+            SoulRegistry.appendHook(
+                projectKey: project.id,
+                sessionId: sid,
+                event: [
+                    "event": "WorktreeFallback",
+                    "error": error.localizedDescription
+                ]
+            )
+        }
+    }
 }
 
 /// Shared classifier for Claude Code's `<local-command-*>` scaffolding. Used

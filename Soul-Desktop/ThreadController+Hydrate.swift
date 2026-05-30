@@ -671,7 +671,7 @@ extension ThreadController {
         let transcriptId = SoulRegistry.findProviderTranscriptID(projectKey: project.id, sessionId: sid, provider: "claude")
             ?? SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: "claude")
             ?? sid
-        guard let history = ClaudeTranscriptReader.transcript(forSession: transcriptId, cwd: project.path),
+        guard let history = ClaudeTranscriptReader.transcript(forSession: transcriptId, cwd: activeProjectPath),
               !history.isEmpty
         else { return }
 

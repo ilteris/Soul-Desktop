@@ -10,10 +10,11 @@ import Testing
 
 struct Soul_DesktopTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+    @Test func testRunCaptureLargeOutputDoesNotDeadlock() async throws {
+        // Running 'soul session list --json --include-machine --full' produces a very large JSON output,
+        // which exercises SoulCLI's concurrent draining logic.
+        let output = try await SoulCLI.runText(["session", "list", "--json", "--include-machine", "--full"])
+        #expect(!output.isEmpty)
     }
 
 }

@@ -259,6 +259,40 @@ enum SoulCLI {
             process.standardOutput = stdout
             process.standardError = stderr
 
+            let stdoutBox = NSMutableData()
+            let stderrBox = NSMutableData()
+            let stdoutLock = NSLock()
+            let stderrLock = NSLock()
+            let stdoutQueue = DispatchQueue(label: "soul-cli.stdout")
+            let stderrQueue = DispatchQueue(label: "soul-cli.stderr")
+            let group = DispatchGroup()
+
+            group.enter()
+            stdoutQueue.async {
+                let handle = stdout.fileHandleForReading
+                while true {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty { break }
+                    stdoutLock.lock()
+                    stdoutBox.append(chunk)
+                    stdoutLock.unlock()
+                }
+                group.leave()
+            }
+
+            group.enter()
+            stderrQueue.async {
+                let handle = stderr.fileHandleForReading
+                while true {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty { break }
+                    stderrLock.lock()
+                    stderrBox.append(chunk)
+                    stderrLock.unlock()
+                }
+                group.leave()
+            }
+
             if let stdin {
                 let input = Pipe()
                 process.standardInput = input
@@ -270,8 +304,10 @@ enum SoulCLI {
             }
 
             process.waitUntilExit()
-            let out = stdout.fileHandleForReading.readDataToEndOfFile()
-            let err = stderr.fileHandleForReading.readDataToEndOfFile()
+            group.wait()
+
+            let out = stdoutBox as Data
+            let err = stderrBox as Data
 
             return Capture(status: process.terminationStatus, stdout: out, stderr: err)
         }.value

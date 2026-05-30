@@ -44,7 +44,6 @@ struct AppShell: View {
     @State private var codexSmokeModel = CodexSmokeViewModel()
     @State var showSettings = false
     @State var showNewProject = false
-    @State var projectListRefreshNonce: Int = 0
     @State var harness: Provider = .geminiCLI
 
     /// SOUL-SOUL_DESKTOP-237: presented when the user picks a different
@@ -140,12 +139,6 @@ struct AppShell: View {
         workspace.selectedProject
     }
 
-    var selectedProjectBinding: Binding<String?> {
-        Binding(
-            get: { workspace.selectedProjectId },
-            set: { workspace.selectProject($0) }
-        )
-    }
 
     /// The thread the canvas is currently showing. Multiple controllers
     /// coexist in the session coordinator; only one paints at a time.
@@ -378,7 +371,6 @@ struct AppShell: View {
                         // reload / key-window refresh.
                         await workspace.handleProjectMutationCompleted()
                         workspace.selectProject(newKey)
-                        projectListRefreshNonce &+= 1
                     }
                 },
                 onCancel: { showNewProject = false }

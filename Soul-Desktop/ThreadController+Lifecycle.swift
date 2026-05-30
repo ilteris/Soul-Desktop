@@ -67,7 +67,7 @@ extension ThreadController {
                 let backupPath = Self.backupAgentChatIfPresent(
                     provider: provider,
                     sessionId: resumeId,
-                    cwd: project.path
+                    cwd: activeProjectPath
                 )
                 do {
                     isReplayingLoad = true
@@ -98,7 +98,7 @@ extension ThreadController {
                         let didRestore = Self.restoreBackupOverStubIfPresent(
                             backupPath: backupPath,
                             sessionId: resumeId,
-                            cwd: project.path
+                            cwd: activeProjectPath
                         )
                         if didRestore {
                             items.append(.status(
@@ -126,7 +126,7 @@ extension ThreadController {
                             projectKey: project.id,
                             sessionId: sid,
                             provider: provider.rawValue,
-                            cwd: project.path
+                            cwd: activeProjectPath
                         )
                         if let backfilled = result.uuid, backfilled != resumeId {
                             items.append(.status(
@@ -168,7 +168,7 @@ extension ThreadController {
                             guard isInvalidSession, backupPath != nil else { return nil }
                             return Self.quarantineCorruptGeminiChat(
                                 sessionId: resumeId,
-                                cwd: project.path
+                                cwd: activeProjectPath
                             )
                         }()
                         if let backupPath {
@@ -387,7 +387,7 @@ extension ThreadController {
             event: LedgerHookEvent.nativeSessionID(
                 provider: provider.rawValue,
                 nativeID: nid,
-                cwd: project.path
+                cwd: activeProjectPath
             ).hookDictionary
         )
         // SOUL-IDENTITY-SPLIT: same watcher init as the fresh-session path.

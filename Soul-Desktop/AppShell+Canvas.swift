@@ -194,7 +194,10 @@ extension AppShell {
     var sidebarPane: some View {
         ZStack(alignment: .leading) {
             SidebarView(
-                selectedProject: selectedProjectBinding,
+                selectedProject: Binding(
+                    get: { workspace.selectedProjectId },
+                    set: { workspace.selectProject($0) }
+                ),
                 onSelectSession: loadSession,
                 onReplaySession: startReplay,
                 onNewChat: { target in newChat(targetProjectID: target) },
@@ -216,7 +219,6 @@ extension AppShell {
                 draftSession: sessions.draftSession,
                 activeThreads: sessions.mountedThreads,
                 newChatNonce: newChatNonce,
-                projectListRefreshNonce: projectListRefreshNonce,
                 repairToast: $repairToast
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -4,6 +4,7 @@ import SoulACP
 @testable import Soul_Desktop
 
 @Suite(.serialized)
+@MainActor
 struct CodexRequestHandlingTests {
     @Test func codexEnvelopeWithIdAndMethodClassifiesAsRequest() {
         var envelope = JSONRPCEnvelope()

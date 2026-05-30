@@ -296,6 +296,13 @@ struct ProjectSidebarRow: View {
                     .background(SoulColor.surface, in: Capsule())
             }
             Spacer(minLength: 0)
+            if hovering {
+                Button(action: onNewChat) {
+                    SoulIcon(name: "square.and.pencil", color: SoulColor.accent)
+                }
+                .buttonStyle(.soulHover)
+                .help("Start new chat in \(project.name)")
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -307,13 +314,25 @@ struct ProjectSidebarRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            // Single-click toggles expand/collapse. `onSelect` still fires so
-            // the rest of the app (composer footer chip, new-chat target)
-            // tracks the most recently clicked project, but the row itself
-            // shows no "selected" styling — hover + expanded chevron carry
-            // all the visual feedback the user wanted.
-            onSelect()
+            // Single-click ONLY toggles expand/collapse. It deliberately does
+            // NOT promote the project to the workspace selection: doing so
+            // changed `workspace.selectedProjectId`, which yanked the canvas
+            // off an active thread (AppShell.onChange → showProjectDraftOrEmpty)
+            // just for browsing a folder. Project selection now happens on an
+            // explicit action — opening a session or starting a new chat.
             withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+        }
+        .contextMenu {
+            Button("New Chat") {
+                onNewChat()
+            }
+            Divider()
+            Button("Edit Project…") {
+                onEdit()
+            }
+            Button("Remove Project…", role: .destructive) {
+                onDelete()
+            }
         }
         .onHover { h in
             hovering = h

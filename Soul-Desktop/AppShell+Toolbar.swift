@@ -31,6 +31,7 @@ struct CanvasToolbar: View {
     /// runs again from scratch. Recovery for the empty-canvas case where
     /// the previous hydrate completed but populated no content rows.
     var onReload: () -> Void = {}
+    var onForkWorktree: () -> Void = {}
     var onToggleSidebar: () -> Void = {}
     var onToggleTerminal: () -> Void = {}
     var onToggleReview: () -> Void = {}
@@ -81,7 +82,8 @@ struct CanvasToolbar: View {
                         controller: thread,
                         onSmokeTest: onSmokeTest,
                         onBranch: onBranch,
-                        onReload: onReload
+                        onReload: onReload,
+                        onForkWorktree: onForkWorktree
                     )
                     .padding(.trailing, 10)
                 }
@@ -162,6 +164,7 @@ struct ThreadOverflowMenu: View {
     var onSmokeTest: () -> Void = {}
     var onBranch: (Provider) -> Void = { _ in }
     var onReload: () -> Void = {}
+    var onForkWorktree: () -> Void = {}
     @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
 
     var body: some View {
@@ -171,6 +174,11 @@ struct ThreadOverflowMenu: View {
             Divider()
             Button("Copy session ID") { controller.copySessionIdToPasteboard() }
             Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
+            Divider()
+            Section("Workspace") {
+                Button("Fork into new worktree") { onForkWorktree() }
+                    .disabled(controller.isWorking)
+            }
             Divider()
             Section("Branch to") {
                 ForEach(Provider.allCases.filter { $0 != controller.provider }, id: \.self) { p in
@@ -184,7 +192,6 @@ struct ThreadOverflowMenu: View {
             }
             Divider()
             Section("Coming soon") {
-                Button("Fork into new worktree") {}.disabled(true)
                 Button("Open side chat") {}.disabled(true)
                 Button("Open in new window") {}.disabled(true)
                 Button("Copy deeplink") {}.disabled(true)

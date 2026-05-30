@@ -400,4 +400,11 @@ extension AppShell {
         }
         return harness
     }
+
+    func forkActiveSessionIntoWorktree() {
+        guard let thread else { return }
+        Task {
+            await thread.forkToWorktree()
+        }
+    }
 }

@@ -40,7 +40,8 @@ extension AppShell {
                         onBranch: { provider in
                             branchFrom(thread, to: provider)
                         },
-                        onReload: { reloadActiveSession() }
+                        onReload: { reloadActiveSession() },
+                        onForkWorktree: { forkActiveSessionIntoWorktree() }
                     )
                 }
                 .padding(.horizontal, 16)
