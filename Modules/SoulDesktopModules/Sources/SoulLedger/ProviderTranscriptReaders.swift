@@ -212,7 +212,11 @@ private func locateGeminiTranscript(sessionId sid: String, projectKey: String) -
     let geminiBase = (("~/.gemini/tmp" as NSString)).expandingTildeInPath
     let fileManager = FileManager.default
     guard let topEntries = try? fileManager.contentsOfDirectory(atPath: geminiBase) else { return nil }
-    let candidateDirs = topEntries.filter { $0 == projectKey || $0.hasPrefix("\(projectKey)-") }
+    let lowerKey = projectKey.lowercased()
+    let candidateDirs = topEntries.filter {
+        let lower = $0.lowercased()
+        return lower == lowerKey || lower.hasPrefix("\(lowerKey)-")
+    }
 
     func isChatFile(_ url: URL) -> Bool {
         let name = url.lastPathComponent

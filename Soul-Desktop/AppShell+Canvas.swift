@@ -194,6 +194,7 @@ extension AppShell {
     var sidebarPane: some View {
         ZStack(alignment: .leading) {
             SidebarView(
+                workspace: workspace,
                 selectedProject: Binding(
                     get: { workspace.selectedProjectId },
                     set: { workspace.selectProject($0) }

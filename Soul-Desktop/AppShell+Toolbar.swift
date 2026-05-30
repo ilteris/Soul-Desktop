@@ -303,6 +303,11 @@ struct ContextUsageChip: View {
     let usage: ContextUsage
 
     private var tone: Color {
+        if usage.max >= 1_000_000 {
+            if usage.tokens >= 250_000 { return .red }
+            if usage.tokens >= 100_000 { return .orange }
+            return SoulColor.accent
+        }
         if usage.fraction >= 0.9 { return .red }
         if usage.fraction >= 0.7 { return .orange }
         return SoulColor.fgMuted
@@ -315,9 +320,16 @@ struct ContextUsageChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "circle.bottomhalf.filled")
-                .font(.system(size: SoulMetric.iconHint))
-                .foregroundStyle(tone)
+            ZStack {
+                Circle()
+                    .stroke(SoulColor.border, lineWidth: 1.5)
+                Circle()
+                    .trim(from: 0, to: CGFloat(usage.visualFraction))
+                    .stroke(tone, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 10, height: 10)
+            
             Text("\(usage.shortLabel)")
                 .font(SoulFont.code(11, weight: .regular))
                 .foregroundStyle(SoulColor.fg)

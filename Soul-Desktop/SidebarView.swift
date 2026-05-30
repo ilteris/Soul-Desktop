@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     var registryStore: SoulRegistryStore = LiveSoulRegistryStore.shared
+    var workspace: SoulWorkspaceModel
     @Binding var selectedProject: String?
     var onSelectSession: (SoulSession) -> Void = { _ in }
     var onReplaySession: (SoulSession) -> Void = { _ in }
@@ -56,15 +57,7 @@ struct SidebarView: View {
     /// project in NewProjectWizard. This keeps the sidebar explicit-refresh
     /// based instead of watching PROJECTS.json continuously.
     var projectListRefreshNonce: Int = 0
-    // Seed projects synchronously from PROJECTS.json so the first render
-    // already has data instead of flashing an empty "Projects" + "No chats"
-    // header for the ~250ms until the async reload finishes.
-    @State var projects: [SoulProject] = LiveSoulRegistryStore.shared.activeProjects()
-    /// Unified per-project session list, populated by `SoulRegistry.allSessions`.
-    /// Each entry carries derived `isLive` / `isDirty` / `loadable` /
-    /// `replayable` / `substantive` flags so the sidebar doesn't have to
-    /// reach back into the registry for filtering decisions.
-    @State var sessionsByProject: [String: [SoulSession]] = [:]
+
     @State var chatSourceFilter: String? = nil   // nil = all
     @State var hideUntitled: Bool = false
     /// When false (default), the sidebar hides session rows whose provider
@@ -104,31 +97,8 @@ struct SidebarView: View {
         let session: SoulSession
         let permanently: Bool
     }
-    /// Per-project session count for the sidebar badge. Persisted to
-    /// UserDefaults so subsequent launches paint instantly; the fresh scan
-    /// then runs in the background and overwrites stale entries.
-    @State var sessionCounts: [String: Int] = Self.cachedSessionCounts()
-    /// Cached sidebar projection. Views read this prepared model; loading,
-    /// filtering, and live-thread changes rebuild it outside SwiftUI body
-    /// evaluation so layout/resize invalidations don't redo merge/filter/sort work.
-    @State var sidebarRowsProjection = SidebarRowsProjection()
 
-    private static let sessionCountsCacheKey = "soul.sidebar.sessionCounts.v1"
-    private static func cachedSessionCounts() -> [String: Int] {
-        (UserDefaults.standard.dictionary(forKey: sessionCountsCacheKey) as? [String: Int]) ?? [:]
-    }
-    static func writeSessionCountsCache(_ counts: [String: Int]) {
-        UserDefaults.standard.set(counts, forKey: sessionCountsCacheKey)
-    }
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
-    @State private var watcher: RegistryWatcher? = nil
-    /// SOUL-SOUL_DESKTOP-234: per-project timestamp of last full disk scan.
-    /// Cross-project browser-history nav (⌘[ / ⌘]) was thrashing
-    /// `loadProject` and burning ~200% CPU on `allSessions` because every
-    /// project switch re-scanned. RegistryWatcher keeps the currently
-    /// selected project fresh; other projects get a short TTL (5s) so
-    /// rapid back-and-forth coalesces to a single scan.
-    @State var projectLastFullScanAt: [String: Date] = [:]
     /// SOUL-SOUL_DESKTOP-036: per-project expand/collapse state, persisted
     /// to UserDefaults keyed by project id. Default = expanded for the
     /// selected project, collapsed for others. Mirrored into local state so
@@ -185,8 +155,8 @@ struct SidebarView: View {
 
             HStack(spacing: 6) {
                 sectionHeader("Projects")
-                if !projects.isEmpty {
-                    Text("\(projects.count)")
+                if !workspace.snapshot.projects.isEmpty {
+                    Text("\(workspace.snapshot.projects.count)")
                         .font(SoulFont.ui(11, weight: .regular))
                         .foregroundStyle(SoulColor.fgSubtle)
                         .padding(.horizontal, 5)
@@ -195,7 +165,7 @@ struct SidebarView: View {
                 }
                 Spacer()
                 Button {
-                    Task { await reload() }
+                    Task { await workspace.refreshProjects() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .semibold))
@@ -328,7 +298,7 @@ struct SidebarView: View {
                 onCancel: { pendingProjectEdit = nil },
                 onSaved: {
                     pendingProjectEdit = nil
-                    Task { await reload() }
+                    Task { await workspace.handleProjectMutationCompleted() }
                 }
             )
         }
@@ -341,7 +311,7 @@ struct SidebarView: View {
                     if selectedProject == ctx.project.id {
                         selectedProject = nil
                     }
-                    Task { await reload() }
+                    Task { await workspace.handleProjectMutationCompleted() }
                 }
             )
         }
@@ -362,11 +332,10 @@ struct SidebarView: View {
                 secondaryButton: .cancel()
             )
         }
-        .task { await reload() }
         .onChange(of: activeProjectId) { _, newId in
             // Prime the session cache when active project changes.
             guard let id = newId else { return }
-            Task { await loadProject(id) }
+            Task { await workspace.refreshSessions(projectId: id) }
         }
         .onChange(of: newChatNonce) { _, _ in
             // SOUL-SOUL_DESKTOP-138: AppShell bumps this every time the user
@@ -378,38 +347,8 @@ struct SidebarView: View {
             guard let pid = activeProjectId else { return }
             setExpanded(pid, true)
         }
-        .onChange(of: currentProvider) { _, _ in
-            // Harness change → re-filter live rows. A row that's valid under
-            // Claude isn't valid under Gemini-CLI (and vice-versa).
-            Task { await reload() }
-        }
         .onChange(of: projectListRefreshNonce) { _, _ in
-            Task { await reload() }
-        }
-        .onChange(of: sidebarProjectionInputSignature) { _, _ in
-            rebuildResolvedRows()
-        }
-        .onChange(of: chatSourceFilter) { _, _ in
-            rebuildResolvedRows()
-        }
-        .onChange(of: hideUntitled) { _, _ in
-            rebuildResolvedRows()
-        }
-        .onChange(of: showUnreadable) { _, _ in
-            rebuildResolvedRows()
-        }
-        .onChange(of: selectedProject) { _, newKey in
-            if let key = newKey {
-                // Reactive refresh: watch the sessions directory for the
-                // active project. This ensures the sidebar refreshes
-                // immediately when the kernel or the app writes a new hook.
-                watcher = RegistryWatcher.watchSessions(forProject: key) {
-                    Task { await reloadSessions() }
-                }
-            } else {
-                watcher = nil
-            }
-            Task { await reloadSessions() }
+            Task { await workspace.refreshProjects() }
         }
         // SOUL-SOUL_DESKTOP-234: ⌘⇧O = jump to the session row above the
         // currently-active one in the sidebar. Defined in SoulShortcuts.swift;
@@ -431,11 +370,11 @@ struct SidebarView: View {
         // when set; otherwise scan projects for the one containing the
         // currently-active session id.
         let projectId: String? = activeProjectId
-            ?? projects.first(where: { p in
+            ?? workspace.snapshot.projects.first(where: { p in
                 // SOUL-SOUL_DESKTOP-234: cheap membership check — no
                 // dict-merge + sort just to answer `contains`.
                 guard let sid = activeSessionId else { return false }
-                if let rows = sessionsByProject[p.id], rows.contains(where: { $0.id == sid }) {
+                if let rows = workspace.snapshot.sessionsByProject[p.id]?.rows, rows.contains(where: { $0.id == sid }) {
                     return true
                 }
                 if activeThreads.contains(where: {
@@ -449,12 +388,30 @@ struct SidebarView: View {
                 return false
             })?.id
         guard let pid = projectId,
-              projects.first(where: { $0.id == pid }) != nil
+              workspace.project(id: pid) != nil
         else { return }
 
-        // SOUL-SOUL_DESKTOP-270: same resolve() the sidebar uses, so the
-        // keyboard nav order matches the rendered list exactly.
-        guard let visible = sidebarRowsProjection.rowsByProject[pid]?.active, !visible.isEmpty else { return }
+        let filters = SidebarFilters(
+            chatSourceFilter: chatSourceFilter,
+            hideUntitled: hideUntitled,
+            showUnreadable: showUnreadable,
+            showArchived: showArchived
+        )
+        let overlay = SidebarLiveOverlay(
+            activeControllers: activeThreads,
+            draftSession: draftSession,
+            activeSessionId: activeSessionId,
+            activeProjectId: activeProjectId
+        )
+        guard let resolved = workspace.projectedRows(
+            for: pid,
+            filters: filters,
+            overlay: overlay,
+            archivedIds: Set(archiveStore.archivedIDs(forProject: pid)),
+            starredIds: Set(starStore.starredIDs(forProject: pid))
+        ), !resolved.active.isEmpty else { return }
+
+        let visible = resolved.active
 
         if let currentIdx = visible.firstIndex(where: { $0.id == activeSessionId }) {
             let targetIdx = currentIdx + delta
@@ -469,8 +426,7 @@ struct SidebarView: View {
     }
 
     private var selectedProjectForMutation: SoulProject? {
-        guard let selectedProject else { return nil }
-        return projects.first { $0.id == selectedProject }
+        workspace.selectedProject
     }
 
     private var buildBadge: some View {
@@ -519,7 +475,7 @@ struct SidebarView: View {
 
     func repairSessionLink(_ session: SoulSession) {
         guard let provider = repairableProvider(for: session),
-              let path = projects.first(where: { $0.id == session.project })?.path
+              let path = workspace.project(id: session.project)?.path
         else { return }
         let projectKey = session.project
         let sessionId = session.id
@@ -532,7 +488,7 @@ struct SidebarView: View {
                     cwd: path
                 )
             }.value
-            await reloadSessions()
+            await workspace.refreshSessions(projectId: projectKey)
             switch result {
             case .hit(let uuid):
                 showRepairToast("Linked to \(uuid.prefix(8))…")
@@ -576,7 +532,7 @@ struct SidebarView: View {
         projectExpanded[projectId] = value
         UserDefaults.standard.set(value, forKey: "soul.sidebar.expanded.\(projectId)")
         if value {
-            Task { await loadProject(projectId) }
+            Task { await workspace.refreshSessions(projectId: projectId) }
         }
     }
 
@@ -635,7 +591,7 @@ struct SidebarView: View {
                     )
                     ambiguousRepair = nil
                     Task {
-                        await reloadSessions()
+                        await workspace.refreshSessions(projectId: ctx.projectKey)
                         showRepairToast("Linked to \(uuid.prefix(8))…")
                     }
                 } label: {

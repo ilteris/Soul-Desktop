@@ -41,6 +41,22 @@ struct ContextUsage {
         return min(1, Double(tokens) / Double(max))
     }
 
+    var visualFraction: Double {
+        let t = Double(tokens)
+        let m = Double(max)
+        guard m > 0, t > 0 else { return 0 }
+        if m >= 1_000_000 {
+            let softThreshold = 100_000.0
+            if t <= softThreshold {
+                return (t / softThreshold) * 0.6
+            } else {
+                let remaining = (t - softThreshold) / (m - softThreshold)
+                return 0.6 + (remaining * 0.4)
+            }
+        }
+        return min(1.0, t / m)
+    }
+
     var shortLabel: String {
         let prefix = isEstimate ? "~" : ""
         if tokens >= 1_000_000 { return prefix + String(format: "%.1fM", Double(tokens) / 1_000_000) }
@@ -213,16 +229,35 @@ struct ContextUsage {
         )
     }
 
-    /// Claude budget by model ID. The `[1m]` suffix on `claude-opus-4-7[1m]`
-    /// signals the 1M-context variant. Other models (sonnet/haiku, and opus
-    /// without the suffix) use the standard 200k window. Anthropic doesn't
-    /// expose this on every model in a structured field — the bracket marker
-    /// in the model id is the most reliable client-side signal.
+    /// Claude budget by model ID. The whole Opus 4 family from 4-7 onward
+    /// (opus-4-7, opus-4-8, …) ships a 1M-context window; sonnet/haiku and
+    /// older opus use the standard 200k.
+    ///
+    /// Two signals, in order. First the `[1m]` bracket — a Claude Code UI
+    /// label that's the explicit 1M marker when present. But that bracket
+    /// only rides on the *live* model id; the transcript's `message.model`
+    /// is the bare API id (`claude-opus-4-8`), so the bracket never matches
+    /// on disk. That's why we also parse the Opus 4 minor version directly:
+    /// any `opus-4-N` with N ≥ 7 is 1M. This auto-covers future Opus bumps
+    /// (4-9, …) without another edit — the bug we just fixed was 4-8 falling
+    /// through because only 4-7 was hardcoded.
     private static func claudeBudget(for model: String?) -> Int {
         guard let m = model?.lowercased() else { return 1_000_000 }
         if m.contains("[1m]") { return 1_000_000 }
-        if m.contains("opus-4-7") || m.contains("opus-4.7") { return 1_000_000 }
+        if let minor = opusFourMinor(in: m), minor >= 7 { return 1_000_000 }
         return 200_000
+    }
+
+    /// Parse the minor version N out of an `opus-4-N` / `opus-4.N` model id.
+    /// Returns nil for non-Opus-4 ids. The N is read as a run of digits, so
+    /// date-suffixed ids like `opus-4-8-20260115` resolve to 8, not 820260115.
+    private static func opusFourMinor(in model: String) -> Int? {
+        for sep in ["opus-4-", "opus-4."] {
+            guard let r = model.range(of: sep) else { continue }
+            let digits = model[r.upperBound...].prefix { $0.isNumber }
+            if let n = Int(digits) { return n }
+        }
+        return nil
     }
 
     // MARK: - Gemini (precise — reads per-turn `tokens` field)
@@ -246,8 +281,10 @@ struct ContextUsage {
         let tmpDir = ("~/.gemini/tmp" as NSString).expandingTildeInPath
         let siblings: [String]
         if let all = try? FileManager.default.contentsOfDirectory(atPath: tmpDir) {
+            let lowerBase = basename.lowercased()
             siblings = all.filter { entry in
-                entry == basename || entry.hasPrefix("\(basename)-")
+                let lower = entry.lowercased()
+                return lower == lowerBase || lower.hasPrefix("\(lowerBase)-")
             }
         } else {
             siblings = [basename]

@@ -151,6 +151,9 @@ final class SoulWorkspaceModel {
     func start() async {
         await refreshProjects()
         await primeCachedSessions()
+        if let sel = snapshot.selectedProjectId {
+            await refreshSessions(projectId: sel, priority: .foreground)
+        }
     }
 
     func selectProject(_ id: String?) {
@@ -158,6 +161,11 @@ final class SoulWorkspaceModel {
         snapshot.selectedProjectId = resolved
         persistSelectedProjectId(resolved)
         updateWatcher()
+        if let resolved {
+            Task {
+                await refreshSessions(projectId: resolved, priority: .background)
+            }
+        }
     }
 
     func refreshProjects() async {

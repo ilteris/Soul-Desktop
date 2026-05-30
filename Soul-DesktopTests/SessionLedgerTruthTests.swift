@@ -773,50 +773,7 @@ struct SessionLedgerTruthTests {
         #expect(row?.taskSubject == "Lift task association")
     }
 
-    @Test func sidebarRowsProjectionCachesRowsAndCounts() {
-        let project = SessionLedgerTruthTests.testProject()
-        let sid = UUID().uuidString
-        let session = SoulSession(
-            id: sid,
-            project: project.id,
-            timestamp: Date(timeIntervalSince1970: 100),
-            title: "Cache sidebar rows outside body",
-            loadable: true,
-            replayable: true
-        )
-        var projection = SidebarRowsProjection()
 
-        let counts = projection.rebuild(
-            projects: [project],
-            projectIds: nil,
-            currentCounts: [:]
-        ) { _ in
-            SidebarRowResolver.Output(active: [session], archived: [])
-        }
-
-        #expect(projection.rowsByProject[project.id]?.active.first?.id == sid)
-        #expect(counts[project.id] == 1)
-    }
-
-    @Test func sidebarRowsProjectionTargetedRebuildDoesNotResolveOtherProjects() {
-        let soul = SessionLedgerTruthTests.testProject()
-        var other = SessionLedgerTruthTests.testProject()
-        other.id = "other"
-        other.name = "Other"
-        var projection = SidebarRowsProjection()
-        var resolvedProjectIds: [String] = []
-
-        _ = projection.rebuild(
-            projects: [soul, other],
-            projectIds: Set([soul.id]),
-            currentCounts: [other.id: 7]
-        ) { project in
-            resolvedProjectIds.append(project.id)
-            return SidebarRowResolver.Output(active: [], archived: [])
-        }
-
-        #expect(resolvedProjectIds == [soul.id])
-    }
 
     private static func testProject() -> SoulProject {
         SoulProject(

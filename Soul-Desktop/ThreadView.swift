@@ -352,7 +352,21 @@ struct ThreadView: View {
                 }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
                     followLiveTurn(proxy: proxy)
-                    repairTranscriptScrollView(reason: "layout")
+                    // SOUL-SOUL_DESKTOP-189: only repair layout when not actively running a turn.
+                    // During an active turn (isWorking == true), the document grows rather than shrinks,
+                    // so the scroll origin is never out-of-bounds. Forcing AppKit layout subtree updates
+                    // here conflicts with SwiftUI's live rendering and can result in blank transcripts.
+                    if !controller.isWorking {
+                        repairTranscriptScrollView(reason: "layout")
+                    }
+                }
+                .onChange(of: controller.isWorking) { _, isWorking in
+                    // When a live turn completes (isWorking transitions to false), the WorkingIndicator
+                    // is removed and the document shrinks by a tiny bit. Run a clean repair here to
+                    // align the scroll bounds after the transition.
+                    if !isWorking {
+                        repairTranscriptScrollView(reason: "isWorking")
+                    }
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores

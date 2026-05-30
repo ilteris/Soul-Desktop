@@ -67,6 +67,7 @@ struct ComposerView: View {
     /// button's active-state tint so the affordance reads as engaged
     /// while the modal is up.
     @State private var filePickerOpen: Bool = false
+    @State private var forceClearText: Bool = false
     /// Files dropped onto the composer surface (or anywhere in the parent's
     /// drop area — see AppShell+Canvas.swift). Rendered
     /// as a row of chips above the text field; converted to markdown links
@@ -172,6 +173,7 @@ struct ComposerView: View {
         // later, but the user's text is already represented in app state.
         guard accepted else { return }
         lastSent = finalDisplay
+        forceClearText = true
         prompt = ""
         droppedAttachments = []
         // SOUL-217: don't clear the chip on send — keep it visible while
@@ -324,6 +326,7 @@ struct ComposerView: View {
                     }
                     ComposerTextField(
                         text: $prompt,
+                        forceClearText: $forceClearText,
                         placeholder: activeCommand == nil ? "Ask Soul anything. @ to use plugins or mention files" : "",
                         onSubmit: { currentText in submit(currentText: currentText) },
                         onBackspaceWhenEmpty: {

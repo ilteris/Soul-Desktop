@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
 
 struct ComposerTextField: NSViewRepresentable {
     @Binding var text: String
+    @Binding var forceClearText: Bool
     let placeholder: String
     let onSubmit: (String) -> Void
     let onBackspaceWhenEmpty: () -> Void
@@ -89,11 +90,17 @@ struct ComposerTextField: NSViewRepresentable {
                !tv.string.isEmpty,
                tv.window?.firstResponder === tv,
                preservesFocusedDraft,
-               !tv.allowNextEmptySync {
+               !tv.allowNextEmptySync,
+               !forceClearText {
                 return
             }
             tv.allowNextEmptySync = false
             tv.string = text
+            if forceClearText {
+                DispatchQueue.main.async {
+                    forceClearText = false
+                }
+            }
         }
         if tv.placeholderString != placeholder { tv.placeholderString = placeholder }
         tv.onBackspaceWhenEmpty = onBackspaceWhenEmpty
