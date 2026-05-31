@@ -259,6 +259,7 @@ extension ThreadController {
             if isWorking {
                 isWorking = false
             }
+            onRuntimeEnded?(sessionId)
             items.append(.status(id: UUID(), text: "■ agent process ended: \(cause)"))
         }
     }

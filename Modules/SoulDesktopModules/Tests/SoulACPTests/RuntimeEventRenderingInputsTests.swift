@@ -139,4 +139,56 @@ struct RuntimeEventRenderingInputsTests {
     func codexUnknownNoop() {
         #expect(CodexRuntimeRenderingAction(method: "unknown/event", params: nil) == .noop)
     }
+
+    // SOUL-SOUL_DESKTOP-369: connection-loss notifications used to fall to the
+    // `default: .ignored` branch and never reach the controller. They must now
+    // decode into the reconnecting / transport-warning actions so the UI can
+    // surface a connecting affordance instead of spinning silently.
+    @Test("Codex retrying error decodes into a reconnecting action")
+    func codexRetryingErrorDecodes() {
+        let params: JSONValue = .object([
+            "error": .object([
+                "message": .string("Reconnecting... 2/5"),
+                "additionalDetails": .string("stream disconnected before completion: tls handshake eof"),
+            ]),
+            "willRetry": .bool(true),
+            "threadId": .string("thread-1"),
+            "turnId": .string("turn-1"),
+        ])
+        #expect(CodexEventRenderingInput(method: "error", params: params)
+                == .connectionError(message: "Reconnecting... 2/5", willRetry: true))
+        #expect(CodexRuntimeRenderingAction(method: "error", params: params)
+                == .connectionRetrying(message: "Reconnecting... 2/5", willRetry: true))
+    }
+
+    @Test("Codex terminal error decodes with willRetry false")
+    func codexTerminalErrorDecodes() {
+        let params: JSONValue = .object([
+            "error": .object(["message": .string("stream disconnected")]),
+            "willRetry": .bool(false),
+        ])
+        #expect(CodexRuntimeRenderingAction(method: "error", params: params)
+                == .connectionRetrying(message: "stream disconnected", willRetry: false))
+    }
+
+    @Test("Codex transport warning decodes into a transport-warning action")
+    func codexTransportWarningDecodes() {
+        let params: JSONValue = .object([
+            "threadId": .string("thread-1"),
+            "message": .string("Falling back from WebSockets to HTTPS transport."),
+        ])
+        #expect(CodexEventRenderingInput(method: "warning", params: params)
+                == .transportWarning(message: "Falling back from WebSockets to HTTPS transport."))
+        #expect(CodexRuntimeRenderingAction(method: "warning", params: params)
+                == .transportWarning(message: "Falling back from WebSockets to HTTPS transport."))
+    }
+
+    @Test("Codex error with no willRetry flag defaults to non-retrying")
+    func codexErrorDefaultsNonRetrying() {
+        let params: JSONValue = .object([
+            "error": .object(["message": .string("boom")]),
+        ])
+        #expect(CodexRuntimeRenderingAction(method: "error", params: params)
+                == .connectionRetrying(message: "boom", willRetry: false))
+    }
 }

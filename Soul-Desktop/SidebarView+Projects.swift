@@ -165,6 +165,7 @@ extension SidebarView {
         )
         let overlay = SidebarLiveOverlay(
             activeControllers: activeThreads,
+            liveRecords: liveRecords,
             draftSession: draftSession,
             activeSessionId: activeSessionId,
             activeProjectId: activeProjectId

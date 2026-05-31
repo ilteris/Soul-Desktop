@@ -31,6 +31,9 @@ extension ThreadController {
         stallWatchdog = nil
         stallHookEmittedAt = nil
         lastInProgressToolKind = nil
+        // SOUL-SOUL_DESKTOP-369: a reconnecting indicator must never outlive the
+        // turn it belongs to — clear it whenever the turn winds down.
+        connectivity = .normal
         // Drop per-tool-call deadlines at end-of-turn so a stray entry from
         // a never-resolved tool call doesn't leak across turns.
         toolCallStartedAt.removeAll()

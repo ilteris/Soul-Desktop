@@ -43,6 +43,10 @@ enum SidebarRowResolver {
         /// synthetic rows for new chats and overlay live state (working
         /// indicator, freshly-renamed title) on existing disk rows.
         var activeControllers: [ThreadController]
+        /// Lightweight liveness records retained after a controller is evicted
+        /// by the mounted-controller cap. They keep sidebar badges honest
+        /// without keeping transcript controllers alive.
+        var liveRecords: [LiveSessionRecord] = []
         /// In-flight draft session (user hit "New chat" but hasn't sent the
         /// first prompt yet — no disk row exists yet).
         var draft: SoulSession?
@@ -102,7 +106,7 @@ enum SidebarRowResolver {
         defer { currentTraceProject = "" }
 
         if verboseTraceEnabled {
-            traceWrite("RESOLVE project=\(inputs.projectKey) diskSessions=\(inputs.diskSessions.count) active=\(inputs.activeControllers.count) draft=\(inputs.draft != nil)")
+            traceWrite("RESOLVE project=\(inputs.projectKey) diskSessions=\(inputs.diskSessions.count) active=\(inputs.activeControllers.count) liveRecords=\(inputs.liveRecords.count) draft=\(inputs.draft != nil)")
         }
 
         // 1. Collapse duplicate disk candidates before visibility. The
@@ -198,6 +202,50 @@ enum SidebarRowResolver {
                     replayable: true,
                     lastActivityAt: ctrl.lastActivityAt,
                     isWorking: ctrl.isWorking
+                )
+            }
+        }
+
+        let mountedLiveIds = Set(inputs.activeControllers.map { $0.sessionId ?? "thread-\($0.id)" })
+        for record in inputs.liveRecords {
+            guard record.projectId.lowercased() == inputs.projectKey.lowercased() else {
+                continue
+            }
+            guard !mountedLiveIds.contains(record.id) else {
+                continue
+            }
+            if hiddenDiskIds.contains(record.id) {
+                continue
+            }
+
+            if let existing = byId[record.id] {
+                var merged = existing
+                if shouldOverlayTitle(liveTitle: record.title, diskTitle: existing.title) {
+                    merged.title = record.title
+                }
+                merged.isLive = true
+                merged.liveProvider = record.provider
+                merged.lastActivityAt = max(
+                    existing.lastActivityAt ?? existing.timestamp,
+                    record.lastActivityAt
+                )
+                merged.isWorking = record.isWorking
+                byId[record.id] = merged
+            } else {
+                byId[record.id] = SoulSession(
+                    id: record.id,
+                    project: record.projectId,
+                    timestamp: record.startedAt,
+                    title: record.title,
+                    intent: nil,
+                    source: record.provider,
+                    isLive: true,
+                    writer: .soulDesktop,
+                    liveProvider: record.provider,
+                    loadable: true,
+                    replayable: true,
+                    lastActivityAt: record.lastActivityAt,
+                    isWorking: record.isWorking
                 )
             }
         }

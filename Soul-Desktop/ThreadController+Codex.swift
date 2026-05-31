@@ -111,12 +111,27 @@ extension ThreadController {
             // `~/Library/Logs/Soul-Desktop/codex-protocol.jsonl` and the
             // mismatched shape is right there. No guessing.
             CodexProtocolLog.record(method: method, params: params)
-            // Any notification = the agent is alive and emitting. Bump the
+            let action = CodexRuntimeRenderingAction(method: method, params: params)
+            // Most notifications = the agent is alive and emitting; bump the
             // stall watchdog's clock so it doesn't trip on tool-call /
             // reasoning streams that we don't render yet but still indicate
             // forward motion.
-            lastActivityAt = Date()
-            switch CodexRuntimeRenderingAction(method: method, params: params) {
+            //
+            // SOUL-SOUL_DESKTOP-369: connection-retry / transport-fallback
+            // signals are the exception — they mean the stream is *failing*,
+            // not progressing. Bumping lastActivityAt here is exactly what let
+            // an offline turn spin forever: each "Reconnecting… N/5" reset the
+            // watchdog clock, so the stall hook never fired and the Recover
+            // capsule never appeared. Skip the bump for those, and clear the
+            // reconnecting indicator when a real event proves we recovered.
+            switch action {
+            case .connectionRetrying, .transportWarning:
+                break
+            default:
+                lastActivityAt = Date()
+                if case .reconnecting = connectivity { connectivity = .normal }
+            }
+            switch action {
             case .startItem(let itemType, let codexId, let item):
                 appendCodexItem(itemType: itemType, codexId: codexId, item: item, terminal: false)
             case .appendAgentText(let itemId, let delta):
@@ -162,6 +177,24 @@ extension ThreadController {
             case .updateTokenUsage(let lastTotalTokens, let modelContextWindow):
                 if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
                 if let modelContextWindow { codexContextWindow = modelContextWindow }
+            case .connectionRetrying(let message, let willRetry):
+                // SOUL-SOUL_DESKTOP-369. willRetry=true → the runtime is auto-
+                // reconnecting; surface a non-fatal affordance on the working
+                // indicator. willRetry=false → retries exhausted; drop the
+                // reconnecting state, leave a visible status row, and let the
+                // stall watchdog's ceiling auto-recover the dead turn (we don't
+                // get a turn/completed on a hard transport death).
+                appendAgentLog("[codex] \(message)")
+                if willRetry {
+                    connectivity = .reconnecting(message: message)
+                } else {
+                    connectivity = .normal
+                    items.append(.status(id: UUID(), text: "⚠ connection lost — \(message)"))
+                }
+            case .transportWarning(let message):
+                // Informational transport advisory (e.g. WebSocket→HTTPS
+                // fallback). Log it; don't raise the connection-loss UI.
+                appendAgentLog("[codex transport] \(message)")
             case .noop:
                 break  // ignore lifecycle / mcp / remoteControl chatter
             }

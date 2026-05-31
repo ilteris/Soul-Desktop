@@ -87,6 +87,13 @@ public enum CodexEventRenderingInput: Equatable, Sendable {
     /// for `item/started`/`item/completed` plan payloads.
     case planDelta(itemID: String, item: [String: JSONValue])
     case tokenUsage(lastTotalTokens: Int?, modelContextWindow: Int?)
+    /// Codex `error` wire notification — a transport/stream disconnect. When
+    /// `willRetry` is true the runtime is auto-reconnecting ("Reconnecting…
+    /// N/5"); when false the turn has exhausted its retries. SOUL-369.
+    case connectionError(message: String, willRetry: Bool)
+    /// Codex `warning` wire notification — a non-fatal transport advisory, e.g.
+    /// "Falling back from WebSockets to HTTPS transport." SOUL-369.
+    case transportWarning(message: String)
     case ignored
 
     public init(method: String, params: JSONValue?) {
@@ -164,6 +171,26 @@ public enum CodexEventRenderingInput: Equatable, Sendable {
                 lastTotalTokens: usage.objectField("last")?.intField("totalTokens"),
                 modelContextWindow: usage.intField("modelContextWindow")
             )
+        case "error":
+            // Shape: {"error":{"message":"Reconnecting... 2/5", ...},
+            //         "willRetry":true, "threadId":..., "turnId":...}
+            guard let payload = params?.objectValue else {
+                self = .ignored
+                return
+            }
+            let willRetry = payload.boolField("willRetry") ?? false
+            let message = payload.objectField("error")?.stringField("message")
+                ?? payload.stringField("message")
+                ?? "Connection error"
+            self = .connectionError(message: message, willRetry: willRetry)
+        case "warning":
+            // Shape: {"threadId":..., "message":"Falling back from WebSockets…"}
+            guard let payload = params?.objectValue,
+                  let message = payload.stringField("message"), !message.isEmpty else {
+                self = .ignored
+                return
+            }
+            self = .transportWarning(message: message)
         default:
             self = .ignored
         }
@@ -181,6 +208,12 @@ public enum CodexRuntimeRenderingAction: Equatable, Sendable {
     /// Re-render an open plan row from a streamed plan revision.
     case updatePlan(itemID: String, item: [String: JSONValue])
     case updateTokenUsage(lastTotalTokens: Int?, modelContextWindow: Int?)
+    /// Transport stream dropped; the runtime is reconnecting (or, when
+    /// `willRetry` is false, has given up). SOUL-369.
+    case connectionRetrying(message: String, willRetry: Bool)
+    /// Non-fatal transport advisory — log it, but don't raise a
+    /// connection-loss affordance. SOUL-369.
+    case transportWarning(message: String)
     case noop
 
     public init(input: CodexEventRenderingInput) {
@@ -204,6 +237,10 @@ public enum CodexRuntimeRenderingAction: Equatable, Sendable {
                 lastTotalTokens: lastTotalTokens,
                 modelContextWindow: modelContextWindow
             )
+        case .connectionError(let message, let willRetry):
+            self = .connectionRetrying(message: message, willRetry: willRetry)
+        case .transportWarning(let message):
+            self = .transportWarning(message: message)
         case .ignored:
             self = .noop
         }
@@ -242,6 +279,11 @@ public extension Dictionary where Key == String, Value == JSONValue {
 
     func intField(_ key: String) -> Int? {
         if case .int(let value)? = self[key] { return value }
+        return nil
+    }
+
+    func boolField(_ key: String) -> Bool? {
+        if case .bool(let value)? = self[key] { return value }
         return nil
     }
 
