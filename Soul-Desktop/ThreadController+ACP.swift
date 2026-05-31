@@ -840,7 +840,10 @@ extension ThreadController {
                 inputHint: hint
             )
         }
-        availableCommands = cmds
+        // SOUL-SOUL_DESKTOP-359: always keep `/compact` available. It's
+        // client-intercepted (not provider-reported), so a provider command
+        // refresh must not drop it from the palette.
+        availableCommands = (cmds + [SlashCommand.compact])
             .filter(\.isSoulSlashCommand)
             .deduplicatedByName()
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

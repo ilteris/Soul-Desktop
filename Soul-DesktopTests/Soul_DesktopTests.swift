@@ -34,6 +34,18 @@ struct Soul_DesktopTests {
         #expect(capture.stderr.isEmpty)
     }
 
+    @Test func testCompactSlashCommandIsRecognized() throws {
+        // SOUL-SOUL_DESKTOP-359: /compact must parse as a slash command and
+        // be classified as a Soul command so the composer intercepts it
+        // (routes to forceCompact) rather than shipping it to the agent.
+        #expect(SlashCommandParse.parse("/compact").commandName == "compact")
+        #expect(SlashCommandParse.parse("/compact ").commandName == "compact")
+        #expect(SlashCommand.compact.isSoulSlashCommand)
+        #expect(SlashCommand.compact.name == "compact")
+        // A bare prompt is not mistaken for the command.
+        #expect(SlashCommandParse.parse("compact the code please").commandName == nil)
+    }
+
     @Test func testContextUsageFractionIsLinear() throws {
         // The donut ring draws straight off `fraction` — spent/budget, no
         // nonlinear curve. 79k / 1M must read as ~8% of the ring, not the

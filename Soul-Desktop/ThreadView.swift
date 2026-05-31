@@ -182,6 +182,19 @@ struct ThreadView: View {
                 projectPath: controller.project.path,
                 commands: controller.availableCommands,
                 onSend: { display, agent, extraBlocks in
+                    // SOUL-SOUL_DESKTOP-359: `/compact` is client-intercepted.
+                    // Route it to the kernel forced-compact dispatch (same path
+                    // as ⌘⇧K) instead of sending it to the provider. Sending a
+                    // bare `/compact` to Claude would self-trigger native
+                    // compaction but bypass the kernel ledger event + the
+                    // Codex/Pi toast degradation; intercepting uniformly gives
+                    // every provider the same audited path. Returning true lets
+                    // the composer clear without painting a `/compact` bubble —
+                    // the dispatch paints its own banner / native-compact send.
+                    if SlashCommandParse.parse(display).commandName?.lowercased() == "compact" {
+                        autoCompactCtrl?.forceCompact(thread: controller, usage: nil)
+                        return true
+                    }
                     // Sync prefix: paint the user bubble on the same
                     // runloop tick as the Enter keystroke. Async tail
                     // (ensureSession + ACP prompt) runs in a Task so it

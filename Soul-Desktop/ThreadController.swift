@@ -15,12 +15,25 @@ struct SlashCommand: Identifiable, Hashable {
     }
 
     private static let soulSlashCommandNames: Set<String> = [
+        "compact",
         "decision",
         "delegate",
         "finalize",
         "pulse",
         "recall",
     ]
+
+    /// SOUL-SOUL_DESKTOP-359: `/compact` is a client-intercepted command, not
+    /// a prompt. It has no SKILL.md and isn't provider-reported — the composer
+    /// routes it to `AutoCompactController.forceCompact` (kernel forced-dispatch
+    /// + ledger `AutoCompactFired` + Codex/Pi toast degradation) instead of
+    /// sending it to the agent. Always merged into the active-thread palette so
+    /// it's discoverable alongside `/finalize`, `/pulse`, etc.
+    static let compact = SlashCommand(
+        name: "compact",
+        description: "Compact the conversation context now",
+        inputHint: nil
+    )
 }
 
 extension Array where Element == SlashCommand {
@@ -91,7 +104,7 @@ final class ThreadController {
     var droppedAttachments: [String] = []
     var isWorking: Bool = false
     var lastError: String?
-    var availableCommands: [SlashCommand] = []
+    var availableCommands: [SlashCommand] = [SlashCommand.compact]
     var customTitle: String? = nil
     @ObservationIgnored var titleGenerationInFlight: Bool = false
     /// Bumped (any change) when the toolbar's pencil/⋯ "Rename" is clicked.
