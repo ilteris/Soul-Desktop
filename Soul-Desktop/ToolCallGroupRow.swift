@@ -24,12 +24,33 @@ struct ToolCallGroupRow: View {
         return "completed"
     }
 
+    /// The `ToolCallDetails` for each edit in the consolidated card, in arrival
+    /// order. This is the "append" sequence — each new edit to the file lands
+    /// as another entry, and the stacked diff below grows by one hunk.
+    private var editDetails: [ToolCallDetails] {
+        items.compactMap { item in
+            if case .toolCall(_, _, _, _, _, let details) = item { return details }
+            return nil
+        }
+    }
+
+    /// Anchor line for the header chip. A consolidated card spans several
+    /// edits at different lines, so a single `:line` only makes sense when
+    /// every edit shares the same anchor — otherwise the per-hunk gutters
+    /// below carry the precise lines and the header stays a bare filename.
+    private var sharedStartLine: Int? {
+        let lines = editDetails.map { $0.startLine }
+        guard let first = lines.first ?? nil, lines.allSatisfy({ $0 == first }) else { return nil }
+        return first
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let path = filePath {
                 FileChipRow(
                     kind: kind, status: status, path: path,
                     statusColor: statusColor, icon: icon,
+                    startLine: sharedStartLine,
                     trailing: { chevron }
                 )
                 .contextMenu {
@@ -45,29 +66,19 @@ struct ToolCallGroupRow: View {
                     Button("Copy combined diff") { copyCombinedDiff() }
                 }
             }
+            // Consolidated single-card body: each edit's diff stacked in
+            // arrival order, no per-edit chips and no "N more…" cap. Reads as
+            // one edit card whose diff keeps appending as the agent makes
+            // successive edits to the same file.
             if expanded {
-                let visibleItems = items.prefix(10)
-                let remainingCount = items.count - visibleItems.count
-                
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(visibleItems, id: \.id) { item in
-                        ThreadItemRow(projectPath: nil, item: item, isHistorical: isHistorical, isGrouped: true)
+                    ForEach(Array(editDetails.enumerated()), id: \.offset) { _, details in
+                        DiffView(details: details)
                     }
-                    
-                    if remainingCount > 0 {
-                        Text("\(remainingCount) more...")
-                            .font(SoulFont.ui(11, weight: .bold))
-                            .foregroundStyle(SoulColor.fgSubtle)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 4))
-                    }
-
                     ToolCallCollapseButton {
                         withAnimation(.easeOut(duration: 0.08)) { expanded = false }
                     }
                 }
-                .padding(.leading, 12)
             }
         }
     }
