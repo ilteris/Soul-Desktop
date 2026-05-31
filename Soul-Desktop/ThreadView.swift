@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 import AppKit
 import Combine
 

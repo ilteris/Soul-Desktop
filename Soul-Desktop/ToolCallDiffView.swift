@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 
 private enum DiffRow {
     case unchanged(leftNum: Int, rightNum: Int, text: String)

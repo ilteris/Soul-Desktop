@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 import SoulLedger
 
 /// Reads a Gemini-CLI chat transcript (`.jsonl` shape) into ThreadItems for

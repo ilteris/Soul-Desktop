@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 
 struct ToolCallGroupRow: View {
     let kind: String

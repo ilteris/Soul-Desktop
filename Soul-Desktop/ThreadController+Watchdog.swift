@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 import SoulLedger
 
 /// Stall and per-tool timeout watchdog for a live ThreadController turn.

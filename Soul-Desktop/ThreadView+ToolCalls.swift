@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 import Combine
 
 /// Tool-call view family lifted out of ThreadView. ToolCallRow is the

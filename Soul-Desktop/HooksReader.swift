@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 import SoulLedger
 
 /// One event in a session timeline, paired with the timestamp it actually

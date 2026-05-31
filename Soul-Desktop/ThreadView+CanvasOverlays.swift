@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 
 /// Non-row canvas content lifted out of ThreadView: the finalize and
 /// plan cards that appear inline as ThreadItems, the working indicator
