@@ -222,13 +222,14 @@ struct ComposerView: View {
     /// Forward selected files to the same attachment processor used by the
     /// app-wide drop target.
     private func attachProviders(_ providers: [NSItemProvider]) -> Bool {
-        let new = DropAttachmentHandler.process(
-            providers: providers,
-            projectPath: projectPath,
-            existing: droppedAttachments
-        )
-        guard !new.isEmpty else { return false }
-        droppedAttachments.append(contentsOf: new)
+        Task { @MainActor in
+            let new = await DropAttachmentHandler.process(
+                providers: providers,
+                projectPath: projectPath,
+                existing: droppedAttachments
+            )
+            droppedAttachments.append(contentsOf: new)
+        }
         return true
     }
 

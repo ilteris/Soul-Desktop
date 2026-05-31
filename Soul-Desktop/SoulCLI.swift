@@ -58,9 +58,10 @@ enum SoulCLI {
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = args
             process.environment = cliEnvironment()
-            let termination = DispatchSemaphore(value: 0)
+
+            let termination = ProcessTerminationSignal()
             process.terminationHandler = { _ in
-                termination.signal()
+                termination.signal(process.terminationStatus)
             }
 
             let stdout = Pipe()
@@ -93,9 +94,12 @@ enum SoulCLI {
             }
             onStart?(process.processIdentifier)
 
-            if termination.wait(timeout: .now() + 120) == .timedOut {
+            let status: Int32
+            if let terminatedStatus = await termination.wait(timeoutSeconds: 120) {
+                status = terminatedStatus
+            } else {
                 process.terminate()
-                _ = termination.wait(timeout: .now() + 1)
+                status = await termination.wait(timeoutSeconds: 1) ?? SafeProcessRunner.timeoutStatus
             }
             stdoutHandle.readabilityHandler = nil
             stderrHandle.readabilityHandler = nil
@@ -109,7 +113,6 @@ enum SoulCLI {
                 onEvent(.stderr(text))
             }
 
-            let status = process.terminationStatus
             if status != 0 {
                 throw SoulCLIError.nonZeroExit(
                     code: status,
@@ -118,6 +121,73 @@ enum SoulCLI {
             }
             return status
         }.value
+    }
+
+    private final class ProcessTerminationSignal: @unchecked Sendable {
+        private let lock = NSLock()
+        private var status: Int32?
+        private var continuations: [CheckedContinuation<Int32, Never>] = []
+
+        func signal(_ status: Int32) {
+            let pending: [CheckedContinuation<Int32, Never>]
+            lock.lock()
+            guard self.status == nil else {
+                lock.unlock()
+                return
+            }
+            self.status = status
+            pending = continuations
+            continuations.removeAll()
+            lock.unlock()
+
+            for continuation in pending {
+                continuation.resume(returning: status)
+            }
+        }
+
+        func wait(timeoutSeconds: TimeInterval) async -> Int32? {
+            await withTaskGroup(of: Int32?.self) { group in
+                group.addTask { await self.wait() }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                    return nil
+                }
+
+                let result = await group.next() ?? nil
+                group.cancelAll()
+                return result
+            }
+        }
+
+        private func wait() async -> Int32 {
+            if let status = currentStatus() {
+                return status
+            }
+
+            return await withCheckedContinuation { continuation in
+                if let status = appendContinuationOrStatus(continuation) {
+                    continuation.resume(returning: status)
+                }
+            }
+        }
+
+        private func currentStatus() -> Int32? {
+            lock.lock()
+            let value = status
+            lock.unlock()
+            return value
+        }
+
+        private func appendContinuationOrStatus(_ continuation: CheckedContinuation<Int32, Never>) -> Int32? {
+            lock.lock()
+            if let status {
+                lock.unlock()
+                return status
+            }
+            continuations.append(continuation)
+            lock.unlock()
+            return nil
+        }
     }
 
     static func terminateProcessTree(pid: Int32) {

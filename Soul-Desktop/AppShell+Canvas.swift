@@ -121,23 +121,25 @@ extension AppShell {
             guard !self.replay.isActive else { return false }
             if let activeCtrl = self.sessions.activeThread {
                 guard activeCtrl.canAcceptComposerInput else { return false }
-                let new = DropAttachmentHandler.process(
-                    providers: providers,
-                    projectPath: activeCtrl.project.path,
-                    existing: activeCtrl.droppedAttachments
-                )
-                guard !new.isEmpty else { return false }
-                activeCtrl.droppedAttachments.append(contentsOf: new)
+                Task { @MainActor in
+                    let new = await DropAttachmentHandler.process(
+                        providers: providers,
+                        projectPath: activeCtrl.project.path,
+                        existing: activeCtrl.droppedAttachments
+                    )
+                    activeCtrl.droppedAttachments.append(contentsOf: new)
+                }
                 return true
             } else {
                 let path = self.currentProject()?.path
-                let new = DropAttachmentHandler.process(
-                    providers: providers,
-                    projectPath: path,
-                    existing: self.emptyStateDroppedAttachments
-                )
-                guard !new.isEmpty else { return false }
-                self.emptyStateDroppedAttachments.append(contentsOf: new)
+                Task { @MainActor in
+                    let new = await DropAttachmentHandler.process(
+                        providers: providers,
+                        projectPath: path,
+                        existing: self.emptyStateDroppedAttachments
+                    )
+                    self.emptyStateDroppedAttachments.append(contentsOf: new)
+                }
                 return true
             }
         }

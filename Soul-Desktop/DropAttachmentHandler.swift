@@ -9,11 +9,9 @@ import UniformTypeIdentifiers
 /// ThreadView area can also catch drops without duplicating code or
 /// reaching into a sibling view's state.
 ///
-/// Synchronous over the OS drop-timeout window (~2s): NSItemProvider's
-/// load callbacks fire on background queues, so we DispatchGroup-wait
-/// before returning. Callers run this from a SwiftUI `.onDrop` closure
-/// which already executes on the main actor, and the bounded wait
-/// matches the drop-callback contract.
+/// NSItemProvider callbacks arrive asynchronously. Callers should accept
+/// the SwiftUI drop synchronously, then call `process` from a Task and
+/// append the returned paths once provider loading finishes.
 enum DropAttachmentHandler {
     /// UTType list every drop surface should accept. Centralized so adding
     /// a new type updates every surface at once.
@@ -27,33 +25,21 @@ enum DropAttachmentHandler {
         providers: [NSItemProvider],
         projectPath: String?,
         existing: [String]
-    ) -> [String] {
-        let group = DispatchGroup()
+    ) async -> [String] {
         var fileURLs: [URL] = []
         var dataDrops: [(Data, String?)] = []
 
-        for provider in providers {
-            if provider.canLoadObject(ofClass: URL.self) {
-                group.enter()
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    if let u = url, u.isFileURL { fileURLs.append(u) }
-                    group.leave()
+        await withTaskGroup(of: LoadedProvider.self) { group in
+            for provider in providers {
+                group.addTask {
+                    await loadProvider(provider)
                 }
-                continue
             }
-            // Probe image type identifiers in order of fidelity; first
-            // responder wins so we don't load the same bytes twice.
-            let imageTypes = ["public.png", "public.jpeg", "public.tiff", "com.compuserve.gif", "public.image"]
-            for type in imageTypes where provider.hasItemConformingToTypeIdentifier(type) {
-                group.enter()
-                provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-                    if let data { dataDrops.append((data, extHint(forType: type))) }
-                    group.leave()
-                }
-                break
+            for await loaded in group {
+                fileURLs.append(contentsOf: loaded.fileURLs)
+                dataDrops.append(contentsOf: loaded.dataDrops)
             }
         }
-        _ = group.wait(timeout: .now() + 2.0)
 
         var newPaths: [String] = []
         // Copy dropped image files into the project's attachments dir so
@@ -115,6 +101,49 @@ enum DropAttachmentHandler {
         }
 
         return newPaths
+    }
+
+    private struct LoadedProvider: Sendable {
+        var fileURLs: [URL] = []
+        var dataDrops: [(Data, String?)] = []
+    }
+
+    private static func loadProvider(_ provider: NSItemProvider) async -> LoadedProvider {
+        if provider.canLoadObject(ofClass: URL.self),
+           let url = await loadFileURL(from: provider) {
+            return LoadedProvider(fileURLs: [url])
+        }
+
+        // Probe image type identifiers in order of fidelity; first
+        // responder wins so we don't load the same bytes twice.
+        let imageTypes = ["public.png", "public.jpeg", "public.tiff", "com.compuserve.gif", "public.image"]
+        for type in imageTypes where provider.hasItemConformingToTypeIdentifier(type) {
+            if let data = await loadData(from: provider, type: type) {
+                return LoadedProvider(dataDrops: [(data, extHint(forType: type))])
+            }
+            return LoadedProvider()
+        }
+        return LoadedProvider()
+    }
+
+    private static func loadFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let u = url, u.isFileURL else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: u)
+            }
+        }
+    }
+
+    private static func loadData(from provider: NSItemProvider, type: String) async -> Data? {
+        await withCheckedContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
     }
 
     static func isImageURL(_ url: URL) -> Bool {
