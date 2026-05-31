@@ -31,6 +31,22 @@ public struct GitWorktreeService {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
+    /// True when `path` is inside a git work tree. Used to gate per-session
+    /// worktree provisioning (SOUL-364): non-git project roots can't host
+    /// worktrees, so isolation is moot and the session runs in place.
+    public static func isGitRepository(path: String) async -> Bool {
+        let expanded = (path as NSString).expandingTildeInPath
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir),
+              isDir.boolValue else { return false }
+        do {
+            let out = try await runGit(at: expanded, arguments: ["rev-parse", "--is-inside-work-tree"])
+            return out == "true"
+        } catch {
+            return false
+        }
+    }
+
     private static func resolveGitPath() -> String {
         if FileManager.default.isExecutableFile(atPath: "/usr/bin/git") {
             return "/usr/bin/git"

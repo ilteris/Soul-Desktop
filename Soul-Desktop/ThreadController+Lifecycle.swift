@@ -297,6 +297,17 @@ extension ThreadController {
     private func _ensureSessionImpl() async throws {
         logLifecycle("ensureSession enter",
                      note: "hasInitialized=\(hasInitialized) runtimes.acp=\(runtimes.acp != nil) runtimes.codex=\(runtimes.codex != nil) sessionId=\(sessionId ?? "nil") nativeSessionId=\(nativeSessionId ?? "nil") pendingResumeOnFirstSend=\(pendingResumeOnFirstSend)")
+        // SOUL-364 block guarantee: if per-session worktree provisioning failed
+        // under the .block policy, refuse to spawn. Without this, a resend after
+        // the blocked first turn would route through here and silently spawn in
+        // the shared checkout — the exact collision isolation is meant to
+        // prevent. `.notAttempted` (resumed sessions, non-git projects) is a
+        // no-op. Not an rpcError, so ensureSessionResilient won't retry it.
+        if case .blocked(let reason) = worktreeProvisionState {
+            throw GitWorktreeError.custom(
+                "Isolated worktree unavailable (\(reason)). Resolve the git error and start a new chat, or enable worktree fallback in settings."
+            )
+        }
         if provider == .codex {
             if hasInitialized, runtimes.codex != nil, sessionId != nil { return }
             try await spawnAndInitializeCodex()

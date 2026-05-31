@@ -21,7 +21,19 @@ extension AppShell {
         guard let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) else { return false }
         sessions.mount(controller)
         newChatNonce &+= 1
-        Task { await controller.dispatchPending(pending) }
+        Task {
+            // SOUL-364: provision a per-session Git worktree before the first
+            // spawn so concurrent sessions on one project never share a working
+            // tree. The kernel sid is already set (acceptUserPrompt adopted
+            // controller.id), and the agent's cwd resolves from project.path,
+            // so mutating it here routes the spawn into the isolated worktree.
+            await SessionWorktreeProvisioner.provision(controller: controller)
+            // Under the default .block policy a provisioning failure must NOT
+            // fall through to the shared checkout. The error row is already
+            // surfaced; skip dispatch so no turn runs in the main tree.
+            if case .blocked = controller.worktreeProvisionState { return }
+            await controller.dispatchPending(pending)
+        }
         return true
     }
 

@@ -75,6 +75,20 @@ final class ThreadController {
     var activeProjectPath: String {
         project.path
     }
+    /// Per-session Git worktree provisioning outcome (SOUL-364). Set by
+    /// `SessionWorktreeProvisioner` on the fresh-session path; read by the
+    /// block-guard in `_ensureSessionImpl` so a session whose isolated
+    /// worktree could not be created never silently spawns in the shared
+    /// checkout. `.notAttempted` for resumed sessions (already routed to
+    /// their worktree by `loadSession`) and for non-git projects.
+    enum WorktreeProvisionState: Equatable {
+        case notAttempted
+        case provisioned(path: String, branch: String)
+        case skipped(reason: String)
+        case fellBackToMain(error: String)
+        case blocked(error: String)
+    }
+    @ObservationIgnored var worktreeProvisionState: WorktreeProvisionState = .notAttempted
     @ObservationIgnored var ledger: ThreadLedger = LiveThreadLedger.shared
     /// Best-effort wall-clock moment the underlying *session* started. For a
     /// fresh thread this is the instantiation time; AppShell overwrites it on
