@@ -22,7 +22,8 @@ let package = Package(
             dependencies: ["SoulCore"]
         ),
         .target(
-            name: "SoulLedger"
+            name: "SoulLedger",
+            dependencies: ["SoulCore"]
         ),
         .target(
             name: "SoulRuntime",

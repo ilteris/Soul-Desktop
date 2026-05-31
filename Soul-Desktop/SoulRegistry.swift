@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 import SoulLedger
 
 struct SoulProject: Identifiable, Hashable {

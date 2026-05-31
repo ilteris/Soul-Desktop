@@ -18,31 +18,30 @@ import os.log
 ///         actuallyReadHooksOffDisk(...)
 ///     }
 ///
-/// SOUL-SOUL_DESKTOP-* (P1 beachball investigation): wired around the
-/// suspect load-path entry points so the next reproduction is diagnosable
-/// in Instruments instead of guess-driven.
-enum SoulSignposts {
-    static let log = OSLog(subsystem: "com.soul.desktop", category: .pointsOfInterest)
-    static let signposter = OSSignposter(logHandle: log)
+/// Lives in SoulCore (Foundation + os only) so the packageable ledger/runtime
+/// readers keep their signposts after the SOUL-360 modularization.
+public enum SoulSignposts {
+    public static let log = OSLog(subsystem: "com.soul.desktop", category: .pointsOfInterest)
+    public static let signposter = OSSignposter(logHandle: log)
 
     @discardableResult
-    static func interval<T>(_ name: StaticString, id: String? = nil, _ body: () throws -> T) rethrows -> T {
+    public static func interval<T>(_ name: StaticString, id: String? = nil, _ body: () throws -> T) rethrows -> T {
         let sid = signposter.makeSignpostID()
         let state = signposter.beginInterval(name, id: sid, "\(id ?? "")")
         defer { signposter.endInterval(name, state) }
         return try body()
     }
 
-    static func beginInterval(_ name: StaticString, id: String? = nil) -> OSSignpostIntervalState {
+    public static func beginInterval(_ name: StaticString, id: String? = nil) -> OSSignpostIntervalState {
         let sid = signposter.makeSignpostID()
         return signposter.beginInterval(name, id: sid, "\(id ?? "")")
     }
 
-    static func endInterval(_ name: StaticString, state: OSSignpostIntervalState) {
+    public static func endInterval(_ name: StaticString, state: OSSignpostIntervalState) {
         signposter.endInterval(name, state)
     }
 
-    static func event(_ name: StaticString, _ message: String = "") {
+    public static func event(_ name: StaticString, _ message: String = "") {
         signposter.emitEvent(name, "\(message)")
         // File companion for the Flash.* namespace (canvas-blank-on-send
         // diagnostics). Enable with:
