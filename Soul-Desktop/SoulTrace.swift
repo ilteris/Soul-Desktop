@@ -71,22 +71,75 @@ struct SoulTrace: Hashable {
         // and truncated the visible reply at the opening backtick. Distinguish
         // the two by what follows the opener: a genuine streaming trace is
         // either still being typed (nothing but whitespace after the opener) or
-        // has begun its JSON body (`{` after optional whitespace). Anything else
-        // following the opener is prose — leave it intact.
+        // has begun — but not finished — its JSON body. Anything else following
+        // the opener is prose — leave it intact.
+        //
+        // Two refinements over the naive `firstMatch` + `hasPrefix("{")` check:
+        //   * Bug A (leak): scan the *last* opener, not the first. Every
+        //     well-formed block was already stripped above, so only a trailing
+        //     closer-less opener can be a live stream; earlier openers are prose
+        //     mentions. `firstMatch` would inspect the prose mention, decline to
+        //     fire, and let a real streaming trace at the end leak its raw JSON.
+        //   * Bug D (truncation): a prose `<soul_trace>{…}` with no closer trips
+        //     `hasPrefix("{")` and truncates the reply. An in-progress trace has
+        //     an *unterminated* body (no closing `}` yet); a complete prose `{…}`
+        //     is balanced. Only truncate when the brace body is still open.
+        //   * EDGE1 (`}`-in-streaming-body): the open/closed test must be
+        //     string-aware. A naive `contains("}")` (or a plain brace-depth
+        //     counter) misclassifies a *streaming* body whose string value holds
+        //     a brace — `{"rationale":"fixed the } in removeSubrange` — as
+        //     complete, and lets its raw partial JSON flash into the bubble.
+        //     `jsonObjectIsComplete` walks the body respecting quotes/escapes so
+        //     a brace inside a string never closes the object.
         if let openerPattern = try? NSRegularExpression(
             pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
             options: [.caseInsensitive]
         ) {
             let range = NSRange(working.startIndex..<working.endIndex, in: working)
-            if let match = openerPattern.firstMatch(in: working, options: [], range: range),
-               let r = Range(match.range, in: working) {
+            let matches = openerPattern.matches(in: working, options: [], range: range)
+            if let match = matches.last, let r = Range(match.range, in: working) {
                 let after = working[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-                if after.isEmpty || after.hasPrefix("{") {
+                let isStreaming = after.isEmpty || (after.hasPrefix("{") && !jsonObjectIsComplete(after))
+                if isStreaming {
                     working.removeSubrange(r.lowerBound..<working.endIndex)
                 }
             }
         }
 
         return (working.trimmingCharacters(in: .whitespacesAndNewlines), lastParsed)
+    }
+
+    /// Whether `text` opens with a structurally complete JSON object — i.e. the
+    /// `{` started at the head is matched by a `}` at depth zero. String-aware:
+    /// braces inside quoted strings (and escaped quotes) are ignored, so a
+    /// streaming body still typing `{"rationale":"fixed the }` reads as
+    /// incomplete rather than balanced. Returns false if `text` doesn't begin
+    /// with `{`.
+    private static func jsonObjectIsComplete(_ text: String) -> Bool {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var sawOpen = false
+        for ch in text {
+            if escaped { escaped = false; continue }
+            if inString {
+                switch ch {
+                case "\\": escaped = true
+                case "\"": inString = false
+                default: break
+                }
+                continue
+            }
+            switch ch {
+            case "\"": inString = true
+            case "{": depth += 1; sawOpen = true
+            case "}":
+                depth -= 1
+                if depth == 0 { return sawOpen }
+                if depth < 0 { return false }
+            default: break
+            }
+        }
+        return false
     }
 }
