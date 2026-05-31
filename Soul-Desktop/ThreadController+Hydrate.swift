@@ -1,5 +1,6 @@
 import Foundation
 import SoulCore
+import SoulLedger
 import SoulACP
 
 private struct HydratedTranscript {

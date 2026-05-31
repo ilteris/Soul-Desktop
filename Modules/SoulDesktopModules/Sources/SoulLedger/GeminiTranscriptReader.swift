@@ -1,6 +1,5 @@
 import Foundation
 import SoulCore
-import SoulLedger
 
 /// Reads a Gemini-CLI chat transcript (`.jsonl` shape) into ThreadItems for
 /// read-only display under SOUL-SOUL_DESKTOP-043 (read-first session open).
@@ -20,12 +19,12 @@ import SoulLedger
 /// each `toolCalls` entry → `.toolCall`. The `result` field on a toolCall is
 /// the file content / shell output Gemini received back; we don't render it
 /// inline (matches ClaudeTranscriptReader which also skips tool_result).
-enum GeminiTranscriptReader {
+public enum GeminiTranscriptReader {
     /// Resolve to a ThreadItem list, or nil if we couldn't find / parse the
     /// transcript. We scan the project's chats dir for the file whose first-
     /// line `sessionId` matches `sid` — Gemini-CLI's filenames include only
     /// a short hex suffix, not the full UUID, so a directory glob is needed.
-    static func transcript(forSession sid: String, projectKey: String) -> [ThreadItem]? {
+    public static func transcript(forSession sid: String, projectKey: String) -> [ThreadItem]? {
         SoulSignposts.interval("GeminiTranscriptReader.transcript", id: sid) {
             _transcript(forSession: sid, projectKey: projectKey)
         }
@@ -128,7 +127,7 @@ enum GeminiTranscriptReader {
     /// portion — the `@<path>` chip stays in the typed portion and remains
     /// clickable via MarkdownView's path linkifier. Defensive: if the
     /// marker is missing, return the original string unchanged.
-    static func stripGeminiReferencedFileBlock(_ s: String) -> String {
+    public static func stripGeminiReferencedFileBlock(_ s: String) -> String {
         stripLedgerGeminiReferencedFileBlock(s)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import SoulCore
+import SoulLedger
 
 struct HydratedSessionSnapshot {
     let projectId: String

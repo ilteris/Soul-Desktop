@@ -1,6 +1,5 @@
 import Foundation
 import SoulCore
-import SoulLedger
 
 /// Reads a pi-acp session transcript JSONL into ThreadItems for read-only display.
 ///
@@ -21,8 +20,8 @@ import SoulLedger
 /// the call with `status: "completed"` so the row doesn't look stuck;
 /// finalized rows in the kernel ledger will overlay AfterTool content via
 /// the existing tool-grouping pipeline if the user expands.
-enum PiTranscriptReader {
-    static func transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
+public enum PiTranscriptReader {
+    public static func transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
         SoulSignposts.interval("PiTranscriptReader.transcript", id: sid) {
             _transcript(forSession: sid, cwd: cwd)
         }

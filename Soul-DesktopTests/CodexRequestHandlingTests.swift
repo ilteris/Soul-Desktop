@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import SoulACP
 import SoulCore
+import SoulLedger
 @testable import Soul_Desktop
 
 @Suite(.serialized)

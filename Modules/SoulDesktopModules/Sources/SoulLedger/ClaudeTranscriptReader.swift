@@ -1,6 +1,5 @@
 import Foundation
 import SoulCore
-import SoulLedger
 
 /// Reads a Claude Code session transcript JSONL into ThreadItems for read-only display.
 ///
@@ -10,8 +9,8 @@ import SoulLedger
 /// We only consume `type: "user"` and `type: "assistant"` records. Other record kinds
 /// (system, attachment, permission-mode, file-history-snapshot, ai-title, last-prompt)
 /// are skipped — they're internal bookkeeping, not turns.
-enum ClaudeTranscriptReader {
-    static func transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
+public enum ClaudeTranscriptReader {
+    public static func transcript(forSession sid: String, cwd: String) -> [ThreadItem]? {
         SoulSignposts.interval("ClaudeTranscriptReader.transcript", id: sid) {
             _transcript(forSession: sid, cwd: cwd)
         }

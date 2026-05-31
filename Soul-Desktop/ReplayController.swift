@@ -1,5 +1,6 @@
 import Foundation
 import SoulCore
+import SoulLedger
 import SwiftUI
 
 /// Drives chronological playback of a finished session's timeline into the
