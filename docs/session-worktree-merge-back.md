@@ -2,7 +2,7 @@
 
 **Status:** Draft for sign-off — no code lands until this is approved.
 **Author:** Teddy (systems_architect), 2026-05-31
-**Task:** SOUL-SOUL_DESKTOP-365 (companion to -364 per-session worktree isolation; realizes the merge-back deferred in `session-worktree-isolation.md` §4.4)
+**Task:** SOUL-SOUL_DESKTOP-370 (companion to -364 per-session worktree isolation; realizes the merge-back deferred in `session-worktree-isolation.md` §4.4)
 **Scope:** Bring the per-session branches created by SOUL-364 back to an integration branch. Make divergence visible continuously, automate only the operations that are provably reversible and side-effect-free, and keep every history-altering step human-blessed and behind a verification gate.
 
 ---
