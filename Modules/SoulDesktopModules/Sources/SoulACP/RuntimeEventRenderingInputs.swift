@@ -79,7 +79,13 @@ public enum CodexEventRenderingInput: Equatable, Sendable {
     case itemCompleted(itemType: String, itemID: String, item: [String: JSONValue])
     case turnCompleted(turnID: String?, status: String?, errorMessage: String?)
     case reasoningDelta(itemID: String, delta: String)
-    case outputDelta
+    /// Live stdout/stderr chunk for an open command/file tool-call row
+    /// (`item/commandExecution/outputDelta`, `item/fileChange/outputDelta`).
+    case outputDelta(itemID: String, delta: String)
+    /// Live plan revision streamed mid-turn (`item/plan/delta`). Carries the
+    /// updated plan item so the app can re-parse entries exactly as it does
+    /// for `item/started`/`item/completed` plan payloads.
+    case planDelta(itemID: String, item: [String: JSONValue])
     case tokenUsage(lastTotalTokens: Int?, modelContextWindow: Int?)
     case ignored
 
@@ -131,9 +137,24 @@ public enum CodexEventRenderingInput: Equatable, Sendable {
             let delta = payload.codexReasoningDelta
             self = delta.isEmpty ? .ignored : .reasoningDelta(itemID: itemID, delta: delta)
         case "item/commandExecution/outputDelta",
-             "item/fileChange/outputDelta",
-             "item/plan/delta":
-            self = .outputDelta
+             "item/fileChange/outputDelta":
+            guard let payload = params?.objectValue,
+                  let itemID = payload.stringField("itemId") else {
+                self = .ignored
+                return
+            }
+            let delta = payload.codexOutputDelta
+            self = delta.isEmpty ? .ignored : .outputDelta(itemID: itemID, delta: delta)
+        case "item/plan/delta":
+            guard let payload = params?.objectValue,
+                  let itemID = payload.stringField("itemId") else {
+                self = .ignored
+                return
+            }
+            // The updated plan lives under `item` on some builds, inline on
+            // others — hand whichever we find to the app's existing parser.
+            let planItem = payload.objectField("item") ?? payload
+            self = .planDelta(itemID: itemID, item: planItem)
         case "thread/tokenUsage/updated":
             guard let usage = params?.objectField("tokenUsage") else {
                 self = .ignored
@@ -155,7 +176,10 @@ public enum CodexRuntimeRenderingAction: Equatable, Sendable {
     case completeItem(itemType: String, itemID: String, item: [String: JSONValue])
     case completeTurn(turnID: String?, status: String?, errorMessage: String?)
     case appendReasoning(itemID: String, delta: String)
-    case markOutputActivity
+    /// Append a streamed stdout/stderr chunk to the open command/file row.
+    case appendOutput(itemID: String, delta: String)
+    /// Re-render an open plan row from a streamed plan revision.
+    case updatePlan(itemID: String, item: [String: JSONValue])
     case updateTokenUsage(lastTotalTokens: Int?, modelContextWindow: Int?)
     case noop
 
@@ -171,8 +195,10 @@ public enum CodexRuntimeRenderingAction: Equatable, Sendable {
             self = .completeTurn(turnID: turnID, status: status, errorMessage: errorMessage)
         case .reasoningDelta(let itemID, let delta):
             self = .appendReasoning(itemID: itemID, delta: delta)
-        case .outputDelta:
-            self = .markOutputActivity
+        case .outputDelta(let itemID, let delta):
+            self = .appendOutput(itemID: itemID, delta: delta)
+        case .planDelta(let itemID, let item):
+            self = .updatePlan(itemID: itemID, item: item)
         case .tokenUsage(let lastTotalTokens, let modelContextWindow):
             self = .updateTokenUsage(
                 lastTotalTokens: lastTotalTokens,
@@ -231,6 +257,23 @@ public extension Dictionary where Key == String, Value == JSONValue {
         if let item = objectField("item") {
             if let value = item.stringField("text") { return value }
             if let value = item.stringField("content") { return value }
+        }
+        return ""
+    }
+
+    /// Pull the live stdout/stderr chunk out of a codex `outputDelta` payload.
+    /// Codex has shipped the chunk under `delta`, `chunk`, and `output` across
+    /// builds; mirror `codexReasoningDelta`'s defensive shape-matching so a
+    /// key rename doesn't silently revert this back to a no-op.
+    var codexOutputDelta: String {
+        if let value = stringField("delta") { return value }
+        if let value = stringField("chunk") { return value }
+        if let value = stringField("output") { return value }
+        if let value = stringField("text") { return value }
+        if let item = objectField("item") {
+            if let value = item.stringField("delta") { return value }
+            if let value = item.stringField("chunk") { return value }
+            if let value = item.stringField("text") { return value }
         }
         return ""
     }

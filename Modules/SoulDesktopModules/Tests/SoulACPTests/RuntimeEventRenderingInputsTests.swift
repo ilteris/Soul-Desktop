@@ -78,6 +78,63 @@ struct RuntimeEventRenderingInputsTests {
         #expect(CodexRuntimeRenderingAction(method: "thread/tokenUsage/updated", params: params) == .updateTokenUsage(lastTotalTokens: 123, modelContextWindow: 200_000))
     }
 
+    @Test("Codex command output deltas stream into append-output actions")
+    func codexCommandOutputDeltaDecodes() {
+        let params: JSONValue = .object([
+            "itemId": .string("cmd-1"),
+            "delta": .string("line of stdout\n"),
+        ])
+
+        #expect(CodexEventRenderingInput(method: "item/commandExecution/outputDelta", params: params) == .outputDelta(itemID: "cmd-1", delta: "line of stdout\n"))
+        #expect(CodexRuntimeRenderingAction(method: "item/commandExecution/outputDelta", params: params) == .appendOutput(itemID: "cmd-1", delta: "line of stdout\n"))
+        // fileChange output deltas route through the same action.
+        #expect(CodexRuntimeRenderingAction(method: "item/fileChange/outputDelta", params: params) == .appendOutput(itemID: "cmd-1", delta: "line of stdout\n"))
+    }
+
+    @Test("Codex output deltas accept alternate chunk key shapes")
+    func codexOutputDeltaAlternateKeys() {
+        let chunk: JSONValue = .object(["itemId": .string("cmd-2"), "chunk": .string("via-chunk")])
+        #expect(CodexEventRenderingInput(method: "item/commandExecution/outputDelta", params: chunk) == .outputDelta(itemID: "cmd-2", delta: "via-chunk"))
+
+        let output: JSONValue = .object(["itemId": .string("cmd-3"), "output": .string("via-output")])
+        #expect(CodexEventRenderingInput(method: "item/commandExecution/outputDelta", params: output) == .outputDelta(itemID: "cmd-3", delta: "via-output"))
+    }
+
+    @Test("Codex output deltas with no itemId or empty delta are ignored")
+    func codexOutputDeltaIgnoredWhenEmpty() {
+        let noId: JSONValue = .object(["delta": .string("orphan")])
+        #expect(CodexRuntimeRenderingAction(method: "item/commandExecution/outputDelta", params: noId) == .noop)
+
+        let emptyDelta: JSONValue = .object(["itemId": .string("cmd-4"), "delta": .string("")])
+        #expect(CodexRuntimeRenderingAction(method: "item/commandExecution/outputDelta", params: emptyDelta) == .noop)
+    }
+
+    @Test("Codex plan deltas carry the updated plan item")
+    func codexPlanDeltaDecodes() {
+        let inlinePlan: JSONValue = .object([
+            "itemId": .string("plan-1"),
+            "plan": .array([.object(["step": .string("do thing")])]),
+        ])
+        #expect(CodexRuntimeRenderingAction(method: "item/plan/delta", params: inlinePlan) == .updatePlan(itemID: "plan-1", item: [
+            "itemId": .string("plan-1"),
+            "plan": .array([.object(["step": .string("do thing")])]),
+        ]))
+
+        // Nested `item` shape is unwrapped to the inner plan object.
+        let nestedPlan: JSONValue = .object([
+            "itemId": .string("plan-2"),
+            "item": .object(["plan": .array([.object(["step": .string("nested")])])]),
+        ])
+        #expect(CodexRuntimeRenderingAction(method: "item/plan/delta", params: nestedPlan) == .updatePlan(itemID: "plan-2", item: [
+            "plan": .array([.object(["step": .string("nested")])]),
+        ]))
+    }
+
+    @Test("Codex plan deltas with no itemId are ignored")
+    func codexPlanDeltaIgnoredWithoutId() {
+        #expect(CodexRuntimeRenderingAction(method: "item/plan/delta", params: .object(["plan": .array([])])) == .noop)
+    }
+
     @Test("Codex unknown events become no-op rendering actions")
     func codexUnknownNoop() {
         #expect(CodexRuntimeRenderingAction(method: "unknown/event", params: nil) == .noop)

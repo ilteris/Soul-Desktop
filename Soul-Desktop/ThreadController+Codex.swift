@@ -155,12 +155,10 @@ extension ThreadController {
                    case .agentThought(let id, let prior, _, let ts) = items[idx] {
                     items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
                 }
-            case .markOutputActivity:
-                // Stream-level deltas for other item types — keep
-                // `lastActivityAt` fresh (already done above) and rely on
-                // `item/completed` to render the final state. Wiring
-                // per-row live streaming for these is a follow-up.
-                break
+            case .appendOutput(let itemId, let delta):
+                appendCodexOutputDelta(itemId: itemId, delta: delta)
+            case .updatePlan(let itemId, let item):
+                updateCodexPlan(itemId: itemId, item: item)
             case .updateTokenUsage(let lastTotalTokens, let modelContextWindow):
                 if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
                 if let modelContextWindow { codexContextWindow = modelContextWindow }
@@ -545,6 +543,52 @@ extension ThreadController {
         default:
             break  // status / error rows finalize themselves on append
         }
+    }
+
+    /// Stream a command/file `outputDelta` chunk into the open tool-call row
+    /// so the user watches stdout/stderr accrue live instead of staring at a
+    /// pending row until `item/completed`. Writes only into an `.output`
+    /// details payload; never clobbers a fileChange row that already carries
+    /// an `.edit`/`.write` diff (the diff is the more useful artifact, and it
+    /// arrives at completion). Flips a `pending` row to `in_progress` on the
+    /// first chunk so the spinner reads correctly.
+    private func appendCodexOutputDelta(itemId: String, delta: String) {
+        guard !delta.isEmpty,
+              let uuid = codexItemMap[itemId],
+              let idx = items.firstIndex(where: { $0.id == uuid }),
+              case .toolCall(let id, let kind, let title, let status, let loc, let priorDetails) = items[idx]
+        else { return }
+        // Don't overwrite a diff card with raw output.
+        if let priorDetails, !priorDetails.kind.isOutput { return }
+        let priorText: String = {
+            if case .output(let text)? = priorDetails?.kind { return text }
+            return ""
+        }()
+        let liveStatus = status == "pending" ? "in_progress" : status
+        items[idx] = .toolCall(
+            id: id,
+            kind: kind,
+            title: title,
+            status: liveStatus,
+            locationHint: loc,
+            details: ToolCallDetails(kind: .output(text: priorText + delta))
+        )
+        lastActivityAt = Date()
+    }
+
+    /// Re-render an open plan row from a streamed `item/plan/delta`, mirroring
+    /// the `item/completed` plan path. Ignored when the delta carries no
+    /// parseable entries (codex sometimes emits empty/partial deltas) so a
+    /// transient empty payload can't blank an already-rendered plan.
+    private func updateCodexPlan(itemId: String, item: [String: JSONValue]) {
+        guard let uuid = codexItemMap[itemId],
+              let idx = items.firstIndex(where: { $0.id == uuid }),
+              case .plan(let id, _) = items[idx]
+        else { return }
+        let entries = codexPlanEntries(from: item)
+        guard !entries.isEmpty else { return }
+        items[idx] = .plan(id: id, entries: entries)
+        lastActivityAt = Date()
     }
 
     private func appendCodexToolHook(
