@@ -215,7 +215,7 @@ enum SoulCLI {
         return result.stdout
     }
 
-    private struct Capture: Sendable {
+    struct Capture: Sendable {
         var status: Int32
         var stdout: Data
         var stderr: Data
@@ -244,15 +244,35 @@ enum SoulCLI {
     }
 
     private static func runCapture(_ args: [String], stdin: Data?) async throws -> Capture {
-        try await Task.detached(priority: .userInitiated) {
-            guard let executable = soulExecutablePath() else {
-                throw SoulCLIError.executableNotFound
-            }
+        guard let executable = soulExecutablePath() else {
+            throw SoulCLIError.executableNotFound
+        }
+        return try await captureProcess(
+            executable: executable,
+            arguments: args,
+            environment: cliEnvironment(),
+            stdin: stdin
+        )
+    }
 
+    /// Core concurrent-drain capture: runs `executable` with `arguments`, draining stdout and
+    /// stderr on independent queues *before* waiting on exit, so a child emitting more than one
+    /// pipe buffer's worth of output can never deadlock against `waitUntilExit()`.
+    ///
+    /// Exposed internally (not tied to the `soul` binary) so the drain path can be exercised
+    /// deterministically against a known large-output source — see
+    /// `testRunCaptureLargeOutputDoesNotDeadlock`. Production callers go through `runCapture`.
+    static func captureProcess(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        stdin: Data? = nil
+    ) async throws -> Capture {
+        try await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = args
-            process.environment = cliEnvironment()
+            process.arguments = arguments
+            process.environment = environment
 
             let stdout = Pipe()
             let stderr = Pipe()
