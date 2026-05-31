@@ -70,13 +70,13 @@ enum SafeProcessRunner {
         let drainGroup = DispatchGroup()
 
         drainGroup.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             drain(stdout.fileHandleForReading, into: stdoutBox, lock: stdoutLock)
             drainGroup.leave()
         }
 
         drainGroup.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             drain(stderr.fileHandleForReading, into: stderrBox, lock: stderrLock)
             drainGroup.leave()
         }
