@@ -545,7 +545,7 @@ struct SidebarView: View {
         )
     }
 
-    private func showRepairToast(_ text: String) {
+    func showRepairToast(_ text: String) {
         repairToast = text
         // Cancel any prior auto-dismiss before scheduling the new one — a
         // rapid second click would otherwise clear the new toast early.

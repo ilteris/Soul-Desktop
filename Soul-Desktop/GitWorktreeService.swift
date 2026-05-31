@@ -17,6 +17,14 @@ public enum GitWorktreeError: Error, LocalizedError {
     }
 }
 
+public struct WorktreeLandResult: Equatable {
+    public var branchName: String
+    public var priorTargetSha: String
+    public var landedSha: String
+    public var backupRef: String
+    public var sealedCommit: Bool
+}
+
 public struct GitWorktreeService {
     /// Calculate the canonical expected worktree path for a session.
     public static func expectedPath(projectKey: String, sessionId: String) -> String {
@@ -131,5 +139,171 @@ public struct GitWorktreeService {
     public static func pruneWorktrees(projectPath: String) async throws {
         let expandedProjectPath = (projectPath as NSString).expandingTildeInPath
         try await runGit(at: expandedProjectPath, arguments: ["worktree", "prune"])
+    }
+
+    /// Land an idle session worktree back to `targetBranch` using the
+    /// conservative SOUL-370 path:
+    /// - refuse untracked files instead of sweeping them into history
+    /// - seal tracked worktree changes with a Soul-authored commit
+    /// - require targetBranch to be an ancestor of the session branch
+    /// - save a prior-ref backup before advancing targetBranch
+    /// - remove the session worktree and delete the landed branch
+    ///
+    /// This intentionally implements only the T1 fast-forward path. Textual
+    /// merges and conflict resolution stay human-driven.
+    public static func landFastForward(
+        projectPath: String,
+        worktreePath: String,
+        targetBranch: String = "main",
+        sessionId: String,
+        projectKey: String,
+        title: String? = nil
+    ) async throws -> WorktreeLandResult {
+        let expandedProjectPath = (projectPath as NSString).expandingTildeInPath
+        let expandedWorktreePath = (worktreePath as NSString).expandingTildeInPath
+
+        guard FileManager.default.fileExists(atPath: expandedProjectPath) else {
+            throw GitWorktreeError.custom("Project checkout does not exist: \(expandedProjectPath)")
+        }
+        guard FileManager.default.fileExists(atPath: expandedWorktreePath) else {
+            throw GitWorktreeError.custom("Session worktree does not exist: \(expandedWorktreePath)")
+        }
+
+        let branch = try await runGit(at: expandedWorktreePath, arguments: ["branch", "--show-current"])
+        guard !branch.isEmpty else {
+            throw GitWorktreeError.custom("Session worktree is detached; cannot safely land it")
+        }
+        guard branch != targetBranch else {
+            throw GitWorktreeError.custom("Session worktree is already on \(targetBranch)")
+        }
+
+        let checkedOutTarget = try await runGit(
+            at: expandedProjectPath,
+            arguments: ["branch", "--show-current"]
+        )
+        guard checkedOutTarget == targetBranch else {
+            throw GitWorktreeError.custom(
+                "Project checkout is on \(checkedOutTarget.isEmpty ? "detached HEAD" : checkedOutTarget), not \(targetBranch)"
+            )
+        }
+
+        let mainStatus = try await runGit(
+            at: expandedProjectPath,
+            arguments: ["status", "--porcelain"]
+        )
+        guard mainStatus.isEmpty else {
+            throw GitWorktreeError.custom("Main checkout has local changes; land after it is clean")
+        }
+
+        let untracked = try await runGit(
+            at: expandedWorktreePath,
+            arguments: ["status", "--porcelain", "--untracked-files=normal"]
+        )
+        let untrackedLines = untracked
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.hasPrefix("?? ") }
+        guard untrackedLines.isEmpty else {
+            let files = untrackedLines
+                .map { String($0.dropFirst(3)) }
+                .prefix(5)
+                .joined(separator: ", ")
+            throw GitWorktreeError.custom(
+                "Session worktree has untracked files (\(files)); review or gitignore them before landing"
+            )
+        }
+
+        let trackedStatus = try await runGit(
+            at: expandedWorktreePath,
+            arguments: ["status", "--porcelain", "--untracked-files=no"]
+        )
+        var sealedCommit = false
+        if !trackedStatus.isEmpty {
+            try await runGit(at: expandedWorktreePath, arguments: ["add", "-u"])
+            let message = sealCommitMessage(
+                sessionId: sessionId,
+                projectKey: projectKey,
+                title: title
+            )
+            try await runGit(
+                at: expandedWorktreePath,
+                arguments: [
+                    "-c", "user.name=Soul Desktop",
+                    "-c", "user.email=soul-desktop@local",
+                    "commit",
+                    "--author=Soul Desktop <soul-desktop@local>",
+                    "-m", message
+                ]
+            )
+            sealedCommit = true
+        }
+
+        let targetSha = try await runGit(
+            at: expandedProjectPath,
+            arguments: ["rev-parse", targetBranch]
+        )
+        let branchSha = try await runGit(
+            at: expandedProjectPath,
+            arguments: ["rev-parse", branch]
+        )
+        do {
+            try await runGit(
+                at: expandedProjectPath,
+                arguments: ["merge-base", "--is-ancestor", targetSha, branchSha]
+            )
+        } catch {
+            throw GitWorktreeError.custom(
+                "\(branch) cannot fast-forward \(targetBranch); resolve divergence manually"
+            )
+        }
+
+        let backupRef = "refs/soul/land-backups/\(targetBranch)/\(safeRefComponent(sessionId))"
+        try await runGit(
+            at: expandedProjectPath,
+            arguments: ["update-ref", backupRef, targetSha]
+        )
+        try await runGit(
+            at: expandedProjectPath,
+            arguments: ["merge", "--ff-only", branch]
+        )
+        try await removeWorktree(
+            projectPath: expandedProjectPath,
+            worktreePath: expandedWorktreePath,
+            force: false
+        )
+        try await runGit(
+            at: expandedProjectPath,
+            arguments: ["branch", "-d", branch]
+        )
+
+        return WorktreeLandResult(
+            branchName: branch,
+            priorTargetSha: targetSha,
+            landedSha: branchSha,
+            backupRef: backupRef,
+            sealedCommit: sealedCommit
+        )
+    }
+
+    private static func sealCommitMessage(
+        sessionId: String,
+        projectKey: String,
+        title: String?
+    ) -> String {
+        var lines = ["Seal Soul session worktree"]
+        lines.append("")
+        lines.append("Session: \(sessionId)")
+        lines.append("Project: \(projectKey)")
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("Title: \(title)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func safeRefComponent(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let clean = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return clean.isEmpty ? UUID().uuidString.lowercased() : clean
     }
 }

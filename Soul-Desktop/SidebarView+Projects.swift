@@ -378,6 +378,51 @@ extension SidebarView {
                     repairSessionLink(session)
                 }
             }
+            if session.worktreePath?.isEmpty == false {
+                Divider()
+                Button("Land worktree to main") {
+                    landSessionWorktree(session)
+                }
+                .disabled(session.isWorking)
+            }
+        }
+    }
+
+    func landSessionWorktree(_ session: SoulSession) {
+        guard let worktreePath = session.worktreePath, !worktreePath.isEmpty else {
+            showRepairToast("No session worktree to land")
+            return
+        }
+        guard !session.isWorking else {
+            showRepairToast("Session is still running; wait for it to finish before landing")
+            return
+        }
+        guard let project = workspace.project(id: session.project) else {
+            showRepairToast("Project not found for \(session.project)")
+            return
+        }
+        showRepairToast("Landing worktree to main…")
+        Task {
+            do {
+                let result = try await GitWorktreeService.landFastForward(
+                    projectPath: project.path,
+                    worktreePath: worktreePath,
+                    targetBranch: "main",
+                    sessionId: session.id,
+                    projectKey: session.project,
+                    title: session.title ?? session.intent ?? session.summary
+                )
+                await MainActor.run {
+                    let suffix = result.sealedCommit ? " after sealing tracked changes" : ""
+                    showRepairToast("Landed \(result.branchName) to main\(suffix)")
+                    workspace.invalidateSessions(projectId: session.project)
+                }
+                await workspace.refreshSessions(projectId: session.project)
+            } catch {
+                await MainActor.run {
+                    showRepairToast("Could not land worktree: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
