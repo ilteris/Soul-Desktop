@@ -53,6 +53,17 @@ enum SidebarRowResolver {
         var starredIds: Set<String>
         /// Filter-toggle state the visibility policy reads.
         var visibilityContext: VisibilityContext
+        /// The currently open session's id (from the live overlay). Used
+        /// ONLY to compute `Output.pinnedActiveId` — it does not affect sort
+        /// or visibility. SOUL-SOUL_DESKTOP-363: opened sessions keep their
+        /// original startedAt and never float up, so an opened session older
+        /// than the newest page would render off-screen behind "Show N more"
+        /// while live in the canvas. The view pins this row into the slice.
+        var activeSessionId: String? = nil
+        /// Project the open session belongs to. The pin only applies when it
+        /// matches `projectKey` — the same sid can exist under multiple
+        /// project dirs, so pinning on sid alone could pin the wrong row.
+        var activeProjectId: String? = nil
     }
 
     struct Output {
@@ -63,6 +74,13 @@ enum SidebarRowResolver {
         /// Rows shown in the "Archived (N)" disclosure. Passed visibility
         /// but are present in archivedIds. Same sort as active.
         var archived: [SoulSession]
+        /// sid of the currently open session when it landed in the `active`
+        /// bucket and belongs to the active project. The view pins this row
+        /// into the paginated slice (`prefix(sessionPageSize)`) so resuming a
+        /// session older than the newest page never leaves it live in the
+        /// canvas but hidden behind "Show N more" (SOUL-SOUL_DESKTOP-363).
+        /// nil when there is no open session, or it was archived/filtered out.
+        var pinnedActiveId: String?
         /// Count of active rows — for badge callers that don't need the
         /// full array.
         var activeCount: Int { active.count }
@@ -215,9 +233,22 @@ enum SidebarRowResolver {
             if aStar != bStar { return aStar }
             return a.timestamp > b.timestamp
         }
+
+        // Resolve the pinned-visible row: only when the open session belongs
+        // to this project AND survived into the active bucket. Computed here
+        // (not in the view) so the single resolve() pass stays the authority
+        // on whether the open row is renderable — the view just honors it.
+        var pinnedActiveId: String? = nil
+        if let sid = inputs.activeSessionId,
+           inputs.activeProjectId?.lowercased() == inputs.projectKey.lowercased(),
+           active.contains(where: { $0.id == sid }) {
+            pinnedActiveId = sid
+        }
+
         return Output(
             active: active.sorted(by: sortFn),
-            archived: archived.sorted(by: sortFn)
+            archived: archived.sorted(by: sortFn),
+            pinnedActiveId: pinnedActiveId
         )
     }
 

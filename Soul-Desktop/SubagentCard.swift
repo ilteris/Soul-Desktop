@@ -170,7 +170,28 @@ struct SubagentCard: View {
     private var logBody: some View {
         let content = tailer?.content ?? ""
         let prose = Self.extractProse(from: content)
-        let trimmed = prose.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip the kernel result trailers the subagent appends to its final
+        // reply — `<usage>…</usage>` + `agentId: …` (parsed into stats) and the
+        // `<soul_trace>` trajectory block (rendered as a chip). Left raw these
+        // dump JSON into the card body (SOUL-SOUL_DESKTOP bug from drag.png).
+        let parsed = ClaudeAgentResultParser.parse(prose)
+        let split = SoulTrace.extract(from: parsed.body)
+        let trimmed = split.visible.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: 8) {
+            proseBody(trimmed: trimmed)
+            if isTerminal {
+                if let trace = split.trace {
+                    SoulTraceChip(trace: trace)
+                        .padding(.leading, 16)
+                        .padding(.trailing, 4)
+                }
+                usageFooter(parsed)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func proseBody(trimmed: String) -> some View {
         if trimmed.isEmpty {
             HStack(spacing: 6) {
                 Text(isHistorical ? "(log not tailed for archived run)" : "Waiting for first output…")
@@ -348,6 +369,57 @@ struct SubagentCard: View {
         .buttonStyle(.soulHover)
         .padding(.leading, 16)
         .help("Open finding: \(path)")
+    }
+
+    /// Token / tool-use / duration chips parsed out of the `<usage>` trailer.
+    /// Mirrors `ClaudeAgentCard.footerStats` so both result cards read alike.
+    @ViewBuilder
+    private func usageFooter(_ parsed: ClaudeAgentResultParser.Parsed) -> some View {
+        let hasStats = parsed.agentId != nil || parsed.totalTokens != nil
+            || parsed.toolUses != nil || parsed.durationMs != nil
+        if hasStats {
+            HStack(spacing: 10) {
+                if let id = parsed.agentId {
+                    statChip(icon: "number", label: id, monospaced: true)
+                }
+                if let t = parsed.totalTokens {
+                    statChip(icon: "circle.hexagongrid", label: "\(formatNumber(t)) tok")
+                }
+                if let n = parsed.toolUses {
+                    statChip(icon: "wrench.and.screwdriver", label: "\(n) tool\(n == 1 ? "" : "s")")
+                }
+                if let ms = parsed.durationMs {
+                    statChip(icon: "clock", label: formatDuration(ms: ms))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 16)
+        }
+    }
+
+    private func statChip(icon: String, label: String, monospaced: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9))
+            Text(label)
+                .font(monospaced ? .system(size: 10, design: .monospaced) : SoulFont.ui(10, weight: .medium))
+        }
+        .foregroundStyle(SoulColor.fgSubtle)
+    }
+
+    private func formatNumber(_ n: Int) -> String {
+        if n < 1000 { return "\(n)" }
+        if n < 1_000_000 { return String(format: "%.1fk", Double(n) / 1000.0) }
+        return String(format: "%.1fM", Double(n) / 1_000_000.0)
+    }
+
+    private func formatDuration(ms: Int) -> String {
+        if ms < 1000 { return "\(ms) ms" }
+        let s = Double(ms) / 1000.0
+        if s < 60 { return String(format: "%.1fs", s) }
+        let m = Int(s / 60)
+        let rem = Int(s) % 60
+        return "\(m)m \(rem)s"
     }
 
     private func lastLines(_ text: String, count: Int) -> [String] {

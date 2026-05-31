@@ -44,7 +44,12 @@ enum ClaudeAgentResultParser {
                let innerRange = Range(match.range(at: 1), in: working),
                let fullRange = Range(match.range, in: working) {
                 let inner = String(working[innerRange])
-                totalTokens = firstInt(in: inner, key: "total_tokens")
+                // Token key varies by wrapper: Claude's Agent tool emits
+                // `total_tokens`, the Soul kernel's subagent trailer emits
+                // `subagent_tokens`. Accept either so the footer chip fills in
+                // for both surfaces instead of dropping to nil.
+                totalTokens = firstInt(in: inner, key: "subagent_tokens")
+                    ?? firstInt(in: inner, key: "total_tokens")
                 toolUses = firstInt(in: inner, key: "tool_uses")
                 durationMs = firstInt(in: inner, key: "duration_ms")
                 working.replaceSubrange(fullRange, with: "")
@@ -206,25 +211,40 @@ struct ClaudeAgentCard: View {
         }
     }
 
+    /// Split the reply into visible prose + the trailing `<soul_trace>` block.
+    /// The trace is rendered as a chip; the raw envelope never leaks into text.
+    private var split: (visible: String, trace: SoulTrace?) {
+        SoulTrace.extract(from: replyBody)
+    }
+
     @ViewBuilder
     private var bodyView: some View {
-        if expanded {
-            VStack(alignment: .leading, spacing: 4) {
-                MarkdownView(text: replyBody)
-                    .padding(.leading, 16)
-                    .padding(.trailing, 4)
-                collapseControl
+        let parts = split
+        let visible = parts.visible
+        VStack(alignment: .leading, spacing: 6) {
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    MarkdownView(text: visible)
+                        .padding(.leading, 16)
+                        .padding(.trailing, 4)
+                    collapseControl
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(preview(visible, maxChars: 280))
+                        .font(SoulFont.ui(12))
+                        .foregroundStyle(SoulColor.fg.opacity(0.78))
+                        .lineLimit(3)
+                        .truncationMode(.tail)
+                        .padding(.leading, 16)
+                        .padding(.trailing, 4)
+                    expandControl
+                }
             }
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(preview(replyBody, maxChars: 280))
-                    .font(SoulFont.ui(12))
-                    .foregroundStyle(SoulColor.fg.opacity(0.78))
-                    .lineLimit(3)
-                    .truncationMode(.tail)
+            if let trace = parts.trace {
+                SoulTraceChip(trace: trace)
                     .padding(.leading, 16)
                     .padding(.trailing, 4)
-                expandControl
             }
         }
     }

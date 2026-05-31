@@ -37,6 +37,7 @@ struct ToolCallRow: View {
                     kind: kind, status: status, path: path,
                     statusColor: statusColor, icon: icon,
                     isGrouped: isGrouped,
+                    startLine: details?.startLine,
                     trailing: { chevron }
                 )
             } else {
@@ -173,6 +174,11 @@ struct FileChipRow<Trailing: View>: View {
     let statusColor: Color
     let icon: String
     var isGrouped: Bool = false
+    /// SOUL-SOUL_DESKTOP-364: the edit's anchor line (from ACP
+    /// `locations[].line`, parsed into `ToolCallDetails.startLine`). When
+    /// present we suffix the filename with `:<line>` so the chip points at
+    /// the edited region without opening the preview pane. nil → no suffix.
+    var startLine: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
     /// SOUL-SOUL_DESKTOP-041: AppShell injects this to open the right-side
     /// preview pane instead of the default NSWorkspace fallback. Default is
@@ -180,7 +186,7 @@ struct FileChipRow<Trailing: View>: View {
     @Environment(\.openFilePreview) private var openFilePreview
 
     init(kind: String, status: String, path: String, statusColor: Color, icon: String,
-         isGrouped: Bool = false,
+         isGrouped: Bool = false, startLine: Int? = nil,
          @ViewBuilder trailing: @escaping () -> Trailing) {
         self.kind = kind
         self.status = status
@@ -188,6 +194,7 @@ struct FileChipRow<Trailing: View>: View {
         self.statusColor = statusColor
         self.icon = icon
         self.isGrouped = isGrouped
+        self.startLine = startLine
         self.trailing = trailing
     }
 
@@ -201,7 +208,8 @@ struct FileChipRow<Trailing: View>: View {
                     Text(kind)
                         .font(SoulFont.code(13, weight: .bold))
                         .foregroundStyle(SoulColor.fg)
-                    Text((path as NSString).lastPathComponent)
+                    Text(startLine.map { "\((path as NSString).lastPathComponent):\($0)" }
+                         ?? (path as NSString).lastPathComponent)
                         .font(SoulFont.code(13, weight: .regular))
                         .foregroundStyle(SoulColor.fg)
                         .lineLimit(1)

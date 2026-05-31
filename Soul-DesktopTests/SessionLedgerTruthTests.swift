@@ -816,7 +816,77 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.isEmpty)
     }
 
+    /// SOUL-SOUL_DESKTOP-363: an opened session older than the newest page
+    /// keeps its original startedAt, so it sorts below the page cutoff. The
+    /// resolver must flag it `pinnedActiveId` (so the view can render it in
+    /// the clipped slice) WITHOUT disturbing the recency sort.
+    @Test func resolverPinsActiveSessionPastPageCutoff() {
+        let project = SessionLedgerTruthTests.testProject()
+        // 6 disk rows, newest-first by start time. Row "old-6" is the oldest
+        // and would fall past a 5-row page.
+        var disk: [SoulSession] = []
+        for i in 1...6 {
+            var s = SoulSession(
+                id: "sid-\(i)",
+                project: project.id,
+                timestamp: Date(timeIntervalSince1970: TimeInterval(1000 - i)),
+                title: "Session \(i)",
+                loadable: true,
+                replayable: true
+            )
+            s.promptCount = 2
+            disk.append(s)
+        }
+        let oldestId = "sid-6"
 
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: disk,
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx,
+            activeSessionId: oldestId,
+            activeProjectId: project.id
+        ))
+
+        // Sort order is untouched: still recency-descending, oldest last.
+        #expect(resolved.active.count == 6)
+        #expect(resolved.active.first?.id == "sid-1")
+        #expect(resolved.active.last?.id == oldestId)
+        // The open session is flagged for the view to pin into the slice.
+        #expect(resolved.pinnedActiveId == oldestId)
+    }
+
+    /// The pin must NOT cross project boundaries — the same sid can exist
+    /// under multiple project dirs.
+    @Test func resolverDoesNotPinActiveSessionFromAnotherProject() {
+        let project = SessionLedgerTruthTests.testProject()
+        var s = SoulSession(
+            id: "sid-1",
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Session 1",
+            loadable: true,
+            replayable: true
+        )
+        s.promptCount = 2
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [s],
+            activeControllers: [],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx,
+            activeSessionId: "sid-1",
+            activeProjectId: "some-other-project"
+        ))
+
+        #expect(resolved.pinnedActiveId == nil)
+    }
 
     private static func testProject() -> SoulProject {
         SoulProject(

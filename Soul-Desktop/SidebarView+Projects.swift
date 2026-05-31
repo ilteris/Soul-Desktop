@@ -131,6 +131,28 @@ extension SidebarView {
         }
     }
 
+    /// The clipped session slice rendered under an expanded project.
+    /// SOUL-SOUL_DESKTOP-363: opened sessions keep their original startedAt
+    /// and never float up, so resuming one older than the newest page would
+    /// leave it live in the canvas but hidden behind "Show N more"
+    /// (scrollToActiveSession can't reveal an unrendered row). Append the
+    /// pinned row in place — don't reorder — so the top-N order is untouched
+    /// and the "Show N more" count drops by one for free.
+    func visibleSessions(
+        active: [SoulSession],
+        showAll: Bool,
+        pinnedActiveId: String?
+    ) -> [SoulSession] {
+        guard !showAll else { return active }
+        var visible = Array(active.prefix(sessionPageSize))
+        if let pinned = pinnedActiveId,
+           !visible.contains(where: { $0.id == pinned }),
+           let pinnedRow = active.first(where: { $0.id == pinned }) {
+            visible.append(pinnedRow)
+        }
+        return visible
+    }
+
     @ViewBuilder
     func projectRow(_ project: SoulProject) -> some View {
         // SOUL-SOUL_DESKTOP-270: one resolve() pass owns both the badge
@@ -177,7 +199,11 @@ extension SidebarView {
             let active = rows.active
             let archived = rows.archived
             let showAll = sessionListExpanded.contains(project.id)
-            let visible = showAll ? active : Array(active.prefix(sessionPageSize))
+            let visible = visibleSessions(
+                active: active,
+                showAll: showAll,
+                pinnedActiveId: rows.pinnedActiveId
+            )
             ForEach(visible) { session in
                 chatRow(session)
             }

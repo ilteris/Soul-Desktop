@@ -30,8 +30,13 @@ struct SoulTrace: Hashable {
 
         // Strip every well-formed block. NSRegularExpression so we can match
         // case-insensitively and tolerate whitespace + attributes inside the
-        // opening tag.
-        let pattern = #"(?:`{3,}[a-zA-Z]*\s*\n)?\s*<\s*soul[_-]trace\b[^>]*>([\s\S]*?)<\s*/\s*soul[_-]trace\s*>\s*(?:\n`{3,})?"#
+        // opening tag. The body must open with `{` — a genuine trajectory
+        // envelope is always `<soul_trace>{…}</soul_trace>`. Without that
+        // anchor the opener also matches a prose *mention* of the tag (e.g.
+        // ``strips `<soul_trace>` ``), and the lazy `[\s\S]*?` then spans from
+        // that mention all the way to a real closer further down, deleting the
+        // prose in between (drag.png truncation).
+        let pattern = #"(?:`{3,}[a-zA-Z]*\s*\n)?\s*<\s*soul[_-]trace\b[^>]*>\s*(\{[\s\S]*?)<\s*/\s*soul[_-]trace\s*>\s*(?:\n`{3,})?"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return (raw, nil)
         }
@@ -57,6 +62,17 @@ struct SoulTrace: Hashable {
         // Streaming guard: an opener with no closer means the model is still
         // typing the JSON body. Hide from the opener to end so the raw `{`
         // doesn't flash into the rendered bubble before the closer lands.
+        //
+        // But only when it's actually an in-progress trace, not when the reply
+        // is *describing* the tag in prose. The false positive seen in the wild
+        // (drag.png): a subagent reply explaining `<soul_trace>` inside inline
+        // code — `… SoulTrace.extract (strips `<soul_trace>`/agentId)` — tripped
+        // this guard, which then deleted everything from the tag to end-of-text
+        // and truncated the visible reply at the opening backtick. Distinguish
+        // the two by what follows the opener: a genuine streaming trace is
+        // either still being typed (nothing but whitespace after the opener) or
+        // has begun its JSON body (`{` after optional whitespace). Anything else
+        // following the opener is prose — leave it intact.
         if let openerPattern = try? NSRegularExpression(
             pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
             options: [.caseInsensitive]
@@ -64,7 +80,10 @@ struct SoulTrace: Hashable {
             let range = NSRange(working.startIndex..<working.endIndex, in: working)
             if let match = openerPattern.firstMatch(in: working, options: [], range: range),
                let r = Range(match.range, in: working) {
-                working.removeSubrange(r.lowerBound..<working.endIndex)
+                let after = working[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+                if after.isEmpty || after.hasPrefix("{") {
+                    working.removeSubrange(r.lowerBound..<working.endIndex)
+                }
             }
         }
 

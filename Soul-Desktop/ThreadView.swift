@@ -20,6 +20,15 @@ struct ThreadView: View {
     /// the ScrollView re-mounts. Without this, rows appearing top-down on
     /// re-mount clobber the saved anchor before the restore call runs.
     @State private var suppressAnchorWrites = false
+    /// SOUL-SOUL_DESKTOP-363: true between a restore's `proxy.scrollTo(anchorId)`
+    /// and its settle. While set, `repairTranscriptScrollView` skips the clip
+    /// clamp — scrollTo owns the position, and an independent clamp against a
+    /// still-growing document height would fight it and yank the view (the
+    /// SOUL-094/096/188 scroll-restore regression the judge flagged). Only set
+    /// when there is an actual anchor id to restore to; a nil-anchor open
+    /// (fresh/cold session) leaves it false so the clamp still runs and fixes
+    /// an off-document origin.
+    @State private var scrollRestorePending = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
 
     /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
@@ -335,6 +344,24 @@ struct ThreadView: View {
                     performScrollRestore(proxy: proxy)
                     repairTranscriptScrollView(reason: "activation")
                 }
+                .onChange(of: controller.isHydrating) { _, hydrating in
+                    // SOUL-SOUL_DESKTOP-363: a cold session open is still
+                    // hydrating at `.onAppear`, so the restore there is skipped
+                    // (`guard !controller.isHydrating`) and `.onChange(of:
+                    // activationNonce)` bails too. Nothing then re-pins the
+                    // scroll once hydration finishes — the LazyVStack commits
+                    // its rows late, the early repair clamped against a near-
+                    // empty document height, and the canvas stays blank until a
+                    // resize / panel toggle forces AppKit to re-clamp. Re-run
+                    // restore + repair on the true→false transition so the clip
+                    // origin is clamped against the real document height the
+                    // moment the rows land.
+                    guard !hydrating else { return }
+                    suppressAnchorWrites = true
+                    anchor.itemId = controller.scrollAnchorItemId
+                    performScrollRestore(proxy: proxy)
+                    repairTranscriptScrollView(reason: "hydrated")
+                }
                 // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
                 // changes (right side panel opens / closes / resizes).
                 // Without this, LazyVStack row remeasurement leaves
@@ -464,11 +491,18 @@ struct ThreadView: View {
         let anchorId = anchor.itemId
         DispatchQueue.main.async {
             if let id = anchorId {
+                // SOUL-SOUL_DESKTOP-363: mark the restore in flight so the
+                // concurrent repair leaves the clip origin alone — scrollTo
+                // owns the position here. A nil anchor (fresh/cold open) skips
+                // this so the repair's clamp still runs and fixes an
+                // off-document origin → blank canvas.
+                scrollRestorePending = true
                 proxy.scrollTo(id, anchor: .top)
             }
             repairTranscriptScrollView(reason: "restore")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 suppressAnchorWrites = false
+                scrollRestorePending = false
                 let splitNow = controller.groupedItemsSplit
                 updateAnchor(in: splitNow.main)
             }
@@ -481,12 +515,21 @@ struct ThreadView: View {
     /// (resize forces AppKit layout + scroll bounds clamping). Do that repair
     /// directly on attach/activation/content growth instead of remounting the
     /// whole transcript.
-    private func repairTranscriptScrollView(reason: String, retries: Int = 2) {
+    /// SOUL-SOUL_DESKTOP-363: the old fixed 2×50ms retry window (~150ms) could
+    /// close before a large transcript's LazyVStack committed its rows. The
+    /// repair then read a near-empty `documentHeight`, clamped against it, and
+    /// no further repair fired until a resize → blank canvas on heavy sessions.
+    /// Now the retry runs until the document height stops changing (two
+    /// consecutive equal reads) or the budget is exhausted (~1s), so it survives
+    /// late layout regardless of which trigger fired it. The clamp itself is
+    /// gated on `!scrollRestorePending` so it never fights an in-flight
+    /// `proxy.scrollTo` restore.
+    private func repairTranscriptScrollView(reason: String, retries: Int = 12, lastHeight: CGFloat = -1) {
         DispatchQueue.main.async {
             guard let scrollView = transcriptScrollView else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        repairTranscriptScrollView(reason: reason, retries: retries - 1)
+                        repairTranscriptScrollView(reason: reason, retries: retries - 1, lastHeight: lastHeight)
                     }
                 }
                 return
@@ -500,7 +543,9 @@ struct ThreadView: View {
             guard let documentView = scrollView.documentView else { return }
             let documentHeight = max(documentView.bounds.height, documentView.frame.height)
             let clipHeight = clip.bounds.height
-            if documentHeight > 0, clipHeight > 0 {
+            // Skip the clamp while a scrollTo restore owns the position — see
+            // performScrollRestore / scrollRestorePending.
+            if !scrollRestorePending, documentHeight > 0, clipHeight > 0 {
                 let maxY = max(0, documentHeight - clipHeight)
                 let currentY = clip.bounds.origin.y
                 let clampedY = min(max(0, currentY), maxY)
@@ -510,9 +555,12 @@ struct ThreadView: View {
                 scrollView.reflectScrolledClipView(clip)
             }
 
-            if retries > 0 {
+            // Stop as soon as the document height stabilizes; otherwise keep
+            // polling so a late LazyVStack layout still gets re-clamped.
+            let stabilized = documentHeight > 0 && abs(documentHeight - lastHeight) < 0.5
+            if retries > 0, !stabilized {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    repairTranscriptScrollView(reason: reason, retries: retries - 1)
+                    repairTranscriptScrollView(reason: reason, retries: retries - 1, lastHeight: documentHeight)
                 }
             }
         }

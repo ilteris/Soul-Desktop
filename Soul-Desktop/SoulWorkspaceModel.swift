@@ -235,7 +235,12 @@ final class SoulWorkspaceModel {
                     showUnreadable: filters.showUnreadable,
                     chatSourceFilter: filters.chatSourceFilter,
                     hideUntitled: filters.hideUntitled
-                )
+                ),
+                // SOUL-SOUL_DESKTOP-363: forward the open-session identity the
+                // overlay already carries so the resolver can mark it
+                // pinned-visible. Previously dropped here on the floor.
+                activeSessionId: overlay.activeSessionId,
+                activeProjectId: overlay.activeProjectId
             )
         )
     }

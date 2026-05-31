@@ -146,7 +146,21 @@ extension AppShell {
     @ViewBuilder
     var mountedThreadsCanvas: some View {
         ZStack {
-            if let ctrl = sessions.activeThread {
+            // SOUL-SOUL_DESKTOP-363: mount EVERY mounted thread (capped at 3)
+            // and toggle visibility, instead of conditionally mounting only
+            // the active one. Previously a single un-`.id()`'d ThreadView was
+            // reused across controller swaps, so SwiftUI kept one view identity
+            // — and one `transcriptScrollView` `@State`. Switching INTO a
+            // session inherited the PREVIOUS controller's NSScrollView clip
+            // origin; if the new document was shorter the origin pointed
+            // off-document → blank transcript (the intermittent P1). Keying each
+            // ThreadView `.id(controller.id)` gives every session its own stable
+            // `@State` (hence its own clip origin). Mount-all-toggle-opacity
+            // (vs `.id()`-on-a-single-slot) avoids tearing down / rebuilding the
+            // NSScrollView on every switch — no rebuild flash, scroll position
+            // preserved per pane.
+            ForEach(sessions.mountedThreads, id: \.id) { ctrl in
+                let isActive = ctrl.id == sessions.activeThreadKey
                 ThreadView(
                     controller: ctrl,
                     prompt: sessions.bindingForDraft(ctrl.id),
@@ -158,7 +172,10 @@ extension AppShell {
                     onToggleTerminal: toggleTerminal
                 )
                 .environment(\.autoCompactController, autoCompact)
-                .zIndex(1)
+                .id(ctrl.id)
+                .opacity(isActive ? 1 : 0)
+                .allowsHitTesting(isActive)
+                .zIndex(isActive ? 1 : 0)
             }
             if sessions.activeThreadKey == nil {
                 switch workspace.snapshot.phase {
