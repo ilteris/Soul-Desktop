@@ -101,8 +101,8 @@ extension ThreadController {
         items.append(.branchSummary(
             id: messageId,
             summary: trimmedSummary,
-            sourceProvider: sourceProvider,
-            targetProvider: targetProvider,
+            sourceProvider: sourceProvider.agentProvider,
+            targetProvider: targetProvider.agentProvider,
             timestamp: Date()
         ))
         openAgentMessageId = nil

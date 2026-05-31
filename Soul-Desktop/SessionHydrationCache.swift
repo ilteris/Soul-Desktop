@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 struct HydratedSessionSnapshot {
     let projectId: String

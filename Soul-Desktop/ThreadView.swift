@@ -616,11 +616,11 @@ struct ThreadItemRow: View {
             FinalizeCard(
                 title: "Branch Summary",
                 icon: "arrow.triangle.branch",
-                intent: "Continue from \(sourceProvider.label) in \(targetProvider.label)",
+                intent: "Continue from \(sourceProvider.appProvider?.label ?? sourceProvider.rawValue) in \(targetProvider.appProvider?.label ?? targetProvider.rawValue)",
                 summary: summary,
                 rationale: nil,
                 fixed: nil,
-                nextStep: "\(targetProvider.label) received this summary as context and is continuing from here."
+                nextStep: "\(targetProvider.appProvider?.label ?? targetProvider.rawValue) received this summary as context and is continuing from here."
             )
         case .agentMessage(_, let text, let complete, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the

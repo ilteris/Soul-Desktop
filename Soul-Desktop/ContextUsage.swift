@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// "How full is the model's context window?" — per-provider best-effort.
 ///

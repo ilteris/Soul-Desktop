@@ -81,3 +81,45 @@ public struct ToolCallDetails: Hashable {
 
     public var isSubagent: Bool { kind.isSubagent }
 }
+
+/// One rendered row in a chat/replay transcript. Foundation-only so the
+/// ledger reader + timeline-merge layer can produce these outside the app
+/// target. `branchSummary` stores providers as the UI-free `AgentProvider`
+/// key; display labels/icons resolve in the app layer via `AgentProvider`'s
+/// `appProvider` bridge (SOUL-SOUL_DESKTOP-360).
+public indirect enum ThreadItem: Identifiable, Hashable {
+    case userMessage(id: UUID, text: String, timestamp: Date)
+    case branchSummary(id: UUID, summary: String, sourceProvider: AgentProvider, targetProvider: AgentProvider, timestamp: Date)
+    case agentMessage(id: UUID, text: String, complete: Bool, timestamp: Date)
+    /// Streaming reasoning text from `agent_thought_chunk` ACP notifications.
+    /// Rendered as a muted, italic, collapsible block — so the user sees
+    /// what the agent is thinking through during long turns instead of
+    /// staring at a "Thinking…" spinner.
+    case agentThought(id: UUID, text: String, complete: Bool, timestamp: Date)
+    case toolCall(id: UUID, kind: String, title: String, status: String, locationHint: String?, details: ToolCallDetails?)
+    case plan(id: UUID, entries: [PlanEntry])
+    case status(id: UUID, text: String)
+    case error(id: UUID, text: String)
+    /// Structured finalize summary rendered from the registry's
+    /// `<ts>_<sid>.json` Quad. Surfaces what a session actually accomplished
+    /// (Intent/Summary/Rationale/Fixed/Next) without the user having to
+    /// `cat` the JSON. Injected once per hydrate when a finalize record
+    /// exists for the session.
+    case finalize(id: UUID, intent: String?, summary: String?, rationale: String?, fixed: String?, nextStep: String?, timestamp: Date)
+    case toolCallGroup(id: UUID, kind: String, title: String, locationHint: String?, items: [ThreadItem])
+
+    public var id: UUID {
+        switch self {
+        case .userMessage(let id, _, _): return id
+        case .branchSummary(let id, _, _, _, _): return id
+        case .agentMessage(let id, _, _, _): return id
+        case .agentThought(let id, _, _, _): return id
+        case .toolCall(let id, _, _, _, _, _): return id
+        case .plan(let id, _): return id
+        case .status(let id, _): return id
+        case .error(let id, _): return id
+        case .toolCallGroup(let id, _, _, _, _): return id
+        case .finalize(let id, _, _, _, _, _, _): return id
+        }
+    }
+}

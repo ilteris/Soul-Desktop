@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 import Combine
 
 struct ToolCallCarouselRow: View {

@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// SOUL-SOUL_DESKTOP-270: single source of truth for "what rows does this
 /// project's sidebar show right now, in what state."

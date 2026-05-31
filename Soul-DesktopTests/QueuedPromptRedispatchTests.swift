@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SoulCore
 @testable import Soul_Desktop
 
 /// SOUL-SOUL_DESKTOP-357: a single user send must produce exactly one

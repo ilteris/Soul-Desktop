@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SoulCore
 @testable import Soul_Desktop
 
 @Suite(.serialized)

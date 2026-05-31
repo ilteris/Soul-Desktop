@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SoulCore
 @testable import Soul_Desktop
 
 struct ThreadItemGrouperTests {

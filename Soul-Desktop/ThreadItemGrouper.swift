@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 enum ThreadItemGrouper {
     static func group(_ items: [ThreadItem]) -> [ThreadItem] {

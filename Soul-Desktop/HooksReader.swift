@@ -338,8 +338,8 @@ enum HooksReader {
             case .branchSummary(let payload):
                 let trimmed = payload.summary.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    let source = Provider(rawValue: payload.fromProvider ?? "") ?? .claude
-                    let target = Provider(rawValue: payload.toProvider ?? "") ?? .geminiCLI
+                    let source = AgentProvider(rawValue: payload.fromProvider ?? "") ?? .claude
+                    let target = AgentProvider(rawValue: payload.toProvider ?? "") ?? .geminiCLI
                     out.append(ReplayEvent(
                         id: UUID(),
                         timestamp: ts,

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SoulCore
 @testable import Soul_Desktop
 
 /// SOUL-SOUL_DESKTOP-345: chapter grouping + reading-mode filtering are the

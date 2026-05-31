@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// SOUL-SOUL_DESKTOP-082 Phase 1: unified title resolution.
 ///

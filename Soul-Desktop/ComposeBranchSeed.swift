@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// Background LLM helper that turns an in-progress conversation into a
 /// concise opening message the user can edit/send when continuing in

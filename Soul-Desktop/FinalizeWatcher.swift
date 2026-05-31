@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// Watches session storage for finalize changes.
 /// Fires `onChange` on main (debounced ~250ms) whenever the directory

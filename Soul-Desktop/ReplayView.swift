@@ -1,4 +1,5 @@
 import SwiftUI
+import SoulCore
 
 /// Read-only replay surface: playback bar on top, item stream below.
 /// No composer, no agent — purely client-side scroll through a finished session.

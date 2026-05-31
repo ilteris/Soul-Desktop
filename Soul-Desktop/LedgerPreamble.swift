@@ -1,4 +1,5 @@
 import Foundation
+import SoulCore
 
 /// SOUL-SOUL_DESKTOP-245 (Phase B — bypass-first resume).
 ///
@@ -88,7 +89,7 @@ enum LedgerPreamble {
                 lines.append("You: \(trimmed)")
 
             case .branchSummary(_, let summary, let from, let to, _):
-                lines.append("[branched from \(from.label) to \(to.label)]")
+                lines.append("[branched from \(from.appProvider?.label ?? from.rawValue) to \(to.appProvider?.label ?? to.rawValue)]")
                 lines.append("Summary: \(summary)")
 
             case .toolCall(_, let kind, let title, let status, let hint, _):
