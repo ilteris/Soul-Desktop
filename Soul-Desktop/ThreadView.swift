@@ -535,10 +535,15 @@ struct ThreadView: View {
                 return
             }
             let clip = scrollView.contentView
-            scrollView.needsLayout = true
-            scrollView.documentView?.needsLayout = true
-            scrollView.layoutSubtreeIfNeeded()
-            scrollView.documentView?.layoutSubtreeIfNeeded()
+            // Avoid forcing AppKit layout while a turn is streaming; it can blank the
+            // SwiftUI transcript. The post-turn repair handles final alignment.
+            let working = controller.isWorking
+            if !working {
+                scrollView.needsLayout = true
+                scrollView.documentView?.needsLayout = true
+                scrollView.layoutSubtreeIfNeeded()
+                scrollView.documentView?.layoutSubtreeIfNeeded()
+            }
 
             guard let documentView = scrollView.documentView else { return }
             let documentHeight = max(documentView.bounds.height, documentView.frame.height)
@@ -558,7 +563,7 @@ struct ThreadView: View {
             // Stop as soon as the document height stabilizes; otherwise keep
             // polling so a late LazyVStack layout still gets re-clamped.
             let stabilized = documentHeight > 0 && abs(documentHeight - lastHeight) < 0.5
-            if retries > 0, !stabilized {
+            if !working, retries > 0, !stabilized {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     repairTranscriptScrollView(reason: reason, retries: retries - 1, lastHeight: documentHeight)
                 }
