@@ -568,6 +568,15 @@ final class ThreadController {
     /// Last time we received any event from the agent. Used to compute
     /// "quiet for Ns" once `isWorking` is true and nothing's streaming.
     var lastActivityAt: Date = Date()
+    /// Transport-level connectivity for the active turn. `.reconnecting` is set
+    /// when the runtime emits a retrying `error` notification and cleared on the
+    /// next real forward-progress event (or at turn end). Drives the
+    /// WorkingIndicator's reconnecting affordance. SOUL-SOUL_DESKTOP-369.
+    enum Connectivity: Equatable {
+        case normal
+        case reconnecting(message: String)
+    }
+    var connectivity: Connectivity = .normal
     /// Latest token count reported by codex's `thread/tokenUsage/updated`
     /// notification. nil until the first usage event lands.
     var codexTokensUsed: Int?

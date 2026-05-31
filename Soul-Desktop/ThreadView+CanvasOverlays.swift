@@ -178,19 +178,27 @@ struct WorkingIndicator: View {
             let isStalled = secondsSinceActivity >= budget
             let ceiling = StallPolicy.autoCancelCeilingSeconds
             let secondsUntilAutoCancel = max(0, ceiling - secondsSinceActivity)
+            // SOUL-SOUL_DESKTOP-369: transport-level reconnect is a distinct,
+            // higher-fidelity signal than the quiet-time stall heuristic, and
+            // takes visual priority — the runtime told us the stream dropped.
+            let reconnectMessage: String? = {
+                if case .reconnecting(let message) = controller.connectivity { return message }
+                return nil
+            }()
 
             HStack(spacing: 12) {
                 // SOUL-203 revision: drop the sparkle glyph — the shimmer
                 // alone reads as motion. Stalled state keeps the small
                 // orange ring spinner so the warning has a static anchor.
-                if isStalled {
+                if isStalled || reconnectMessage != nil {
+                    let ringColor: Color = reconnectMessage != nil ? .yellow : .orange
                     ZStack {
                         Circle()
                             .stroke(SoulColor.border.opacity(0.3), lineWidth: 2)
                             .frame(width: 12, height: 12)
                         Circle()
                             .trim(from: 0, to: 0.3)
-                            .stroke(Color.orange, lineWidth: 2)
+                            .stroke(ringColor, lineWidth: 2)
                             .frame(width: 12, height: 12)
                             .rotationEffect(.degrees(rotation))
                             .onAppear {
@@ -203,7 +211,15 @@ struct WorkingIndicator: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        if isStalled {
+                        if reconnectMessage != nil {
+                            HStack(spacing: 4) {
+                                Image(systemName: "wifi.exclamationmark")
+                                    .font(.system(size: 11))
+                                Text("Reconnecting…")
+                            }
+                            .font(SoulFont.ui(13, weight: .medium))
+                            .foregroundStyle(Color.yellow)
+                        } else if isStalled {
                             Text("Thinking…")
                                 .font(SoulFont.ui(13, weight: .medium))
                                 .foregroundStyle(Color.orange)
@@ -221,7 +237,15 @@ struct WorkingIndicator: View {
                         }
                     }
 
-                    if isStalled {
+                    if let reconnectMessage {
+                        // The runtime's own wire detail, e.g. "Reconnecting… 2/5".
+                        // Higher fidelity than NWPathMonitor, which would report
+                        // "online" through a captive portal or TLS-handshake death.
+                        Text(reconnectMessage)
+                            .font(SoulFont.ui(10))
+                            .foregroundStyle(Color.yellow.opacity(0.85))
+                            .lineLimit(1)
+                    } else if isStalled {
                         HStack(spacing: 4) {
                             Text("No activity for \(secondsSinceActivity)s")
                                 .font(SoulFont.ui(10))
