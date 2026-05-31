@@ -105,21 +105,17 @@ enum ComposeBranchSeed {
     /// spawn/exit failure (caller treats as empty seed).
     private static func runClaudeSubprocess(executable: String, prompt: String) async -> String? {
         await Task.detached(priority: .userInitiated) { () -> String? in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: executable)
-            p.arguments = ["-p", prompt]
-            let out = Pipe(); let err = Pipe()
-            p.standardOutput = out
-            p.standardError = err
             do {
-                try p.run()
-                p.waitUntilExit()
+                let result = try SafeProcessRunner.runSync(
+                    executable: executable,
+                    arguments: ["-p", prompt],
+                    timeoutSeconds: 30
+                )
+                guard result.status == 0 else { return nil }
+                return String(data: result.stdout, encoding: .utf8)
             } catch {
                 return nil
             }
-            guard p.terminationStatus == 0 else { return nil }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
         }.value
     }
 

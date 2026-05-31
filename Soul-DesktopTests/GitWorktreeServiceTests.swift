@@ -6,14 +6,14 @@ import Foundation
 struct GitWorktreeServiceTests {
     
     private func runCommand(_ executable: String, _ arguments: [String], currentDirectoryPath: String) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.currentDirectoryPath = currentDirectoryPath
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            let result = try SafeProcessRunner.runSync(
+                executable: executable,
+                arguments: arguments,
+                currentDirectoryPath: currentDirectoryPath,
+                timeoutSeconds: 10
+            )
+            return result.status == 0
         } catch {
             return false
         }

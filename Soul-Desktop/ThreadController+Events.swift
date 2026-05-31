@@ -143,62 +143,28 @@ extension ThreadController {
     ) async -> String? {
         await Task.detached(priority: .userInitiated) { () -> String? in
             let prompt = titleGenerationPrompt(users: users, agent: agent)
-
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: executable)
-            p.arguments = argumentsPrefix + ["-p", prompt, "--output-format", "text"]
             var env = ProcessInfo.processInfo.environment
             env["SOUL_SESSION_VISIBILITY"] = "machine"
             env["SOUL_SESSION_KIND"] = "title_generation"
-            p.environment = env
-            let out = Pipe(); let err = Pipe()
-            p.standardOutput = out
-            p.standardError = err
 
+            let result: SafeProcessResult
             do {
-                try p.run()
+                result = try SafeProcessRunner.runSync(
+                    executable: executable,
+                    arguments: argumentsPrefix + ["-p", prompt, "--output-format", "text"],
+                    environment: env,
+                    timeoutSeconds: 20
+                )
             } catch {
                 return nil
             }
-
-            var outData = Data()
-            var errData = Data()
-            let drainQueue = DispatchQueue(label: "soul.title-generation.drain", attributes: .concurrent)
-            let outGroup = DispatchGroup()
-            let errGroup = DispatchGroup()
-            outGroup.enter()
-            errGroup.enter()
-            drainQueue.async {
-                outData = out.fileHandleForReading.readDataToEndOfFile()
-                outGroup.leave()
-            }
-            drainQueue.async {
-                errData = err.fileHandleForReading.readDataToEndOfFile()
-                errGroup.leave()
-            }
-
-            let waitTask = DispatchWorkItem {
-                p.waitUntilExit()
-            }
-            drainQueue.async(execute: waitTask)
-            if waitTask.wait(timeout: .now() + .seconds(20)) == .timedOut {
-                NSLog("[title-generation] Gemini title request timed out; terminating child")
-                p.terminate()
-                _ = waitTask.wait(timeout: .now() + .seconds(1))
-                _ = waitForTitlePipeDrain(outGroup)
-                _ = waitForTitlePipeDrain(errGroup)
-                _ = errData
+            if result.timedOut {
+                NSLog("[title-generation] Gemini title request timed out")
                 return nil
             }
-            _ = waitForTitlePipeDrain(outGroup)
-            _ = waitForTitlePipeDrain(errGroup)
-            guard p.terminationStatus == 0 else { return nil }
-            return String(data: outData, encoding: .utf8)
+            guard result.status == 0 else { return nil }
+            return String(data: result.stdout, encoding: .utf8)
         }.value
-    }
-
-    private nonisolated static func waitForTitlePipeDrain(_ group: DispatchGroup) -> DispatchTimeoutResult {
-        group.wait(timeout: .now() + .seconds(1))
     }
 
     private nonisolated static func bundledGeminiPrintSpawn() -> (executable: String, argumentsPrefix: [String])? {

@@ -15,7 +15,7 @@ struct Soul_DesktopTests {
         // Exercises SoulCLI's concurrent stdout/stderr draining against a deterministic
         // large-output source. Drives `/bin/cat` over a generated temp file far larger than
         // a single pipe buffer (64KB on macOS), so a child that out-writes the buffer would
-        // wedge against waitUntilExit() if the drain regressed. No `soul` binary / registry
+        // wedge if the drain regressed. No `soul` binary / registry
         // dependency, so it can't fast-fail under parallel test contention — the prior flake.
         let bytes = 8 * 1024 * 1024  // 8 MB ≫ 64KB pipe buffer
         let payload = Data(repeating: 0x41 /* 'A' */, count: bytes)
@@ -32,6 +32,32 @@ struct Soul_DesktopTests {
         #expect(capture.status == 0)
         #expect(capture.stdout.count == bytes)  // byte-exact: nothing dropped or truncated by the drain
         #expect(capture.stderr.isEmpty)
+    }
+
+    @Test func safeProcessRunnerCapturesStdinAndStderr() async throws {
+        let input = Data("hello runner".utf8)
+        let result = try await SafeProcessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "cat; printf 'warn' >&2"],
+            stdin: input,
+            timeoutSeconds: 5
+        )
+
+        #expect(result.status == 0)
+        #expect(String(data: result.stdout, encoding: .utf8) == "hello runner")
+        #expect(String(data: result.stderr, encoding: .utf8) == "warn")
+        #expect(result.timedOut == false)
+    }
+
+    @Test func safeProcessRunnerTimesOutHungChild() async throws {
+        let result = try await SafeProcessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "sleep 30"],
+            timeoutSeconds: 0.2
+        )
+
+        #expect(result.status == SafeProcessRunner.timeoutStatus)
+        #expect(result.timedOut == true)
     }
 
     @Test func testCompactSlashCommandIsRecognized() throws {

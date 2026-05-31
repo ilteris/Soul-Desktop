@@ -539,16 +539,16 @@ enum GitInfo {
     static func currentBranch(at path: String?) async -> String? {
         guard let path, !path.isEmpty else { return nil }
         return await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"]
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = Pipe()
-            do { try p.run() } catch { return nil }
-            p.waitUntilExit()
-            guard p.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let result: SafeProcessResult
+            do {
+                result = try SafeProcessRunner.runSync(
+                    executable: "/usr/bin/env",
+                    arguments: ["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
+                    timeoutSeconds: 5
+                )
+            } catch { return nil }
+            guard result.status == 0 else { return nil }
+            let data = result.stdout
             let s = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return s.isEmpty || s == "HEAD" ? nil : s
@@ -558,14 +558,16 @@ enum GitInfo {
     static func localBranches(at path: String?) async -> [String] {
         guard let path, !path.isEmpty else { return [] }
         return await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["git", "-C", path, "for-each-ref", "--format=%(refname:short)", "refs/heads/"]
-            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-            do { try p.run() } catch { return [] }
-            p.waitUntilExit()
-            guard p.terminationStatus == 0 else { return [] }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let result: SafeProcessResult
+            do {
+                result = try SafeProcessRunner.runSync(
+                    executable: "/usr/bin/env",
+                    arguments: ["git", "-C", path, "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+                    timeoutSeconds: 5
+                )
+            } catch { return [] }
+            guard result.status == 0 else { return [] }
+            let data = result.stdout
             let raw = String(data: data, encoding: .utf8) ?? ""
             return raw.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
@@ -576,16 +578,18 @@ enum GitInfo {
     static func checkout(branch: String, at path: String?) async -> String? {
         guard let path, !path.isEmpty else { return "no project path" }
         return await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["git", "-C", path, "checkout", branch]
-            let err = Pipe(); p.standardError = err; p.standardOutput = Pipe()
-            do { try p.run() } catch { return error.localizedDescription }
-            p.waitUntilExit()
-            if p.terminationStatus == 0 { return nil }
-            let data = err.fileHandleForReading.readDataToEndOfFile()
+            let result: SafeProcessResult
+            do {
+                result = try SafeProcessRunner.runSync(
+                    executable: "/usr/bin/env",
+                    arguments: ["git", "-C", path, "checkout", branch],
+                    timeoutSeconds: 15
+                )
+            } catch { return error.localizedDescription }
+            if result.status == 0 { return nil }
+            let data = result.stderr
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? "exit \(p.terminationStatus)"
+                ?? "exit \(result.status)"
         }.value
     }
 }

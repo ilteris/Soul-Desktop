@@ -91,12 +91,9 @@ enum SoulHydration {
         return HydrationResult(log: ["✓ Claude: regenerated \(outPath) (\(bytes)B)"])
     }
 
-    /// Async wrapper that pushes the synchronous subprocess wait off whatever
-    /// actor called us. `runPython` calls `p.waitUntilExit()` which blocks the
-    /// current thread for the duration of the Python harness — multiple
-    /// seconds for soul_hydrate. Run it on a detached background task so the
-    /// click-to-thread path on @MainActor returns control to SwiftUI
-    /// immediately and the "▶ hydrating Soul context…" status row renders.
+    /// Async wrapper that pushes the synchronous subprocess call off whatever
+    /// actor called us. The Python harness can run for multiple seconds, so keep
+    /// it detached from @MainActor and bound it through `SafeProcessRunner`.
     private static func runPythonAsync(script: String,
                                        args: [String],
                                        extraEnv: [String: String]) async -> RunResult {
@@ -112,31 +109,25 @@ enum SoulHydration {
     private static func runPython(script: String,
                                   args: [String],
                                   extraEnv: [String: String]) -> RunResult {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: pythonPath())
-        p.arguments = [script] + args
-
         var env = ProcessInfo.processInfo.environment
         for (k, v) in extraEnv { env[k] = v }
-        p.environment = env
-
-        let outPipe = Pipe(); let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-
         do {
-            try p.run()
-            p.waitUntilExit()
+            let result = try SafeProcessRunner.runSync(
+                executable: pythonPath(),
+                arguments: [script] + args,
+                environment: env,
+                timeoutSeconds: 30
+            )
+            return RunResult(
+                status: result.status,
+                stdout: String(data: result.stdout, encoding: .utf8) ?? "",
+                stderr: result.timedOut
+                    ? "python command timed out"
+                    : String(data: result.stderr, encoding: .utf8) ?? ""
+            )
         } catch {
             return RunResult(status: -1, stdout: "", stderr: "spawn failed: \(error.localizedDescription)")
         }
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        return RunResult(
-            status: p.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8) ?? "",
-            stderr: String(data: errData, encoding: .utf8) ?? ""
-        )
     }
 
     private static func pythonPath() -> String {

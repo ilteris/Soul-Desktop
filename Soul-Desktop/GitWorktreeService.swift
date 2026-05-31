@@ -63,54 +63,27 @@ public struct GitWorktreeService {
         arguments: [String]
     ) async throws -> String {
         let gitPath = resolveGitPath()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: gitPath)
-        
-        // Use -C to target the correct directory
-        process.arguments = ["-C", projectPath] + arguments
-        
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        
-        // Swift 6 safe: read standard output and standard error concurrently using async let
-        async let outTask = Task { () -> Data in
-            if #available(macOS 12.0, *) {
-                return (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-            } else {
-                return outPipe.fileHandleForReading.readDataToEndOfFile()
-            }
-        }.value
-
-        async let errTask = Task { () -> Data in
-            if #available(macOS 12.0, *) {
-                return (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-            } else {
-                return errPipe.fileHandleForReading.readDataToEndOfFile()
-            }
-        }.value
-
+        let result: SafeProcessResult
         do {
-            try process.run()
+            result = try await SafeProcessRunner.run(
+                executable: gitPath,
+                arguments: ["-C", projectPath] + arguments,
+                timeoutSeconds: 10
+            )
         } catch {
             throw GitWorktreeError.custom("Failed to spawn git process: \(error.localizedDescription)")
         }
-        
-        // Wait until exit in an isolated Task to avoid blocking the main actor
-        await Task.detached {
-            process.waitUntilExit()
-        }.value
-        
-        let outData = await outTask
-        let errData = await errTask
-        
-        if process.terminationStatus != 0 {
-            let errText = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw GitWorktreeError.commandFailed(status: process.terminationStatus, stderr: errText)
+        if result.status != 0 {
+            let errText = String(data: result.stderr, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw GitWorktreeError.commandFailed(
+                status: result.status,
+                stderr: result.timedOut ? "git command timed out" : errText
+            )
         }
-        
-        return String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return String(data: result.stdout, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     /// Add a git worktree.

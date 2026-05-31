@@ -10,18 +10,26 @@ struct WorktreeMergeProbeTests {
 
     @discardableResult
     private func git(_ args: [String], cwd: String, env: [String: String] = [:]) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p.arguments = args
-        p.currentDirectoryPath = cwd
-        if !env.isEmpty {
+        let environment: [String: String]?
+        if env.isEmpty {
+            environment = nil
+        } else {
             var merged = ProcessInfo.processInfo.environment
             for (k, v) in env { merged[k] = v }
-            p.environment = merged
+            environment = merged
         }
-        p.standardOutput = Pipe(); p.standardError = Pipe()
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
-        catch { return false }
+        do {
+            let result = try SafeProcessRunner.runSync(
+                executable: "/usr/bin/git",
+                arguments: args,
+                environment: environment,
+                currentDirectoryPath: cwd,
+                timeoutSeconds: 10
+            )
+            return result.status == 0
+        } catch {
+            return false
+        }
     }
 
     @Test
@@ -76,6 +84,10 @@ struct WorktreeMergeProbeTests {
         #expect(await probe.mergeability(ofWorktree: b, into: "main", repo: repo.path) == .clean)
         #expect(await probe.mergeability(ofWorktree: c, into: "main", repo: repo.path) == .clean)
 
+        let cached = await probe.cachedMergeability(ofWorktree: a, into: "main", repo: repo.path)
+        #expect(cached.result == .clean)
+        #expect(cached.cacheKey != nil)
+
         // Sibling divergence: a⇄b disjoint files clean; a⇄c collide on Foo.swift.
         let ca = try #require(await probe.probeCommit(worktree: a))
         let cb = try #require(await probe.probeCommit(worktree: b))
@@ -87,12 +99,12 @@ struct WorktreeMergeProbeTests {
         // Index-untouched invariant: probing must not stage anything in the
         // real worktree index (spec §3.2 — agent-race safety).
         for wt in [a, b, c] {
-            let staged = Process()
-            staged.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            staged.arguments = ["-C", wt, "diff", "--cached", "--name-only"]
-            let pipe = Pipe(); staged.standardOutput = pipe
-            try staged.run(); staged.waitUntilExit()
-            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let staged = try SafeProcessRunner.runSync(
+                executable: "/usr/bin/git",
+                arguments: ["-C", wt, "diff", "--cached", "--name-only"],
+                timeoutSeconds: 10
+            )
+            let out = String(data: staged.stdout, encoding: .utf8) ?? ""
             #expect(out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }

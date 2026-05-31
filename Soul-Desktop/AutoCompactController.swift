@@ -157,8 +157,6 @@ final class AutoCompactController {
             NSLog("[autocompact] missing or non-exec kernel binary at \(soulBin)")
             return nil
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: soulBin)
         var args = [
             "autocompact",
             "--session", session,
@@ -167,66 +165,33 @@ final class AutoCompactController {
             "--usage-pct", String(format: "%.4f", usagePct),
         ]
         if force { args.append("--force") }
-        process.arguments = args
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        // Drain both pipes concurrently while the process runs. Without this
-        // the child blocks at ~64KB of stderr output and waitUntilExit() never
-        // returns. The kernel verb itself is quiet, but a Python traceback
-        // could exceed the buffer; better to be safe.
-        var outData = Data()
-        var errData = Data()
-        let drainQueue = DispatchQueue(label: "soul.autocompact.drain", attributes: .concurrent)
-        let outGroup = DispatchGroup()
-        let errGroup = DispatchGroup()
-        outGroup.enter()
-        errGroup.enter()
-        drainQueue.async {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            outGroup.leave()
-        }
-        drainQueue.async {
-            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            errGroup.leave()
-        }
 
         NSLog("[autocompact] spawning: %@ %@", soulBin, args.joined(separator: " "))
+        let result: SafeProcessResult
         do {
-            try process.run()
+            result = try SafeProcessRunner.runSync(
+                executable: soulBin,
+                arguments: args,
+                timeoutSeconds: 5
+            )
         } catch {
             NSLog("[autocompact] kernel spawn failed: \(error)")
             return nil
         }
 
-        // Bound the wait so a hung kernel can't leave inFlight=true forever.
-        // 5s is generous — the verb is pure stdlib + filesystem reads.
-        let deadline = DispatchTime.now() + .seconds(5)
-        let waitTask = DispatchWorkItem {
-            process.waitUntilExit()
-        }
-        drainQueue.async(execute: waitTask)
-        if waitTask.wait(timeout: deadline) == .timedOut {
-            NSLog("[autocompact] kernel call timed out — terminating")
-            process.terminate()
-            _ = outGroup.wait(timeout: .now() + .seconds(1))
-            _ = errGroup.wait(timeout: .now() + .seconds(1))
+        if result.timedOut {
+            NSLog("[autocompact] kernel call timed out")
             return nil
         }
-        _ = outGroup.wait(timeout: .now() + .seconds(1))
-        _ = errGroup.wait(timeout: .now() + .seconds(1))
 
-        if process.terminationStatus != 0 {
-            let errText = String(data: errData, encoding: .utf8) ?? ""
-            NSLog("[autocompact] kernel exit %d — stderr: %@", Int(process.terminationStatus), errText)
+        if result.status != 0 {
+            let errText = String(data: result.stderr, encoding: .utf8) ?? ""
+            NSLog("[autocompact] kernel exit %d — stderr: %@", Int(result.status), errText)
             return nil
         }
-        let directive = Directive.parse(outData)
+        let directive = Directive.parse(result.stdout)
         if directive == nil {
-            let raw = String(data: outData, encoding: .utf8) ?? ""
+            let raw = String(data: result.stdout, encoding: .utf8) ?? ""
             NSLog("[autocompact] could not parse directive — stdout: %@", raw)
         }
         return directive

@@ -26,6 +26,7 @@ struct ChatRow: View {
     var replayPrompts: Int = 0
     var replayReplies: Int = 0
     @State private var hovering: Bool = false
+    @State private var mergeability: WorktreeMergeProbe.Mergeability? = nil
 
     /// Drafts are rendered italic + with a muted "New chat" placeholder so
     /// the row reads as not-yet-real. The id prefix `draft-` is set by
@@ -98,6 +99,12 @@ struct ChatRow: View {
             }
             .layoutPriority(1)
             Spacer(minLength: 0)
+            if let worktreePath = session.worktreePath, !worktreePath.isEmpty {
+                WorktreeMergeabilityBadge(result: mergeability)
+                    .task(id: "\(worktreePath):\(session.lastActivityAt?.timeIntervalSince1970 ?? session.timestamp.timeIntervalSince1970)") {
+                        await refreshMergeability(worktreePath: worktreePath)
+                    }
+            }
             if isActiveReplay {
                 ReplayProgressChip(
                     progress: replayProgress,
@@ -143,7 +150,23 @@ struct ChatRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .onHover { isHovering in
+            hovering = isHovering
+            if isHovering, let worktreePath = session.worktreePath, !worktreePath.isEmpty {
+                Task { await refreshMergeability(worktreePath: worktreePath) }
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshMergeability(worktreePath: String) async {
+        let probe = WorktreeMergeProbe()
+        let readout = await probe.cachedMergeability(
+            ofWorktree: worktreePath,
+            into: "main",
+            repo: worktreePath
+        )
+        mergeability = readout.result
     }
 
     private func relative(_ d: Date) -> String {
@@ -240,6 +263,60 @@ struct ChatRow: View {
         }
         if let nl = s.firstIndex(of: "\n") { s = String(s[..<nl]) }
         return s.isEmpty ? "untitled" : s
+    }
+}
+
+private struct WorktreeMergeabilityBadge: View {
+    let result: WorktreeMergeProbe.Mergeability?
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle())
+            .help(help)
+            .accessibilityLabel(Text(verbatim: help))
+    }
+
+    private var systemImage: String {
+        switch result {
+        case .clean:
+            return "checkmark.circle.fill"
+        case .conflict:
+            return "exclamationmark.triangle.fill"
+        case .unknown:
+            return "questionmark.circle"
+        case nil:
+            return "arrow.triangle.branch"
+        }
+    }
+
+    private var color: Color {
+        switch result {
+        case .clean:
+            return .green
+        case .conflict:
+            return .orange
+        case .unknown, nil:
+            return SoulColor.fgSubtle
+        }
+    }
+
+    private var help: String {
+        switch result {
+        case .clean:
+            return "Mergeability: clean to land on main"
+        case .conflict(let files):
+            if files.isEmpty {
+                return "Mergeability: conflicts with main"
+            }
+            return "Mergeability: conflicts with main in \(files.joined(separator: ", "))"
+        case .unknown(let reason):
+            return "Mergeability unknown: \(reason)"
+        case nil:
+            return "Checking mergeability with main"
+        }
     }
 }
 

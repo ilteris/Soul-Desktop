@@ -239,17 +239,13 @@ private func loginShellPath() -> String? {
 }
 
 private func runLoginShell(command: String, shell: String) -> String? {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: shell)
-    p.arguments = ["-l", "-c", command]
-    let out = Pipe()
-    p.standardOutput = out
-    p.standardError = Pipe()
     do {
-        try p.run()
-        p.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
+        let result = try SafeProcessRunner.runSync(
+            executable: shell,
+            arguments: ["-l", "-c", command],
+            timeoutSeconds: 10
+        )
+        return String(data: result.stdout, encoding: .utf8)
     } catch {
         return nil
     }

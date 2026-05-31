@@ -58,6 +58,10 @@ enum SoulCLI {
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = args
             process.environment = cliEnvironment()
+            let termination = DispatchSemaphore(value: 0)
+            process.terminationHandler = { _ in
+                termination.signal()
+            }
 
             let stdout = Pipe()
             let stderr = Pipe()
@@ -89,7 +93,10 @@ enum SoulCLI {
             }
             onStart?(process.processIdentifier)
 
-            process.waitUntilExit()
+            if termination.wait(timeout: .now() + 120) == .timedOut {
+                process.terminate()
+                _ = termination.wait(timeout: .now() + 1)
+            }
             stdoutHandle.readabilityHandler = nil
             stderrHandle.readabilityHandler = nil
 
@@ -139,70 +146,22 @@ enum SoulCLI {
     /// bytes on success or nil on any failure (executable missing,
     /// non-zero exit, I/O error) — the caller decides how to degrade.
     ///
-    /// NB: we MUST drain stdout concurrently with `waitUntilExit()`.
-    /// macOS pipe buffers are ~64 KB; the CLI's `soul session list --json`
-    /// output is ~330 KB for the busiest project. If the parent waits
-    /// for exit before reading, the child blocks on a full pipe and the
-    /// parent blocks on the child — silent deadlock.
+    /// Uses `SafeProcessRunner` so stdout/stderr drain while the process runs
+    /// and timeout/termination handling stays bounded.
     static func runSync(_ args: [String]) -> Data? {
         guard let executable = soulExecutablePath() else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = args
-        process.environment = cliEnvironment()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        // Drain both streams off-thread so the child can't deadlock on a
-        // full pipe buffer. Each thread reads until EOF (pipe closes when
-        // the child exits) and posts its accumulated bytes back.
-        let stdoutBox = NSMutableData()
-        let stderrBox = NSMutableData()
-        let stdoutLock = NSLock()
-        let stderrLock = NSLock()
-        let stdoutQueue = DispatchQueue(label: "soul-cli.stdout")
-        let stderrQueue = DispatchQueue(label: "soul-cli.stderr")
-        let group = DispatchGroup()
-
-        group.enter()
-        stdoutQueue.async {
-            let handle = stdoutPipe.fileHandleForReading
-            while true {
-                let chunk = handle.availableData
-                if chunk.isEmpty { break }
-                stdoutLock.lock()
-                stdoutBox.append(chunk)
-                stdoutLock.unlock()
-            }
-            group.leave()
-        }
-        group.enter()
-        stderrQueue.async {
-            let handle = stderrPipe.fileHandleForReading
-            while true {
-                let chunk = handle.availableData
-                if chunk.isEmpty { break }
-                stderrLock.lock()
-                stderrBox.append(chunk)
-                stderrLock.unlock()
-            }
-            group.leave()
-        }
-
         do {
-            try process.run()
+            let result = try SafeProcessRunner.runSync(
+                executable: executable,
+                arguments: args,
+                environment: cliEnvironment(),
+                timeoutSeconds: 30
+            )
+            guard result.status == 0 else { return nil }
+            return result.stdout
         } catch {
             return nil
         }
-        process.waitUntilExit()
-        // Wait for the drainer threads to flush whatever was buffered after
-        // the child's last write. Their loops exit on EOF (pipe close on
-        // child termination).
-        group.wait()
-        guard process.terminationStatus == 0 else { return nil }
-        return stdoutBox as Data
     }
 
     @discardableResult
@@ -222,19 +181,13 @@ enum SoulCLI {
     }
 
     private static func childPIDs(of pid: Int32) -> [Int32] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-P", "\(pid)"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
         do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let text = String(data: data, encoding: .utf8) ?? ""
+            let result = try SafeProcessRunner.runSync(
+                executable: "/usr/bin/pgrep",
+                arguments: ["-P", "\(pid)"],
+                timeoutSeconds: 2
+            )
+            let text = String(data: result.stdout, encoding: .utf8) ?? ""
             return text
                 .split(whereSeparator: \.isNewline)
                 .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -255,9 +208,8 @@ enum SoulCLI {
         )
     }
 
-    /// Core concurrent-drain capture: runs `executable` with `arguments`, draining stdout and
-    /// stderr on independent queues *before* waiting on exit, so a child emitting more than one
-    /// pipe buffer's worth of output can never deadlock against `waitUntilExit()`.
+    /// Core concurrent-drain capture: runs `executable` with `arguments`,
+    /// draining stdout/stderr while the child runs and bounding termination.
     ///
     /// Exposed internally (not tied to the `soul` binary) so the drain path can be exercised
     /// deterministically against a known large-output source — see
@@ -268,69 +220,14 @@ enum SoulCLI {
         environment: [String: String]? = nil,
         stdin: Data? = nil
     ) async throws -> Capture {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            process.environment = environment
-
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-
-            let stdoutBox = NSMutableData()
-            let stderrBox = NSMutableData()
-            let stdoutLock = NSLock()
-            let stderrLock = NSLock()
-            let stdoutQueue = DispatchQueue(label: "soul-cli.stdout")
-            let stderrQueue = DispatchQueue(label: "soul-cli.stderr")
-            let group = DispatchGroup()
-
-            group.enter()
-            stdoutQueue.async {
-                let handle = stdout.fileHandleForReading
-                while true {
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { break }
-                    stdoutLock.lock()
-                    stdoutBox.append(chunk)
-                    stdoutLock.unlock()
-                }
-                group.leave()
-            }
-
-            group.enter()
-            stderrQueue.async {
-                let handle = stderr.fileHandleForReading
-                while true {
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { break }
-                    stderrLock.lock()
-                    stderrBox.append(chunk)
-                    stderrLock.unlock()
-                }
-                group.leave()
-            }
-
-            if let stdin {
-                let input = Pipe()
-                process.standardInput = input
-                try process.run()
-                input.fileHandleForWriting.write(stdin)
-                try? input.fileHandleForWriting.close()
-            } else {
-                try process.run()
-            }
-
-            process.waitUntilExit()
-            group.wait()
-
-            let out = stdoutBox as Data
-            let err = stderrBox as Data
-
-            return Capture(status: process.terminationStatus, stdout: out, stderr: err)
-        }.value
+        let result = try await SafeProcessRunner.run(
+            executable: executable,
+            arguments: arguments,
+            environment: environment,
+            stdin: stdin,
+            timeoutSeconds: 120
+        )
+        return Capture(status: result.status, stdout: result.stdout, stderr: result.stderr)
     }
 
     private static func soulExecutablePath() -> String? {

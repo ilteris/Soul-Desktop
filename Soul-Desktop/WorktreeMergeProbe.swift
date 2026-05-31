@@ -16,6 +16,11 @@ public struct WorktreeMergeProbe {
         case unknown(reason: String)
     }
 
+    public struct CachedMergeability: Equatable {
+        public var result: Mergeability
+        public var cacheKey: String?
+    }
+
     private let gitPath: String
 
     /// Prefer a modern git (Homebrew) over Apple git for `--write-tree`
@@ -56,6 +61,38 @@ public struct WorktreeMergeProbe {
         let t = await run(["-C", repo, "rev-parse", target])
         guard t.status == 0 else { return .unknown(reason: "unknown target \(target)") }
         return await merge(base: trimmed(t.stdout), candidate: candidate, repo: repo)
+    }
+
+    /// Sidebar-facing mergeability readout. Builds the same ephemeral probe
+    /// commit as `mergeability`, but caches the answer by the exact pair of
+    /// target HEAD SHA and probe commit SHA. Any target movement or worktree
+    /// file change self-invalidates the key.
+    public func cachedMergeability(
+        ofWorktree worktree: String,
+        into target: String,
+        repo: String
+    ) async -> CachedMergeability {
+        guard await supportsInMemoryMerge() else {
+            return CachedMergeability(
+                result: .unknown(reason: "git too old for merge-tree --write-tree"),
+                cacheKey: nil
+            )
+        }
+        guard let candidate = await probeCommit(worktree: worktree) else {
+            return CachedMergeability(result: .unknown(reason: "probe snapshot failed"), cacheKey: nil)
+        }
+        let t = await run(["-C", repo, "rev-parse", target])
+        guard t.status == 0 else {
+            return CachedMergeability(result: .unknown(reason: "unknown target \(target)"), cacheKey: nil)
+        }
+        let targetSha = trimmed(t.stdout)
+        let key = "\(targetSha):\(candidate)"
+        if let cached = await WorktreeMergeProbeCache.shared.value(for: key) {
+            return CachedMergeability(result: cached, cacheKey: key)
+        }
+        let result = await merge(base: targetSha, candidate: candidate, repo: repo)
+        await WorktreeMergeProbeCache.shared.insert(result, for: key)
+        return CachedMergeability(result: result, cacheKey: key)
     }
 
     /// Mergeability of two probe commits against each other — the
@@ -145,50 +182,45 @@ public struct WorktreeMergeProbe {
     }
 
     private func run(_ args: [String], env: [String: String] = [:], stdin: String? = nil) async -> GitResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: gitPath)
-        proc.arguments = args
-        if !env.isEmpty {
-            var merged = ProcessInfo.processInfo.environment
-            for (k, v) in env { merged[k] = v }
-            proc.environment = merged
-        }
-        let outPipe = Pipe(); let errPipe = Pipe(); let inPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-        if stdin != nil { proc.standardInput = inPipe }
-
-        // Drain both pipes concurrently before waiting, to avoid a full-buffer
-        // deadlock on large diffs.
-        async let outData = Task {
-            (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-        }.value
-        async let errData = Task {
-            (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-        }.value
-
         do {
-            try proc.run()
+            let environment: [String: String]?
+            if env.isEmpty {
+                environment = nil
+            } else {
+                var merged = ProcessInfo.processInfo.environment
+                for (k, v) in env { merged[k] = v }
+                environment = merged
+            }
+            let result = try await SafeProcessRunner.run(
+                executable: gitPath,
+                arguments: args,
+                environment: environment,
+                stdin: stdin.map { Data($0.utf8) },
+                timeoutSeconds: 5
+            )
+            return GitResult(
+                status: result.status,
+                stdout: String(data: result.stdout, encoding: .utf8) ?? "",
+                stderr: result.timedOut
+                    ? "git command timed out"
+                    : String(data: result.stderr, encoding: .utf8) ?? ""
+            )
         } catch {
             return GitResult(status: -1, stdout: "", stderr: "spawn failed: \(error.localizedDescription)")
         }
-        if let stdin {
-            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-        }
-        try? inPipe.fileHandleForWriting.close()
-        // Close the parent's copies of the child's stdout/stderr write ends so
-        // readToEnd sees EOF the instant the child exits, not whenever ARC
-        // releases the pipes. Without this each call stalls for seconds.
-        try? outPipe.fileHandleForWriting.close()
-        try? errPipe.fileHandleForWriting.close()
-        await Task.detached { proc.waitUntilExit() }.value
+    }
+}
 
-        let o = await outData
-        let e = await errData
-        return GitResult(
-            status: proc.terminationStatus,
-            stdout: String(data: o, encoding: .utf8) ?? "",
-            stderr: String(data: e, encoding: .utf8) ?? ""
-        )
+private actor WorktreeMergeProbeCache {
+    static let shared = WorktreeMergeProbeCache()
+
+    private var values: [String: WorktreeMergeProbe.Mergeability] = [:]
+
+    func value(for key: String) -> WorktreeMergeProbe.Mergeability? {
+        values[key]
+    }
+
+    func insert(_ value: WorktreeMergeProbe.Mergeability, for key: String) {
+        values[key] = value
     }
 }

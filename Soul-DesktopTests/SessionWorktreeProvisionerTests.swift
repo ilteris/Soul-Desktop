@@ -9,11 +9,15 @@ import Foundation
 struct SessionWorktreeProvisionerTests {
 
     private func run(_ args: [String], cwd: String) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p.arguments = args
-        p.currentDirectoryPath = cwd
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+        do {
+            let result = try SafeProcessRunner.runSync(
+                executable: "/usr/bin/git",
+                arguments: args,
+                currentDirectoryPath: cwd,
+                timeoutSeconds: 10
+            )
+            return result.status == 0
+        }
         catch { return false }
     }
 
