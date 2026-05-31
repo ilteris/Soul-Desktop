@@ -48,6 +48,7 @@ struct SidebarView: View {
     /// Each controller becomes one row keyed by its sessionId (preferred)
     /// or controller.id (pre-spawn).
     var activeThreads: [ThreadController] = []
+    var liveRecords: [LiveSessionRecord] = []
     /// SOUL-SOUL_DESKTOP-138: bumped by AppShell every time the user
     /// initiates a new chat (composer send into empty hero, sidebar "+ New
     /// chat" button). Distinguishes user-initiated chats from launch
@@ -399,6 +400,7 @@ struct SidebarView: View {
         )
         let overlay = SidebarLiveOverlay(
             activeControllers: activeThreads,
+            liveRecords: liveRecords,
             draftSession: draftSession,
             activeSessionId: activeSessionId,
             activeProjectId: activeProjectId

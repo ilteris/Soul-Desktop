@@ -319,6 +319,7 @@ extension AppShell {
     /// painted, leaving the user with a thread they can no longer find
     /// in the sidebar.
     func archiveSession(_ session: SoulSession) {
+        sessions.forgetLiveRecord(sessionId: session.id)
         if let existing = sessions.existingThread(sessionId: session.id) {
             closeThread(existing.id)
         } else if let synthetic = sessions.existingThread(syntheticSessionId: session.id) {

@@ -236,6 +236,7 @@ extension AppShell {
                 currentProvider: harness,
                 draftSession: sessions.draftSession,
                 activeThreads: sessions.mountedThreads,
+                liveRecords: sessions.sidebarLiveRecords,
                 newChatNonce: newChatNonce,
                 repairToast: $repairToast
             )

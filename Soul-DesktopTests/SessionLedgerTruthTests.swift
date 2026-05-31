@@ -816,6 +816,62 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.isEmpty)
     }
 
+    @Test func resolverPreservesLiveOverlayFromEvictedSessionRecord() {
+        let project = SessionLedgerTruthTests.testProject()
+        let sessions = AppSessionCoordinator()
+
+        let first = ThreadController(provider: .geminiCLI, project: project)
+        first.sessionId = "session-1"
+        first.customTitle = "Evicted but live"
+        first.items = [.userMessage(id: UUID(), text: "First", timestamp: Date(timeIntervalSince1970: 100))]
+        first.startedAt = Date(timeIntervalSince1970: 100)
+        first.lastActivityAt = Date(timeIntervalSince1970: 110)
+
+        let second = ThreadController(provider: .claude, project: project)
+        second.sessionId = "session-2"
+        second.items = [.userMessage(id: UUID(), text: "Second", timestamp: Date(timeIntervalSince1970: 200))]
+        let third = ThreadController(provider: .codex, project: project)
+        third.sessionId = "session-3"
+        third.items = [.userMessage(id: UUID(), text: "Third", timestamp: Date(timeIntervalSince1970: 300))]
+        let fourth = ThreadController(provider: .pi, project: project)
+        fourth.sessionId = "session-4"
+        fourth.items = [.userMessage(id: UUID(), text: "Fourth", timestamp: Date(timeIntervalSince1970: 400))]
+
+        sessions.mount(first)
+        sessions.mount(second)
+        sessions.mount(third)
+        sessions.mount(fourth)
+
+        #expect(sessions.existingThread(sessionId: "session-1") == nil)
+
+        var disk = SoulSession(
+            id: "session-1",
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Disk title",
+            source: Provider.geminiCLI.rawValue,
+            loadable: true,
+            replayable: true
+        )
+        disk.promptCount = 1
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [disk],
+            activeControllers: sessions.mountedThreads,
+            liveRecords: sessions.sidebarLiveRecords,
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        let row = resolved.active.first { $0.id == "session-1" }
+        #expect(row?.isLive == true)
+        #expect(row?.liveProvider == Provider.geminiCLI.rawValue)
+        #expect(row?.isWorking == false)
+    }
+
     /// SOUL-SOUL_DESKTOP-363: an opened session older than the newest page
     /// keeps its original startedAt, so it sorts below the page cutoff. The
     /// resolver must flag it `pinnedActiveId` (so the view can render it in

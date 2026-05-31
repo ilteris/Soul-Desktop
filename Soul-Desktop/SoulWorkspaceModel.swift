@@ -49,6 +49,7 @@ struct SidebarFilters: Equatable {
 
 struct SidebarLiveOverlay {
     var activeControllers: [ThreadController]
+    var liveRecords: [LiveSessionRecord] = []
     var draftSession: SoulSession?
     var activeSessionId: String?
     var activeProjectId: String?
@@ -219,7 +220,7 @@ final class SoulWorkspaceModel {
         starredIds: Set<String> = []
     ) -> SidebarRowResolver.Output? {
         let disk = snapshot.sessionsByProject[projectId]?.rows ?? []
-        guard !disk.isEmpty || !overlay.activeControllers.isEmpty || overlay.draftSession != nil else {
+        guard !disk.isEmpty || !overlay.activeControllers.isEmpty || !overlay.liveRecords.isEmpty || overlay.draftSession != nil else {
             return nil
         }
         return SidebarRowResolver.resolve(
@@ -227,6 +228,7 @@ final class SoulWorkspaceModel {
                 projectKey: projectId,
                 diskSessions: disk,
                 activeControllers: overlay.activeControllers,
+                liveRecords: overlay.liveRecords,
                 draft: overlay.draftSession,
                 archivedIds: archivedIds,
                 starredIds: starredIds,

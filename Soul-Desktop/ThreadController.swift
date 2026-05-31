@@ -103,6 +103,7 @@ final class ThreadController {
     var composerDraft: String = ""
     var droppedAttachments: [String] = []
     var isWorking: Bool = false
+    @ObservationIgnored var onRuntimeEnded: ((String?) -> Void)?
     var lastError: String?
     var availableCommands: [SlashCommand] = [SlashCommand.compact]
     var customTitle: String? = nil

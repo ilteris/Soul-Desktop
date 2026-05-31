@@ -1,5 +1,15 @@
 import SwiftUI
 
+struct LiveSessionRecord: Identifiable, Equatable {
+    var id: String
+    var projectId: String
+    var provider: String
+    var title: String
+    var startedAt: Date
+    var lastActivityAt: Date
+    var isWorking: Bool
+}
+
 /// Owns the mounted chat controllers for AppShell.
 ///
 /// AppShell remains the composition root, but thread storage, active-thread
@@ -14,6 +24,7 @@ final class AppSessionCoordinator {
     var activeThreadKey: String?
     var pendingActiveId: String?
     var draftSession: SoulSession?
+    var liveRecords: [String: LiveSessionRecord] = [:]
 
     @ObservationIgnored private var threadRecency: [String] = []
 
@@ -26,6 +37,15 @@ final class AppSessionCoordinator {
         Array(threads.values)
     }
 
+    var sidebarLiveRecords: [LiveSessionRecord] {
+        var records = liveRecords
+        for controller in threads.values {
+            let record = LiveSessionRecord(controller: controller)
+            records[record.id] = record
+        }
+        return Array(records.values)
+    }
+
     func bindingForDraft(_ id: String) -> Binding<String> {
         Binding(
             get: { self.threads[id]?.composerDraft ?? "" },
@@ -35,6 +55,17 @@ final class AppSessionCoordinator {
 
     func mount(_ controller: ThreadController, activate: Bool = true) {
         threads[controller.id] = controller
+        rememberLiveRecord(for: controller)
+        controller.onRuntimeEnded = { [weak self, weak controller] sessionId in
+            Task { @MainActor in
+                if let sessionId {
+                    self?.forgetLiveRecord(sessionId: sessionId)
+                }
+                if let controller {
+                    self?.forgetLiveRecord(for: controller)
+                }
+            }
+        }
         if activate {
             setActiveThread(controller.id)
         } else {
@@ -57,6 +88,7 @@ final class AppSessionCoordinator {
 
     func closeThread(_ key: String) {
         guard let controller = threads[key] else { return }
+        forgetLiveRecord(for: controller)
         threads.removeValue(forKey: key)
         threadRecency.removeAll(where: { $0 == key })
         if activeThreadKey == key { activeThreadKey = nil }
@@ -65,9 +97,19 @@ final class AppSessionCoordinator {
 
     func removeThread(_ key: String) -> ThreadController? {
         let controller = threads.removeValue(forKey: key)
+        if let controller {
+            forgetLiveRecord(for: controller)
+        }
         threadRecency.removeAll(where: { $0 == key })
         if activeThreadKey == key { activeThreadKey = nil }
         return controller
+    }
+
+    func forgetLiveRecord(sessionId: String) {
+        liveRecords.removeValue(forKey: sessionId)
+        if sessionId.hasPrefix("thread-") {
+            liveRecords.removeValue(forKey: String(sessionId.dropFirst("thread-".count)))
+        }
     }
 
     func existingThread(sessionId: String) -> ThreadController? {
@@ -111,10 +153,34 @@ final class AppSessionCoordinator {
         let overflow = Array(evictable.suffix(overflowCount))
         for key in overflow {
             if let controller = threads[key] {
+                rememberLiveRecord(for: controller, forceIdle: true)
                 Task { await controller.teardown() }
             }
             threads.removeValue(forKey: key)
         }
         threadRecency.removeAll(where: { threads.keys.contains($0) == false })
+    }
+
+    private func rememberLiveRecord(for controller: ThreadController, forceIdle: Bool = false) {
+        let record = LiveSessionRecord(controller: controller, forceIdle: forceIdle)
+        liveRecords[record.id] = record
+    }
+
+    private func forgetLiveRecord(for controller: ThreadController) {
+        liveRecords.removeValue(forKey: controller.sessionId ?? "thread-\(controller.id)")
+        liveRecords.removeValue(forKey: controller.id)
+    }
+}
+
+@MainActor
+private extension LiveSessionRecord {
+    init(controller: ThreadController, forceIdle: Bool = false) {
+        self.id = controller.sessionId ?? "thread-\(controller.id)"
+        self.projectId = controller.project.id
+        self.provider = controller.provider.rawValue
+        self.title = controller.displayTitle
+        self.startedAt = controller.startedAt
+        self.lastActivityAt = controller.lastActivityAt
+        self.isWorking = forceIdle ? false : controller.isWorking
     }
 }
