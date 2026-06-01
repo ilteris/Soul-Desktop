@@ -29,6 +29,10 @@ struct ComposerTextField: NSViewRepresentable {
     /// the event (caret-up motion suppressed), false to fall through to
     /// the default cursor-move behavior.
     var onUpArrowWhenEmpty: (() -> Bool)? = nil
+    /// Fires when file(s) are dropped directly onto the composer text field.
+    /// Routes through the same attachment pipeline as the canvas drop target
+    /// and the + button.
+    var onFileDrop: (([URL]) -> Void)? = nil
 
     func makeNSView(context: Context) -> ClampedComposerScrollView {
         let tv = BackspaceInterceptingTextView()
@@ -37,6 +41,7 @@ struct ComposerTextField: NSViewRepresentable {
         tv.onCommit = onSubmit
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
+        tv.onFileDrop = onFileDrop
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
@@ -107,6 +112,7 @@ struct ComposerTextField: NSViewRepresentable {
         tv.onCommit = onSubmit
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
+        tv.onFileDrop = onFileDrop
         if textChanged {
             tv.invalidateIntrinsicContentSize()
             scroll.invalidateIntrinsicContentSize()
@@ -165,6 +171,11 @@ private final class BackspaceInterceptingTextView: NSTextView {
     /// slash command popover's top match without forcing a Space keystroke.
     var onTab: (() -> Bool)?
     var onUpArrowWhenEmpty: (() -> Bool)?
+    /// Fired when file(s) are dropped onto the composer. The text view claims
+    /// the drag itself (see the dragging overrides below) and hands the URLs
+    /// up so they route through the shared attachment pipeline instead of
+    /// being inserted as raw path text.
+    var onFileDrop: (([URL]) -> Void)?
     var placeholderString: String = "" { didSet { needsDisplay = true } }
     var allowNextEmptySync = false
 
@@ -184,30 +195,51 @@ private final class BackspaceInterceptingTextView: NSTextView {
         return NSSize(width: NSView.noIntrinsicMetric, height: max(minLines * lineHeight, used))
     }
 
-    /// Refuse image-file drops at the NSTextView level so SwiftUI's outer
-    /// `.dropDestination` on the composer container gets a chance to claim
-    /// them and copy into `.soul/attachments/`. Default NSTextView behavior
-    /// is to drop file URLs in as plain text, which produced the "tmp path
-    /// in the prompt" bug — we override draggingEntered/draggingUpdated to
-    /// return no-op for image drags. Non-image drags (text, other files)
-    /// keep default behavior.
+    /// Claim file drops at the NSTextView level and route them through the
+    /// shared attachment pipeline (via `onFileDrop`) instead of letting the
+    /// default NSTextView behavior insert the file URL as raw path text (the
+    /// "tmp path in the prompt" bug).
+    ///
+    /// The text view sits on top of the canvas-wide `.onDrop`, so AppKit
+    /// hit-tests it first for any drag over the composer. The previous code
+    /// returned `[]` ("no drop") hoping the drag would fall through to the
+    /// canvas handler — but AppKit routes a drag to the frontmost registered
+    /// destination, it does not bubble. The result was the dreaded "no-drop"
+    /// cursor with no `+` badge and nothing attached. We now accept the drag
+    /// here (`.copy` → the `+` badge shows) and forward the URLs ourselves.
+    /// Non-file drags (selected text, web links) keep default behavior.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if Self.draggingHasImageURL(sender) { return [] }
+        if Self.droppedFileURLs(sender) != nil { return .copy }
         return super.draggingEntered(sender)
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if Self.draggingHasImageURL(sender) { return [] }
+        if Self.droppedFileURLs(sender) != nil { return .copy }
         return super.draggingUpdated(sender)
     }
 
-    private static func draggingHasImageURL(_ sender: NSDraggingInfo) -> Bool {
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if Self.droppedFileURLs(sender) != nil { return true }
+        return super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let urls = Self.droppedFileURLs(sender) {
+            onFileDrop?(urls)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+
+    /// File URLs on the drag pasteboard, or nil when the drag carries none
+    /// (e.g. a plain-text or web-link drag, which should keep the default
+    /// text-insertion behavior).
+    private static func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL]? {
         let pb = sender.draggingPasteboard
-        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-              !urls.isEmpty
-        else { return false }
-        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif"]
-        return urls.contains { imageExts.contains($0.pathExtension.lowercased()) }
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+        else { return nil }
+        let fileURLs = urls.filter { $0.isFileURL }
+        return fileURLs.isEmpty ? nil : fileURLs
     }
 
     override func keyDown(with event: NSEvent) {

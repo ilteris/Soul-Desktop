@@ -221,6 +221,16 @@ struct ComposerView: View {
 
     /// Forward selected files to the same attachment processor used by the
     /// app-wide drop target.
+    /// Wrap file URLs dropped directly onto the composer text field as item
+    /// providers and run them through the shared attachment pipeline — same
+    /// path as the + button and the canvas-wide drop target. Images get
+    /// copied into `.soul/attachments/`; other files are referenced in place.
+    private func attachFileURLs(_ urls: [URL]) {
+        guard isSendEnabled else { return }
+        let providers = urls.map { NSItemProvider(object: $0 as NSURL) }
+        _ = attachProviders(providers)
+    }
+
     private func attachProviders(_ providers: [NSItemProvider]) -> Bool {
         Task { @MainActor in
             let new = await DropAttachmentHandler.process(
@@ -360,7 +370,8 @@ struct ComposerView: View {
                             guard !lastSent.isEmpty else { return false }
                             prompt = lastSent
                             return true
-                        }
+                        },
+                        onFileDrop: { urls in attachFileURLs(urls) }
                     )
                     .frame(maxWidth: .infinity)
                     .fixedSize(horizontal: false, vertical: true)
