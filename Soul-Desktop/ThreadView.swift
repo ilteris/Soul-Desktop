@@ -254,7 +254,8 @@ struct ThreadView: View {
                     : (controller.isTornDown ? "This session is no longer attached to a live agent." : "This session is still loading."),
                 onBranchFromDisabled: onBranchFromDisabled,
                 droppedAttachments: controllerDroppedAttachments,
-                branchSeedLoading: branchSeedLoading
+                branchSeedLoading: branchSeedLoading,
+                onDropActiveChange: { controller.isComposerDropActive = $0 }
             )
             .frame(maxWidth: 760)
         }

@@ -116,6 +116,10 @@ final class ThreadController {
     /// requiring a top-level dictionary.
     var composerDraft: String = ""
     var droppedAttachments: [String] = []
+    /// True while a file drag is hovering the composer text field. Drives the
+    /// shared CanvasDropOverlay so the composer and the transcript present one
+    /// unified drop affordance instead of two different-looking zones.
+    var isComposerDropActive: Bool = false
     var isWorking: Bool = false
     @ObservationIgnored var onRuntimeEnded: ((String?) -> Void)?
     var lastError: String?

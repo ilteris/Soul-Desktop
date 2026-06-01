@@ -103,7 +103,12 @@ extension AppShell {
                 }
             }
 
-            if isImageDropTargeted && !replay.isActive {
+            // One unified drop affordance: the overlay lights up whether the
+            // drag is over the transcript (SwiftUI .onDrop → isImageDropTargeted)
+            // or over the composer text field (AppKit drag → the active
+            // controller's isComposerDropActive). Without the second term the
+            // composer read as a separate, differently-styled drop zone.
+            if (isImageDropTargeted || (sessions.activeThread?.isComposerDropActive ?? false)) && !replay.isActive {
                 CanvasDropOverlay()
                     .zIndex(10_000)
                     .allowsHitTesting(false)

@@ -33,6 +33,9 @@ struct ComposerTextField: NSViewRepresentable {
     /// Routes through the same attachment pipeline as the canvas drop target
     /// and the + button.
     var onFileDrop: (([URL]) -> Void)? = nil
+    /// Fires true/false as a file drag enters/leaves the composer, so the
+    /// shared canvas drop overlay can light up over the composer too.
+    var onDragActiveChange: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> ClampedComposerScrollView {
         let tv = BackspaceInterceptingTextView()
@@ -42,6 +45,7 @@ struct ComposerTextField: NSViewRepresentable {
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
         tv.onFileDrop = onFileDrop
+        tv.onDragActiveChange = onDragActiveChange
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
@@ -113,6 +117,7 @@ struct ComposerTextField: NSViewRepresentable {
         tv.onTab = onTab
         tv.onUpArrowWhenEmpty = onUpArrowWhenEmpty
         tv.onFileDrop = onFileDrop
+        tv.onDragActiveChange = onDragActiveChange
         if textChanged {
             tv.invalidateIntrinsicContentSize()
             scroll.invalidateIntrinsicContentSize()
@@ -176,6 +181,10 @@ private final class BackspaceInterceptingTextView: NSTextView {
     /// up so they route through the shared attachment pipeline instead of
     /// being inserted as raw path text.
     var onFileDrop: (([URL]) -> Void)?
+    /// Fired true/false as a file drag enters/leaves the composer, so the
+    /// shared CanvasDropOverlay can light up over the composer too — one
+    /// unified drop affordance across the whole canvas.
+    var onDragActiveChange: ((Bool) -> Void)?
     var placeholderString: String = "" { didSet { needsDisplay = true } }
     var allowNextEmptySync = false
 
@@ -209,32 +218,50 @@ private final class BackspaceInterceptingTextView: NSTextView {
     /// here (`.copy` → the `+` badge shows) and forward the URLs ourselves.
     /// Non-file drags (selected text, web links) keep default behavior.
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if Self.droppedFileURLs(sender) != nil { return .copy }
+        if claimableFileURLs(sender) != nil {
+            onDragActiveChange?(true)
+            return .copy
+        }
         return super.draggingEntered(sender)
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if Self.droppedFileURLs(sender) != nil { return .copy }
+        if claimableFileURLs(sender) != nil { return .copy }
         return super.draggingUpdated(sender)
     }
 
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDragActiveChange?(false)
+        super.draggingExited(sender)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDragActiveChange?(false)
+        super.draggingEnded(sender)
+    }
+
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if Self.droppedFileURLs(sender) != nil { return true }
+        if claimableFileURLs(sender) != nil { return true }
         return super.prepareForDragOperation(sender)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let urls = Self.droppedFileURLs(sender) {
-            onFileDrop?(urls)
+        if let urls = claimableFileURLs(sender), let handler = onFileDrop {
+            onDragActiveChange?(false)
+            handler(urls)
             return true
         }
         return super.performDragOperation(sender)
     }
 
-    /// File URLs on the drag pasteboard, or nil when the drag carries none
-    /// (e.g. a plain-text or web-link drag, which should keep the default
-    /// text-insertion behavior).
-    private static func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL]? {
+    /// File URLs the composer should claim from this drag — nil unless a
+    /// drop handler is wired AND the pasteboard carries file URLs. Gating on
+    /// `onFileDrop` means a composer instance that doesn't handle drops (the
+    /// hero/empty-state composer relies on the canvas-wide drop target
+    /// instead) lets the drag fall through to default behavior rather than
+    /// silently swallowing it. Plain-text / web-link drags also fall through.
+    private func claimableFileURLs(_ sender: NSDraggingInfo) -> [URL]? {
+        guard onFileDrop != nil else { return nil }
         let pb = sender.draggingPasteboard
         guard let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
         else { return nil }

@@ -78,6 +78,11 @@ struct ComposerView: View {
     /// the "Summarizing previous chat…" placeholder until the seed lands
     /// in `prompt`.
     var branchSeedLoading: Bool = false
+    /// Fired true/false as a file drag enters/leaves the composer text field.
+    /// AppShell mirrors this into the shared CanvasDropOverlay so a drag over
+    /// the composer lights up the same affordance as a drag over the
+    /// transcript — one drop zone, not two.
+    var onDropActiveChange: (Bool) -> Void = { _ in }
     /// Last submitted prompt, persisted across launches. Up-arrow recalls it
     /// when the field is empty (shell-history convention; single-entry).
     @AppStorage("soul.composer.lastSent") private var lastSent: String = ""
@@ -371,7 +376,8 @@ struct ComposerView: View {
                             prompt = lastSent
                             return true
                         },
-                        onFileDrop: { urls in attachFileURLs(urls) }
+                        onFileDrop: { urls in attachFileURLs(urls) },
+                        onDragActiveChange: { active in onDropActiveChange(active) }
                     )
                     .frame(maxWidth: .infinity)
                     .fixedSize(horizontal: false, vertical: true)
