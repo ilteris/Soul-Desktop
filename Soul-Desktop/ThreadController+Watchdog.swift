@@ -85,7 +85,7 @@ extension ThreadController {
         // where a single tool call sits in_progress forever while still
         // emitting enough output to keep `lastActivityAt` fresh.
         let now = Date()
-        var expired: [(toolId: String, threshold: Int)] = []
+        var expired: [(toolId: String, threshold: Int, complete: Bool)] = []
         var toSignpost: [(toolId: String, quietFor: Int, threshold: Int, autoCancels: Bool)] = []
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
@@ -101,9 +101,19 @@ extension ThreadController {
                 }
                 continue
             }
-            if case .autoCancel(let seconds) = behavior, quietFor >= seconds {
-                expired.append((toolId, seconds))
-                continue
+            switch behavior {
+            case .autoCancel(let seconds):
+                if quietFor >= seconds {
+                    expired.append((toolId, seconds, false))
+                    continue
+                }
+            case .completeQuietly(let seconds):
+                if quietFor >= seconds {
+                    expired.append((toolId, seconds, true))
+                    continue
+                }
+            case .signpostOnly:
+                break
             }
             // SOUL-SOUL_DESKTOP-110: midway signpost — surface that the tool
             // is still working and how far from cancellation we are. Once per
@@ -129,7 +139,11 @@ extension ThreadController {
             )
         }
         for entry in expired {
-            await fireToolCallTimeout(toolId: entry.toolId, threshold: entry.threshold)
+            if entry.complete {
+                completeQuietlyToolCall(toolId: entry.toolId, threshold: entry.threshold)
+            } else {
+                await fireToolCallTimeout(toolId: entry.toolId, threshold: entry.threshold)
+            }
         }
     }
 
@@ -142,10 +156,11 @@ extension ThreadController {
     private enum ToolTimeoutBehavior {
         case autoCancel(seconds: Int)
         case signpostOnly(seconds: Int)
+        case completeQuietly(seconds: Int)
 
         var signpostThresholdSeconds: Int {
             switch self {
-            case .autoCancel(let seconds), .signpostOnly(let seconds):
+            case .autoCancel(let seconds), .signpostOnly(let seconds), .completeQuietly(let seconds):
                 return seconds
             }
         }
@@ -165,10 +180,22 @@ extension ThreadController {
             return .autoCancel(seconds: max(base, StallPolicy.longRunningToolTimeoutFloorSeconds))
         }
 
+        // Write-class tools (edit/write/replace) apply atomically and stream
+        // nothing while doing so. If one goes silent past its deadline it has
+        // almost certainly lost its terminal ACP update — the change already
+        // hit disk — rather than hung. Resolve the row at the deadline instead
+        // of cancelling the turn (autoCancel) or leaving it spinning forever
+        // (signpostOnly).
+        let completeQuietlyKinds: Set<String> = ["edit", "write", "replace"]
+        if completeQuietlyKinds.contains(normalizedKind) {
+            return .completeQuietly(seconds: max(base, StallPolicy.longRunningToolTimeoutFloorSeconds))
+        }
+
+        // Read-class tools can be legitimately quiet while preparing content,
+        // and their result still streams in afterward; surface visibility but
+        // never cancel the turn or pre-empt the row.
         let signpostOnlyKinds: Set<String> = [
             "read",
-            "edit",
-            "write",
             "search",
             "grep",
             "glob",
@@ -329,5 +356,66 @@ extension ThreadController {
         // child risks overlapping the next prompt with a stuck old turn.
         await cancelActiveProviderTurn()
         await resetProviderProcessAfterInterruptedTurn()
+    }
+
+    /// Resolve a write-class tool call that went silent past its deadline.
+    /// An edit/write/replace applies atomically and emits no incremental
+    /// updates while doing so, so a long quiet period is overwhelmingly a lost
+    /// terminal ACP update — the change already hit disk — not a live hang.
+    /// Complete the row so it stops spinning, record the timeout for
+    /// telemetry, and leave the turn running. Unlike `fireToolCallTimeout`
+    /// this never cancels the turn or resets the provider; the turn-level
+    /// stall ceiling remains the backstop if the agent really is wedged.
+    /// Complements the bridge-side heartbeat fixes (claude-agent-acp,
+    /// gemini-cli) that keep a live tool from reaching this point silently.
+    /// Idempotent via `toolCallTimedOut`.
+    func completeQuietlyToolCall(toolId: String, threshold: Int) {
+        guard !toolCallTimedOut.contains(toolId) else { return }
+        toolCallTimedOut.insert(toolId)
+        let startedAt = toolCallStartedAt[toolId] ?? Date()
+        let elapsed = Int(Date().timeIntervalSince(startedAt))
+
+        var kindForHook = ""
+        var titleForHook = ""
+        if let uuid = seenToolCallIds[toolId],
+           let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .toolCall(let id, let k, let t, _, let loc, let details) = items[idx] {
+            kindForHook = k
+            titleForHook = t
+            items[idx] = .toolCall(
+                id: id,
+                kind: k,
+                title: t,
+                status: "completed",
+                locationHint: loc,
+                details: details
+            )
+        }
+
+        let afterToolInLedger = ledger.ledgerContainsAfterTool(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            toolId: toolId
+        )
+
+        ledger.appendHook(
+            projectKey: project.id,
+            sessionId: sessionId ?? id,
+            event: LedgerHookEvent.toolCallTimeout(
+                provider: provider.rawValue,
+                toolCallID: toolId,
+                toolKind: kindForHook,
+                toolTitle: titleForHook,
+                elapsedSeconds: elapsed,
+                threshold: threshold,
+                afterToolInLedger: afterToolInLedger
+            ).hookDictionary
+        )
+
+        let label = kindForHook.isEmpty ? "edit" : kindForHook
+        items.append(.status(
+            id: UUID(),
+            text: "✓ \(label) completed after \(elapsed)s — agent never confirmed; recovered without cancelling the turn"
+        ))
     }
 }
