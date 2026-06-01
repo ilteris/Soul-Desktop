@@ -535,6 +535,14 @@ struct SidebarView: View {
         UserDefaults.standard.set(value, forKey: "soul.sidebar.expanded.\(projectId)")
         if value {
             Task { await workspace.refreshSessions(projectId: projectId) }
+        } else {
+            // Collapsing resets pagination: the "show all" flag is a transient
+            // per-expansion view (the same intent "Show less" encodes). Without
+            // this, a stale show-all survives the collapse and silently reapplies
+            // when the project re-expands — including the SOUL-138 auto-unfurl on
+            // a new-chat send — so the next expansion dumps the whole session list
+            // instead of the clipped top page.
+            sessionListExpanded.remove(projectId)
         }
     }
 
