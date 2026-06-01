@@ -131,20 +131,21 @@ extension SidebarView {
         }
     }
 
-    /// The clipped session slice rendered under an expanded project.
+    /// The clipped session slice rendered under an expanded project. `reveal`
+    /// is how many rows the user has paged into view (default `sessionPageSize`,
+    /// growing by `sessionPageBatch` per "Show N more" click).
     /// SOUL-SOUL_DESKTOP-363: opened sessions keep their original startedAt
-    /// and never float up, so resuming one older than the newest page would
+    /// and never float up, so resuming one older than the revealed page would
     /// leave it live in the canvas but hidden behind "Show N more"
     /// (scrollToActiveSession can't reveal an unrendered row). Append the
     /// pinned row in place — don't reorder — so the top-N order is untouched
     /// and the "Show N more" count drops by one for free.
     func visibleSessions(
         active: [SoulSession],
-        showAll: Bool,
+        reveal: Int,
         pinnedActiveId: String?
     ) -> [SoulSession] {
-        guard !showAll else { return active }
-        var visible = Array(active.prefix(sessionPageSize))
+        var visible = Array(active.prefix(max(sessionPageSize, reveal)))
         if let pinned = pinnedActiveId,
            !visible.contains(where: { $0.id == pinned }),
            let pinnedRow = active.first(where: { $0.id == pinned }) {
@@ -199,10 +200,10 @@ extension SidebarView {
         if isExpanded(project.id), let rows = resolved {
             let active = rows.active
             let archived = rows.archived
-            let showAll = sessionListExpanded.contains(project.id)
+            let reveal = sessionRevealCount[project.id] ?? sessionPageSize
             let visible = visibleSessions(
                 active: active,
-                showAll: showAll,
+                reveal: reveal,
                 pinnedActiveId: rows.pinnedActiveId
             )
             ForEach(visible) { session in
@@ -210,7 +211,7 @@ extension SidebarView {
             }
             if active.count > visible.count {
                 showMoreButton(for: project, hiddenCount: active.count - visible.count)
-            } else if showAll && active.count > sessionPageSize {
+            } else if reveal > sessionPageSize {
                 showLessButton(for: project)
             }
             // Trashed rows are hidden from the normal project list by
@@ -224,14 +225,18 @@ extension SidebarView {
 
     @ViewBuilder
     func showMoreButton(for project: SoulProject, hiddenCount: Int) -> some View {
+        // Reveal one more batch per click — capped at what's actually hidden so
+        // the label never promises more rows than exist.
+        let step = min(sessionPageBatch, hiddenCount)
         Button {
-            sessionListExpanded.insert(project.id)
+            let current = sessionRevealCount[project.id] ?? sessionPageSize
+            sessionRevealCount[project.id] = current + sessionPageBatch
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(SoulColor.fgSubtle)
-                Text("Show \(hiddenCount) more")
+                Text("Show \(step) more")
                     .font(SoulFont.ui(12, weight: .regular))
                     .foregroundStyle(SoulColor.fgSubtle)
                 Spacer()
@@ -246,7 +251,7 @@ extension SidebarView {
     @ViewBuilder
     func showLessButton(for project: SoulProject) -> some View {
         Button {
-            sessionListExpanded.remove(project.id)
+            sessionRevealCount.removeValue(forKey: project.id)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.up")

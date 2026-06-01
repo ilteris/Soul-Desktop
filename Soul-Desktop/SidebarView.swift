@@ -76,11 +76,16 @@ struct SidebarView: View {
     @State var archiveStore = ArchiveStore.shared
     @State var starStore = StarStore.shared
     @State var archivedExpanded: [String: Bool] = [:]
-    /// Per-project "show all sessions" toggle. Default-collapsed: only the
-    /// most-recent `sessionPageSize` chats render until the user clicks
-    /// "Show N more" on a project with a deeper history.
-    @State var sessionListExpanded: Set<String> = []
+    /// Per-project reveal count: how many rows are currently shown under a
+    /// project. Absent = the default first page (`sessionPageSize`). Each
+    /// "Show N more" click adds `sessionPageBatch` rows; "Show less" clears
+    /// the entry back to the first page. Batched (not show-all) so a deep
+    /// history reveals in chunks instead of dumping the whole list.
+    @State var sessionRevealCount: [String: Int] = [:]
+    /// Rows shown on first expand.
     let sessionPageSize: Int = 5
+    /// Rows added per "Show N more" click.
+    let sessionPageBatch: Int = 10
     /// True when the sidebar's ScrollView is at rest. `scrollToActiveSession`
     /// reads this to decide whether to animate the scroll-to-row (clean,
     /// idle case) or snap (mid-momentum case where stacking an animation
@@ -536,13 +541,14 @@ struct SidebarView: View {
         if value {
             Task { await workspace.refreshSessions(projectId: projectId) }
         } else {
-            // Collapsing resets pagination: the "show all" flag is a transient
-            // per-expansion view (the same intent "Show less" encodes). Without
-            // this, a stale show-all survives the collapse and silently reapplies
-            // when the project re-expands — including the SOUL-138 auto-unfurl on
-            // a new-chat send — so the next expansion dumps the whole session list
-            // instead of the clipped top page.
-            sessionListExpanded.remove(projectId)
+            // Collapsing resets pagination back to the first page. The reveal
+            // count is a transient per-expansion view (the same intent "Show
+            // less" encodes). Without this, a stale reveal count survives the
+            // collapse and silently reapplies when the project re-expands —
+            // including the SOUL-138 auto-unfurl on a new-chat send — so the
+            // next expansion restores the previously-revealed depth instead of
+            // the clipped first page.
+            sessionRevealCount.removeValue(forKey: projectId)
         }
     }
 
