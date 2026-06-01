@@ -376,8 +376,8 @@ struct AgentLogPanel: View {
 
 /// SOUL-203: Claude Code-style cycling-sparkle spinner. Walks through a
 /// short list of star glyphs at ~8 Hz so the eye sees a single morphing
-/// shape instead of N rotations. Coupled with `ShimmerText` for the
-/// status copy, this is what the user sees while the agent is working.
+/// shape instead of N rotations. This is what the user sees while the
+/// agent is working.
 struct SparkleSpinner: View {
     var tint: Color = .accentColor
     var size: CGFloat = 13
@@ -398,52 +398,3 @@ struct SparkleSpinner: View {
     }
 }
 
-/// Animated color sweep across a text run, matching the Claude Code CLI
-/// "Thundering…" indicator. A bright `highlight` band slides L→R over a
-/// `base` color and loops. Kept generic so the loading/queue chips can
-/// reuse it.
-struct ShimmerText: View {
-    let text: String
-    var font: Font = .system(size: 12, weight: .medium)
-    var base: Color
-    var highlight: Color
-    /// Seconds for the highlight to cross the run. Slower feels calmer.
-    var period: Double = 1.6
-
-    var body: some View {
-        // SOUL-SOUL_DESKTOP-166: 15fps (~66ms) is plenty for a 1.6-2.6s
-        // shimmer sweep — the per-frame visual diff at 60fps was
-        // imperceptible but the body re-eval cascade up through the
-        // composer placeholder + window layout pegged the main thread at
-        // 99% CPU at idle (sample 7 showed 2418/3428 main-thread samples
-        // in NSHostingView.layout recursion). ShimmerText is mounted in
-        // the composer placeholder whenever prompt.isEmpty, so this loop
-        // runs constantly while the user is idle.
-        TimelineView(.animation(minimumInterval: 1.0 / 15)) { ctx in
-            let t = ctx.date.timeIntervalSince1970.truncatingRemainder(dividingBy: period) / period
-            // phase sweeps the highlight from off-left to off-right.
-            // Half-width of the highlight band: 0.25 of run width.
-            let half = 0.25
-            let center = t * (1.0 + 2 * half) - half
-            // Clamp + force monotonicity so SwiftUI's "stops must be
-            // ordered" assertion never fires when the band is partially
-            // off-canvas. Equal stops collapse to a solid color — fine.
-            let a = max(0, min(1, center - half))
-            let b = max(a, min(1, center))
-            let c = max(b, min(1, center + half))
-            Text(text)
-                .font(font)
-                .foregroundStyle(
-                    LinearGradient(
-                        stops: [
-                            .init(color: base, location: a),
-                            .init(color: highlight, location: b),
-                            .init(color: base, location: c)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-        }
-    }
-}
