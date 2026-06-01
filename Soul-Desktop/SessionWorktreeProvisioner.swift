@@ -69,7 +69,7 @@ enum SessionWorktreeProvisioner {
 
         // Idempotency: adopt an existing worktree rather than re-creating it.
         if GitWorktreeService.worktreeExists(projectKey: projectKey, sessionId: sid) {
-            controller.project.path = worktreePath
+            controller.adoptWorktree(worktreePath, primaryCheckout: mainPath)
             controller.worktreeProvisionState = .provisioned(path: worktreePath, branch: branch)
             return
         }
@@ -91,7 +91,7 @@ enum SessionWorktreeProvisioner {
                 worktreePath: worktreePath,
                 branchName: branch
             )
-            controller.project.path = worktreePath
+            controller.adoptWorktree(worktreePath, primaryCheckout: mainPath)
             controller.worktreeProvisionState = .provisioned(path: worktreePath, branch: branch)
 
             SoulRegistry.appendHook(

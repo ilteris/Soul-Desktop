@@ -909,6 +909,13 @@ final class ThreadController {
         }
     }
 
+    /// Live filesystem watch on the current worktree's `.git` link, if rooted
+    /// in one. `nonisolated(unsafe)` so `deinit` can cancel it — a resumed
+    /// DispatchSource must be cancelled before release or libdispatch traps.
+    @ObservationIgnored nonisolated(unsafe) private var worktreeWatch: DispatchSourceFileSystemObject?
+
+    deinit { worktreeWatch?.cancel() }
+
     /// Dynamically forks the active session into a session-specific Git worktree
     /// on a unique provider branch. Gated by `isWorking` status.
     func forkToWorktree() async {
@@ -952,8 +959,11 @@ final class ThreadController {
                 ).hookDictionary
             )
 
-            // Update local project.path to point to the new worktree
-            self.project.path = worktreePath
+            // Update local project.path to point to the new worktree and arm
+            // the removal watch. project.path is still the primary checkout
+            // here, so capture it before adoptWorktree overwrites it.
+            let primaryCheckout = self.project.path
+            self.adoptWorktree(worktreePath, primaryCheckout: primaryCheckout)
 
             self.items.append(.status(
                 id: UUID(),
@@ -986,12 +996,53 @@ final class ThreadController {
     /// branch instead of a now-deleted worktree directory. No-op if already
     /// rooted at the primary path.
     func detachFromWorktree(toPrimaryPath primaryPath: String) {
+        teardownWorktreeWatch()
         guard project.path != primaryPath else { return }
         project.path = primaryPath
         items.append(.status(
             id: UUID(),
             text: "↩ Worktree landed — active directory back to the main checkout"
         ))
+    }
+
+    /// Point this controller at an isolated session worktree and arm a watch
+    /// on the worktree's `.git` link. `forkToWorktree` and
+    /// `SessionWorktreeProvisioner` both route through here, so the watch
+    /// covers freshly-forked and resumed/adopted worktrees alike.
+    func adoptWorktree(_ worktreePath: String, primaryCheckout: String) {
+        project.path = worktreePath
+        armWorktreeWatch(primaryCheckout: primaryCheckout)
+    }
+
+    /// A worktree checkout carries a `.git` *file* (a gitdir pointer) that
+    /// `git worktree remove` deletes. Watch it: if it vanishes — via the
+    /// in-app Land action *or* an out-of-band `git worktree remove` from a
+    /// shell or another tool — repoint to the primary checkout, the same
+    /// outcome `landSessionWorktree` produces in-process. Re-arming tears down
+    /// any prior watch; safe no-op if the link can't be opened.
+    private func armWorktreeWatch(primaryCheckout: String) {
+        teardownWorktreeWatch()
+        let gitLink = (project.path as NSString).appendingPathComponent(".git")
+        let fd = open(gitLink, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.detachFromWorktree(toPrimaryPath: primaryCheckout)
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        worktreeWatch = source
+        source.resume()
+    }
+
+    private func teardownWorktreeWatch() {
+        worktreeWatch?.cancel()  // the cancel handler closes the fd
+        worktreeWatch = nil
     }
 }
 
