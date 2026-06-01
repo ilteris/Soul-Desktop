@@ -85,12 +85,13 @@ extension ThreadController {
         // where a single tool call sits in_progress forever while still
         // emitting enough output to keep `lastActivityAt` fresh.
         let now = Date()
-        var expired: [String] = []
-        var toSignpost: [(toolId: String, quietFor: Int, threshold: Int)] = []
+        var expired: [(toolId: String, threshold: Int)] = []
+        var toSignpost: [(toolId: String, quietFor: Int, threshold: Int, autoCancels: Bool)] = []
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
         for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
             let quietFor = Int(now.timeIntervalSince(lastSeen))
-            let toolTimeout = timeoutSeconds(forToolCall: toolId)
+            let behavior = timeoutBehavior(forToolCall: toolId)
+            let toolTimeout = behavior.signpostThresholdSeconds
             let signpostThreshold = Int(Double(toolTimeout) * StallPolicy.toolCallSignpostFraction)
             if isSubagentToolCall(toolId: toolId) {
                 if signpostThreshold > 0,
@@ -100,8 +101,8 @@ extension ThreadController {
                 }
                 continue
             }
-            if quietFor >= toolTimeout {
-                expired.append(toolId)
+            if case .autoCancel(let seconds) = behavior, quietFor >= seconds {
+                expired.append((toolId, seconds))
                 continue
             }
             // SOUL-SOUL_DESKTOP-110: midway signpost — surface that the tool
@@ -110,33 +111,74 @@ extension ThreadController {
             if signpostThreshold > 0,
                quietFor >= signpostThreshold,
                !toolCallSignposted.contains(toolId) {
-                toSignpost.append((toolId, quietFor, toolTimeout))
+                let autoCancels: Bool
+                if case .autoCancel = behavior {
+                    autoCancels = true
+                } else {
+                    autoCancels = false
+                }
+                toSignpost.append((toolId, quietFor, toolTimeout, autoCancels))
             }
         }
         for entry in toSignpost {
-            emitToolCallSignpost(toolId: entry.toolId, quietFor: entry.quietFor, threshold: entry.threshold)
+            emitToolCallSignpost(
+                toolId: entry.toolId,
+                quietFor: entry.quietFor,
+                threshold: entry.threshold,
+                autoCancels: entry.autoCancels
+            )
         }
-        for toolId in expired {
-            await fireToolCallTimeout(toolId: toolId, threshold: timeoutSeconds(forToolCall: toolId))
+        for entry in expired {
+            await fireToolCallTimeout(toolId: entry.toolId, threshold: entry.threshold)
         }
     }
 
-    /// Effective per-tool timeout. The global setting remains the floor for
-    /// short, local tools, but shell/execute calls often run repository-wide
-    /// searches or builds that are legitimately quiet for several minutes.
-    /// Give those tools the same default headroom as the turn-level ceiling
-    /// unless the user has configured an even larger tool timeout.
-    private func timeoutSeconds(forToolCall toolId: String) -> Int {
+    /// Per-tool watchdog behavior. The force-cancel path exists for tools that
+    /// can hold a turn open indefinitely while still producing occasional
+    /// output, such as `tail -f` or a hung build. ACP providers do not guarantee
+    /// progress updates for every file/read/edit tool while they are preparing
+    /// content, so those tools get visibility signposts without Soul killing the
+    /// provider turn underneath them.
+    private enum ToolTimeoutBehavior {
+        case autoCancel(seconds: Int)
+        case signpostOnly(seconds: Int)
+
+        var signpostThresholdSeconds: Int {
+            switch self {
+            case .autoCancel(let seconds), .signpostOnly(let seconds):
+                return seconds
+            }
+        }
+    }
+
+    private func timeoutBehavior(forToolCall toolId: String) -> ToolTimeoutBehavior {
         let base = StallPolicy.toolCallTimeoutSeconds
         guard let uuid = seenToolCallIds[toolId],
               let idx = items.firstIndex(where: { $0.id == uuid }),
               case .toolCall(_, let kind, let title, _, _, _) = items[idx]
-        else { return base }
-        let label = "\(kind) \(title)".lowercased()
+        else { return .autoCancel(seconds: base) }
+
+        let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let label = "\(normalizedKind) \(title)".lowercased()
+
         if label.contains("execute") || label.contains("shell") || label.contains("bash") {
-            return max(base, StallPolicy.longRunningToolTimeoutFloorSeconds)
+            return .autoCancel(seconds: max(base, StallPolicy.longRunningToolTimeoutFloorSeconds))
         }
-        return base
+
+        let signpostOnlyKinds: Set<String> = [
+            "read",
+            "edit",
+            "write",
+            "search",
+            "grep",
+            "glob",
+            "fetch",
+        ]
+        if signpostOnlyKinds.contains(normalizedKind) {
+            return .signpostOnly(seconds: max(base, StallPolicy.longRunningToolTimeoutFloorSeconds))
+        }
+
+        return .autoCancel(seconds: base)
     }
 
     /// Soul specialist calls can legitimately run past the generic
@@ -162,7 +204,7 @@ extension ThreadController {
     /// budget. Lets the user see the tool is alive and how close it is to
     /// auto-cancel before we yank the turn. Idempotent per (toolId, turn)
     /// via toolCallSignposted; cleared at end-of-turn.
-    func emitToolCallSignpost(toolId: String, quietFor: Int, threshold: Int) {
+    func emitToolCallSignpost(toolId: String, quietFor: Int, threshold: Int, autoCancels: Bool = true) {
         toolCallSignposted.insert(toolId)
         var label = "tool call"
         if let uuid = seenToolCallIds[toolId],
@@ -173,9 +215,12 @@ extension ThreadController {
             label = "\(kindPart)\(titlePart)"
         }
         let remaining = max(0, threshold - quietFor)
+        let suffix = autoCancels
+            ? "will auto-cancel in \(remaining)s if no activity"
+            : "continuing without automatic tool cancellation"
         items.append(.status(
             id: UUID(),
-            text: "⏳ \(label) quiet for \(quietFor)s — will auto-cancel in \(remaining)s if no activity"
+            text: "⏳ \(label) quiet for \(quietFor)s — \(suffix)"
         ))
         ledger.appendHook(
             projectKey: project.id,

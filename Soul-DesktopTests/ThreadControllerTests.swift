@@ -130,6 +130,71 @@ struct ThreadControllerTests {
         #expect(controller._testTrackedToolCallCount == 0)
     }
 
+    @Test func readToolQuietPastGenericTimeoutDoesNotCancelTurn() async throws {
+        let controller = ThreadController(provider: .claude, project: Self.testProject())
+        controller.isWorking = true
+        controller.lastActivityAt = Date()
+
+        let rowId = UUID()
+        controller.items.append(.toolCall(
+            id: rowId,
+            kind: "read",
+            title: "Read /tmp/timeout_shot.jpg",
+            status: "in_progress",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.seenToolCallIds["read-image"] = rowId
+        controller.toolCallStartedAt["read-image"] = Date(timeIntervalSinceNow: -301)
+        controller.toolCallLastActivityAt["read-image"] = Date(timeIntervalSinceNow: -301)
+
+        await controller.tickStallWatchdog(budget: 300, ceiling: 900)
+
+        #expect(controller.isWorking)
+        #expect(!controller.toolCallTimedOut.contains("read-image"))
+        #expect(controller.items.contains {
+            if case .status(_, let text) = $0 {
+                return text.contains("tool call timed out")
+            }
+            return false
+        } == false)
+        guard case .toolCall(_, _, _, let status, _, _) = controller.items.first else {
+            Issue.record("first item should remain the read tool row")
+            return
+        }
+        #expect(status == "in_progress")
+    }
+
+    @Test func readToolEmitsLongRunningSignpostInsteadOfTimeout() async throws {
+        let controller = ThreadController(provider: .claude, project: Self.testProject())
+        controller.isWorking = true
+        controller.lastActivityAt = Date()
+
+        let rowId = UUID()
+        controller.items.append(.toolCall(
+            id: rowId,
+            kind: "read",
+            title: "Read /tmp/timeout_shot.jpg",
+            status: "in_progress",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.seenToolCallIds["read-image"] = rowId
+        controller.toolCallStartedAt["read-image"] = Date(timeIntervalSinceNow: -451)
+        controller.toolCallLastActivityAt["read-image"] = Date(timeIntervalSinceNow: -451)
+
+        await controller.tickStallWatchdog(budget: 300, ceiling: 900)
+
+        #expect(!controller.toolCallTimedOut.contains("read-image"))
+        #expect(controller.toolCallSignposted.contains("read-image"))
+        #expect(controller.items.contains {
+            if case .status(_, let text) = $0 {
+                return text.contains("quiet for") && text.contains("without automatic tool cancellation")
+            }
+            return false
+        })
+    }
+
     @Test func testProviderTerminationInvalidatesReusableRuntimeState() async throws {
         let controller = ThreadController(provider: .claude, project: Self.testProject())
         controller.assignSessionId("kernel-session")
