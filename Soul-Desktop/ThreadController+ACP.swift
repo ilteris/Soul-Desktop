@@ -15,6 +15,37 @@ import SoulRuntime
 /// a coding agent can hold it in context.
 extension ThreadController {
 
+    /// SOUL-SOUL_DESKTOP-379 (A): buffer a streaming `session/update` and
+    /// schedule a coalesced flush. All chunks arriving within one
+    /// `streamCoalesceInterval` window collapse into a single `items`
+    /// mutation (one render) instead of one render per chunk.
+    func enqueueStreamUpdate(_ update: SessionUpdate) {
+        pendingStreamUpdates.append(update)
+        guard !streamFlushScheduled else { return }
+        streamFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.streamCoalesceInterval) { [weak self] in
+            // asyncAfter on .main runs on the main thread, which is the
+            // MainActor's executor — safe to assume isolation here.
+            MainActor.assumeIsolated { self?.flushPendingStreamUpdates() }
+        }
+    }
+
+    /// Drain every buffered `session/update` in arrival order as one
+    /// synchronous batch. Idempotent and safe to force-call: a no-op when
+    /// the buffer is empty. Called on the coalesce timer, and synchronously
+    /// before any path that must observe `items` fully up to date — the
+    /// AfterAgent ledger write (ThreadController+Turn) and non-content ACP
+    /// events (terminated/request) so ordering is preserved.
+    func flushPendingStreamUpdates() {
+        streamFlushScheduled = false
+        guard !pendingStreamUpdates.isEmpty else { return }
+        let batch = pendingStreamUpdates
+        pendingStreamUpdates.removeAll(keepingCapacity: true)
+        for update in batch {
+            apply(update)
+        }
+    }
+
     func apply(_ update: SessionUpdate) {
         let _applyStart = DispatchTime.now()
         let _applyKind = Self.kindLabel(update)

@@ -145,6 +145,11 @@ extension ThreadController {
     /// teardown via defer.
     func dispatchPending(_ initial: QueuedPrompt) async {
         defer {
+            // SOUL-SOUL_DESKTOP-379 (A): drain any coalesced updates left in
+            // the buffer before tearing the turn down, so the final frame of
+            // streamed content is committed even if the turn ended between
+            // coalesce ticks.
+            flushPendingStreamUpdates()
             isWorking = false
             turnStartedAt = nil
             stopStallWatchdog()
@@ -308,6 +313,11 @@ extension ThreadController {
                         id: UUID(),
                         text: "ℹ \(rpc.message) — re-registering session and retrying"
                     ))
+                    // SOUL-SOUL_DESKTOP-379 (A): drain any coalesced live
+                    // updates before entering the suppressed replay window —
+                    // otherwise they'd flush under suppress=true and be
+                    // dropped, or after the defer resets it and double.
+                    flushPendingStreamUpdates()
                     suppressLoadReplay = true
                     isReplayingLoad = true
                     defer {
@@ -324,6 +334,15 @@ extension ThreadController {
                     // makes the recovery idempotent.
                     try await runtime.prompt(promptRequest)
                 }
+
+                // SOUL-SOUL_DESKTOP-379 (A): the prompt has resolved, so the
+                // agent's final chunks have been delivered — but with stream
+                // coalescing some may still sit in the pending buffer. Drain
+                // it synchronously before reading `items` so the AfterAgent
+                // ledger write captures the complete reply, never a truncated
+                // tail. The kernel ledger is authoritative; this flush is the
+                // contract that keeps it whole.
+                flushPendingStreamUpdates()
 
                 // Persist the agent's full reply text to the kernel hooks
                 // ledger. Without this, the conversation only lives in the

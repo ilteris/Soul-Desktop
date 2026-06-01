@@ -232,9 +232,26 @@ extension ThreadController {
         // gets its own StallDetected hook instead of being silently suppressed
         // by the prior turn's debounce.
         stallHookEmittedAt = nil
+        // SOUL-SOUL_DESKTOP-379 (A): content updates accumulate in a buffer
+        // and flush once per frame; every non-content event drains that
+        // buffer first so the terminated/ignored-request status rows can
+        // never paint ahead of streamed content still sitting in the queue.
+        if case .sessionUpdate = event {} else {
+            flushPendingStreamUpdates()
+        }
         switch event {
         case .sessionUpdate(let note):
-            apply(note.update)
+            // Only coalesce live streaming. During a session/load replay the
+            // suppress flags (suppressLoadReplay / isReplayingLoad) are read
+            // inside apply() — if we buffered now and flushed after a flag
+            // flipped, previously-suppressed content would render and double
+            // (SOUL-SOUL_DESKTOP-043). Replay is a bulk one-shot anyway, so
+            // apply it inline under the exact state it arrived in.
+            if suppressLoadReplay || isReplayingLoad {
+                apply(note.update)
+            } else {
+                enqueueStreamUpdate(note.update)
+            }
         case .stderr(let line):
             appendAgentLog(line)
         case .request(let id, let method, let params):

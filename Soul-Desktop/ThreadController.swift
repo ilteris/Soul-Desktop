@@ -156,6 +156,20 @@ final class ThreadController {
     /// accounting itself can't invalidate any view.
     @ObservationIgnored var applyTiming = ApplyTimingProbe()
 
+    /// SOUL-SOUL_DESKTOP-379 (A): coalesce streaming `session/update` chunks.
+    /// A model emits many token deltas per frame; applying each one inline
+    /// mutated `items` (observed) per chunk, so SwiftUI re-rendered the
+    /// transcript — and, via shared live state, the whole sidebar — once per
+    /// chunk. Instead, incoming content updates accumulate here off the
+    /// observation graph and flush as a single `items` mutation at most once
+    /// per `streamCoalesceInterval`, collapsing N chunks/frame into one
+    /// render. Non-content events (terminated/request) and the end-of-turn
+    /// AfterAgent ledger read force a synchronous drain first so ordering and
+    /// the authoritative ledger are never truncated.
+    @ObservationIgnored var pendingStreamUpdates: [SessionUpdate] = []
+    @ObservationIgnored var streamFlushScheduled = false
+    @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
+
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each
     /// entry carries both halves of the two-channel send so slash-expanded
