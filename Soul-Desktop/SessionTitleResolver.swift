@@ -218,8 +218,14 @@ enum SessionTitleResolver {
             .trimmingCharacters(in: .whitespaces)
     }
 
+    /// Compiled once. This resolver runs per-row inside the sidebar's view
+    /// body, so compiling a fresh NSRegularExpression on every call turned an
+    /// idle re-render into a regex-compilation storm (SOUL-SOUL_DESKTOP-378).
+    private static let inlineMarkdownLinkRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"\[([^\]]+)\]\([^)]+\)"#)
+
     private static func stripInlineMarkdownLinks(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\([^)]+\)"#) else {
+        guard let regex = inlineMarkdownLinkRegex else {
             return text
         }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)

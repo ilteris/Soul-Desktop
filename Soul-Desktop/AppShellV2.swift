@@ -8,7 +8,6 @@ struct AppShellV2: View {
 
     private static let controlCanvas = Color(hex: 0xF7F6F2)
     private static let operationStallThreshold: TimeInterval = 60
-    private let operationClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     @State private var selectedProject: String? = nil
     @State private var projects: [SoulProject] = LiveSoulRegistryStore.shared.activeProjects()
@@ -22,7 +21,6 @@ struct AppShellV2: View {
     @State private var showAllTasks: Bool = false
     @State private var showDispatchBox: Bool = false
     @State private var inspectedOperationID: UUID? = nil
-    @State private var operationNow: Date = Date()
     @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
     @AppStorage("soul.v2.sidebar.visible") private var showSidebar: Bool = true
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
@@ -103,7 +101,6 @@ struct AppShellV2: View {
         .onChange(of: selectedProject) { _, _ in
             refreshProjectState()
         }
-        .onReceive(operationClock) { operationNow = $0 }
     }
 
     private var controlSidebar: some View {
@@ -1318,7 +1315,12 @@ struct AppShellV2: View {
     private func operationDetailSheet(_ operation: SoulOperation) -> some View {
         let events = SoulOperationEvent.parse(operation.logs)
 
-        return VStack(alignment: .leading, spacing: 14) {
+        // Scope the per-second tick to just this sheet. Live log/stream updates
+        // are driven by pulseModel's @Published changes, not this clock — it only
+        // advances the "idle Xs" stall counter while the sheet is on screen.
+        return TimelineView(.periodic(from: .now, by: 1)) { context in
+            let now = context.date
+            VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: operation.kind.icon)
                     .font(.system(size: 15, weight: .semibold))
@@ -1330,8 +1332,8 @@ struct AppShellV2: View {
                             .font(SoulFont.ui(16, weight: .semibold))
                             .foregroundStyle(SoulColor.fg)
                         statusBadge(operation.status)
-                        if operationIsStalled(operation) {
-                            timelineBadge("idle \(idleDurationText(operation))")
+                        if operationIsStalled(operation, now: now) {
+                            timelineBadge("idle \(idleDurationText(operation, now: now))")
                                 .foregroundStyle(.red)
                         }
                     }
@@ -1369,7 +1371,7 @@ struct AppShellV2: View {
                 .foregroundStyle(SoulColor.fgMuted)
                 .fixedSize(horizontal: false, vertical: true)
 
-            operationEventStream(events, operation: operation)
+            operationEventStream(events, operation: operation, now: now)
 
             HStack {
                 Text(operation.startedAt.formatted(date: .abbreviated, time: .standard))
@@ -1384,15 +1386,16 @@ struct AppShellV2: View {
                 .font(SoulFont.ui(12, weight: .medium))
                 .buttonStyle(.borderless)
             }
+            }
+            .padding(18)
+            .frame(width: 720, height: 520)
+            .background(SoulColor.bgElevated)
         }
-        .padding(18)
-        .frame(width: 720, height: 520)
-        .background(SoulColor.bgElevated)
     }
 
-    private func operationEventStream(_ events: [SoulOperationEvent], operation: SoulOperation) -> some View {
+    private func operationEventStream(_ events: [SoulOperationEvent], operation: SoulOperation, now: Date = Date()) -> some View {
         let isRunning = operation.status == .running
-        let isStalled = operationIsStalled(operation)
+        let isStalled = operationIsStalled(operation, now: now)
 
         return ScrollViewReader { proxy in
             ScrollView {
@@ -1419,7 +1422,7 @@ struct AppShellV2: View {
                                 } else {
                                     SparkleSpinner(tint: SoulColor.fgMuted, size: 11)
                                 }
-                                Text(isStalled ? "stream idle for \(idleDurationText(operation))" : "stream open")
+                                Text(isStalled ? "stream idle for \(idleDurationText(operation, now: now))" : "stream open")
                                     .font(SoulFont.code(10))
                                     .foregroundStyle(isStalled ? .red : SoulColor.fgSubtle)
                             }
@@ -1471,17 +1474,21 @@ struct AppShellV2: View {
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(SoulColor.border.opacity(0.25), lineWidth: 0.5))
     }
 
-    private func operationIsStalled(_ operation: SoulOperation) -> Bool {
-        operation.status == .running && operationNow.timeIntervalSince(operation.lastUpdatedAt) > Self.operationStallThreshold
+    // `now` is supplied by the TimelineView inside `operationDetailSheet` so the
+    // idle/stall counter ticks only while that sheet is open. The default keeps
+    // the (currently unmounted) feed/strip rows compiling without a live clock —
+    // see SOUL-SOUL_DESKTOP-378 for why the body-level 1Hz clock was removed.
+    private func operationIsStalled(_ operation: SoulOperation, now: Date = Date()) -> Bool {
+        operation.status == .running && now.timeIntervalSince(operation.lastUpdatedAt) > Self.operationStallThreshold
     }
 
-    private func floatingActivityLabel(_ operation: SoulOperation) -> String {
-        if operationIsStalled(operation) { return "Stalled" }
+    private func floatingActivityLabel(_ operation: SoulOperation, now: Date = Date()) -> String {
+        if operationIsStalled(operation, now: now) { return "Stalled" }
         return operation.status == .running ? "Working" : "Latest"
     }
 
-    private func idleDurationText(_ operation: SoulOperation) -> String {
-        durationText(operationNow.timeIntervalSince(operation.lastUpdatedAt))
+    private func idleDurationText(_ operation: SoulOperation, now: Date = Date()) -> String {
+        durationText(now.timeIntervalSince(operation.lastUpdatedAt))
     }
 
     private func durationText(_ interval: TimeInterval) -> String {
