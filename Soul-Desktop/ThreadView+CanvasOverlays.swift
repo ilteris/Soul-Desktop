@@ -152,7 +152,6 @@ struct BranchSeedIndicator: View {
 
 struct WorkingIndicator: View {
     @Bindable var controller: ThreadController
-    @State private var rotation: Double = 0
 
     /// Compact elapsed format: "5s" under a minute, "1:23" under an hour,
     /// "1:23:45" otherwise. Keeps the indicator narrow while a turn is short
@@ -175,7 +174,16 @@ struct WorkingIndicator: View {
             // .stallBudgetSeconds) instead of a hardcoded 30s. Settings →
             // Advanced "Stall budgets" lets the user override per provider.
             let budget = controller.provider.stallBudgetSeconds
-            let isStalled = secondsSinceActivity >= budget
+            // SOUL-SOUL_DESKTOP-378: only escalate to the stalled-warning
+            // treatment when a turn is actually in flight. `loadSession`
+            // sets isWorking=true to drive the loading affordance but never
+            // sets turnStartedAt; without this gate the quiet time since the
+            // controller was constructed crosses the budget and we render the
+            // full "Thinking… / No activity for Ns / auto-recover" warning —
+            // and its spinner — for a session that is merely hydrating from
+            // disk, with no watchdog running to ever clear it.
+            let hasLiveTurn = controller.turnStartedAt != nil
+            let isStalled = hasLiveTurn && secondsSinceActivity >= budget
             let ceiling = StallPolicy.autoCancelCeilingSeconds
             let secondsUntilAutoCancel = max(0, ceiling - secondsSinceActivity)
             // SOUL-SOUL_DESKTOP-369: transport-level reconnect is a distinct,
@@ -200,12 +208,14 @@ struct WorkingIndicator: View {
                             .trim(from: 0, to: 0.3)
                             .stroke(ringColor, lineWidth: 2)
                             .frame(width: 12, height: 12)
-                            .rotationEffect(.degrees(rotation))
-                            .onAppear {
-                                withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                    rotation = 360
-                                }
-                            }
+                        // SOUL-SOUL_DESKTOP-378: static ring, no rotation. A
+                        // `repeatForever` rotationEffect is a SwiftUI shape
+                        // animation — SwiftUI drives it on the main thread and
+                        // re-encodes the DisplayList every frame (60-120fps).
+                        // Whenever a stalled/wedged indicator stayed mounted
+                        // that pinned ~20% CPU at idle. The stalled state is a
+                        // warning anchor, not a progress spinner; a steady ring
+                        // reads correctly and costs nothing.
                     }
                 }
 

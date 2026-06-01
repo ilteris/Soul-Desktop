@@ -321,18 +321,15 @@ private struct WorktreeMergeabilityBadge: View {
 }
 
 private struct WorkingDot: View {
-    @State private var pulsing = false
     var body: some View {
+        // SOUL-SOUL_DESKTOP-378: steady dot, no repeatForever pulse. A
+        // continuously-animating scale/opacity is a SwiftUI shape animation
+        // that re-encodes the DisplayList every frame on the main thread; for
+        // a row stuck in a wedged "working" state that never settles it burned
+        // CPU indefinitely. A solid accent dot still marks the row as active.
         Circle()
             .fill(SoulColor.accent)
             .frame(width: 6, height: 6)
-            .scaleEffect(pulsing ? 1.2 : 0.8)
-            .opacity(pulsing ? 1.0 : 0.7)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                    pulsing = true
-                }
-            }
     }
 }
 
