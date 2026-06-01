@@ -158,67 +158,79 @@ extension SidebarView {
     func projectRow(_ project: SoulProject) -> some View {
         // SOUL-SOUL_DESKTOP-270: one resolve() pass owns both the badge
         // count and the rendered list. They cannot disagree anymore.
+        //
+        // SOUL-SOUL_DESKTOP-379 (B): the resolve reads observed
+        // ThreadController props (items/displayTitle/isWorking). When it ran
+        // in this FUNCTION, the Observation dependency attributed to
+        // SidebarView.body — so a single streaming controller's per-frame
+        // `items` mutation re-evaluated ALL ~40 project rows. Hoisting the
+        // resolve into a dedicated `ProjectResolveScope` View scopes that
+        // dependency to one row: since SidebarRowResolver only reads
+        // items/title for controllers whose project matches, a streaming
+        // controller now invalidates only its own project's row. Everything
+        // SidebarView.body still reads here (activeThreads/liveRecords as
+        // arrays of refs, filters, store ids) is stable across a chunk, so
+        // the parent body is no longer dirtied per frame.
         let filters = SidebarFilters(
             chatSourceFilter: chatSourceFilter,
             hideUntitled: hideUntitled,
             showUnreadable: showUnreadable,
             showArchived: showArchived
         )
-        let overlay = SidebarLiveOverlay(
+        ProjectResolveScope(
+            projectId: project.id,
+            filters: filters,
             activeControllers: activeThreads,
             liveRecords: liveRecords,
             draftSession: draftSession,
             activeSessionId: activeSessionId,
-            activeProjectId: activeProjectId
-        )
-        let resolved = workspace.projectedRows(
-            for: project.id,
-            filters: filters,
-            overlay: overlay,
+            activeProjectId: activeProjectId,
             archivedIds: Set(archiveStore.archivedIDs(forProject: project.id)),
-            starredIds: Set(starStore.starredIDs(forProject: project.id))
-        )
-        ProjectSidebarRow(
-            project: project,
-            isSelected: activeProjectId == project.id
-                || (selectedProject == project.id
-                    && activeSessionId == nil
-                    && activeReplaySessionId == nil),
-            isExpanded: expansionBinding(for: project.id),
-            chatCount: resolved?.activeCount ?? 0,
-            onSelect: { selectedProject = project.id },
-            onNewChat: {
-                onNewChat(project.id)
-            },
-            onEdit: {
-                pendingProjectEdit = ProjectEditRequest(project: project)
-            },
-            onDelete: {
-                pendingProjectDelete = ProjectDeleteRequest(project: project)
-            }
-        )
-        if isExpanded(project.id), let rows = resolved {
-            let active = rows.active
-            let archived = rows.archived
-            let reveal = sessionRevealCount[project.id] ?? sessionPageSize
-            let visible = visibleSessions(
-                active: active,
-                reveal: reveal,
-                pinnedActiveId: rows.pinnedActiveId
+            starredIds: Set(starStore.starredIDs(forProject: project.id)),
+            workspace: workspace
+        ) { resolved in
+            ProjectSidebarRow(
+                project: project,
+                isSelected: activeProjectId == project.id
+                    || (selectedProject == project.id
+                        && activeSessionId == nil
+                        && activeReplaySessionId == nil),
+                isExpanded: expansionBinding(for: project.id),
+                chatCount: resolved?.activeCount ?? 0,
+                onSelect: { selectedProject = project.id },
+                onNewChat: {
+                    onNewChat(project.id)
+                },
+                onEdit: {
+                    pendingProjectEdit = ProjectEditRequest(project: project)
+                },
+                onDelete: {
+                    pendingProjectDelete = ProjectDeleteRequest(project: project)
+                }
             )
-            ForEach(visible) { session in
-                chatRow(session)
-            }
-            if active.count > visible.count {
-                showMoreButton(for: project, hiddenCount: active.count - visible.count)
-            } else if reveal > sessionPageSize {
-                showLessButton(for: project)
-            }
-            // Trashed rows are hidden from the normal project list by
-            // default. The filter menu can reveal this disclosure when the
-            // user needs restore/permanent-delete actions.
-            if showArchived, !archived.isEmpty {
-                archivedDisclosure(for: project, archived: archived)
+            if isExpanded(project.id), let rows = resolved {
+                let active = rows.active
+                let archived = rows.archived
+                let reveal = sessionRevealCount[project.id] ?? sessionPageSize
+                let visible = visibleSessions(
+                    active: active,
+                    reveal: reveal,
+                    pinnedActiveId: rows.pinnedActiveId
+                )
+                ForEach(visible) { session in
+                    chatRow(session)
+                }
+                if active.count > visible.count {
+                    showMoreButton(for: project, hiddenCount: active.count - visible.count)
+                } else if reveal > sessionPageSize {
+                    showLessButton(for: project)
+                }
+                // Trashed rows are hidden from the normal project list by
+                // default. The filter menu can reveal this disclosure when the
+                // user needs restore/permanent-delete actions.
+                if showArchived, !archived.isEmpty {
+                    archivedDisclosure(for: project, archived: archived)
+                }
             }
         }
     }
@@ -490,5 +502,45 @@ extension SidebarView {
             out.append((k, buckets[k] ?? []))
         }
         return out
+    }
+}
+
+/// SOUL-SOUL_DESKTOP-379 (B): a one-row resolve scope. Its `body` is the
+/// only place that reads the live `ThreadController` overlay (items /
+/// displayTitle / isWorking) for a single project, so SwiftUI's Observation
+/// dependency on those props is scoped to THIS view instead of the parent
+/// `SidebarView.body`. A streaming controller therefore re-evaluates only
+/// its own project's row — not all ~40. The resolved value is value-typed
+/// (`SidebarRowResolver.Output`), so the `content` closure that renders the
+/// row + session children carries no live-controller dependency of its own.
+private struct ProjectResolveScope<Content: View>: View {
+    let projectId: String
+    let filters: SidebarFilters
+    let activeControllers: [ThreadController]
+    let liveRecords: [LiveSessionRecord]
+    let draftSession: SoulSession?
+    let activeSessionId: String?
+    let activeProjectId: String?
+    let archivedIds: Set<String>
+    let starredIds: Set<String>
+    let workspace: SoulWorkspaceModel
+    @ViewBuilder let content: (SidebarRowResolver.Output?) -> Content
+
+    var body: some View {
+        let overlay = SidebarLiveOverlay(
+            activeControllers: activeControllers,
+            liveRecords: liveRecords,
+            draftSession: draftSession,
+            activeSessionId: activeSessionId,
+            activeProjectId: activeProjectId
+        )
+        let resolved = workspace.projectedRows(
+            for: projectId,
+            filters: filters,
+            overlay: overlay,
+            archivedIds: archivedIds,
+            starredIds: starredIds
+        )
+        content(resolved)
     }
 }
