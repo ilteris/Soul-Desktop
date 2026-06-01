@@ -599,7 +599,17 @@ final class ThreadController {
     var acpSessionId: String? { nativeSessionId ?? sessionId }
     /// Last time we received any event from the agent. Used to compute
     /// "quiet for Ns" once `isWorking` is true and nothing's streaming.
-    var lastActivityAt: Date = Date()
+    ///
+    /// SOUL-SOUL_DESKTOP-379 (C): OFF the observation graph. This was
+    /// mutated on EVERY ACP event (including tool-progress updates that
+    /// change no `items`), and the sidebar resolver reads it for all ~40
+    /// projects — so each bump fanned a re-resolve across the whole sidebar
+    /// at a rate above the coalesced item cadence. Nothing needs per-event
+    /// precision here: the stall watchdog POLLS it (1s), the stall overlay
+    /// reads it from a TimelineView (time-driven, not observation-driven),
+    /// and the toolbar duration chip re-reads it whenever `items`/`toolCount`
+    /// change — which is exactly when the duration meaningfully advances.
+    @ObservationIgnored var lastActivityAt: Date = Date()
     /// Transport-level connectivity for the active turn. `.reconnecting` is set
     /// when the runtime emits a retrying `error` notification and cleared on the
     /// next real forward-progress event (or at turn end). Drives the
