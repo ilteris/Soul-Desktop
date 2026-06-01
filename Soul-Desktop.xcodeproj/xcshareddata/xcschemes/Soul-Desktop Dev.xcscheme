@@ -67,6 +67,11 @@
             value = "1"
             isEnabled = "YES">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "SOUL_GEMINI_LOCAL"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
       </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction

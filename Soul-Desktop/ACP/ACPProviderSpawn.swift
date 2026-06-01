@@ -13,16 +13,18 @@ extension ACPProviderSpawn {
         let env = enrichedEnvironment()
         switch provider {
         case .geminiCLI:
-            if let bundled = bundledGeminiSpawn(env: env) {
-                return bundled
-            }
-            // SOUL_GEMINI_LOCAL=1 (or a path) swaps the global gemini install
-            // for a local checkout under ~/Code/gemini-cli — used while
-            // iterating on patches to gemini-cli itself (e.g. nested-subagent
-            // ACP notifications). Defaults to the standard `gemini` binary on
-            // PATH when the env var is unset or empty.
+            // SOUL_GEMINI_LOCAL=1 (or a path) swaps in a local checkout under
+            // ~/Code/gemini-cli — used while iterating on patches to gemini-cli
+            // itself (e.g. the permission-round-trip heartbeat). This MUST be
+            // tried before the bundled copy: otherwise the bundle always wins
+            // and the documented opt-in is dead. `localGeminiSpawn` returns nil
+            // unless the env var is set and the entry exists, so production
+            // (env unset) still falls through to the bundled runtime below.
             if let local = localGeminiSpawn(env: env) {
                 return local
+            }
+            if let bundled = bundledGeminiSpawn(env: env) {
+                return bundled
             }
             guard let path = which("gemini") else { return nil }
             // No `--resume` flag: gemini-cli fully supports ACP `session/load`
