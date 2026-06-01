@@ -119,6 +119,11 @@ struct ComposerTextField: NSViewRepresentable {
         tv.onFileDrop = onFileDrop
         tv.onDragActiveChange = onDragActiveChange
         if textChanged {
+            // SOUL-SOUL_DESKTOP-378: a programmatic text replacement (draft
+            // recall, clear, branch seed) doesn't fire `textDidChange`, so
+            // invalidate here and reset the height cache so the next user
+            // keystroke re-measures from a correct baseline.
+            tv.lastDocumentHeight = -1
             tv.invalidateIntrinsicContentSize()
             scroll.invalidateIntrinsicContentSize()
         }
@@ -132,6 +137,20 @@ struct ComposerTextField: NSViewRepresentable {
         func textDidChange(_ note: Notification) {
             guard let tv = note.object as? BackspaceInterceptingTextView else { return }
             parent.text = tv.string
+            // SOUL-SOUL_DESKTOP-378: only invalidate intrinsic size when the
+            // laid-out document height actually changes (a visual line was
+            // added or removed). The previous unconditional invalidation marked
+            // the composer's structural region dirty on EVERY keystroke; AppKit
+            // answered each display-cycle commit (CA::Transaction::commit ->
+            // displayCycleUpdateStructuralRegions -> setCursorForMouseLocation:)
+            // by re-resolving the pointer through a ~48-deep recursive
+            // NSTrackingArea cursorUpdate: walk on the main thread — a
+            // per-character stall the user felt as typing lag. Typing within a
+            // single line leaves the height unchanged, so skip the invalidation
+            // (and the cursor walk) entirely for the common case.
+            let height = tv.currentDocumentHeight()
+            guard height != tv.lastDocumentHeight else { return }
+            tv.lastDocumentHeight = height
             tv.invalidateIntrinsicContentSize()
             // SOUL-SOUL_DESKTOP-112: propagate to the wrapping ClampedComposerScrollView
             // so the composer card resizes (or starts scrolling internally) as the
@@ -187,21 +206,35 @@ private final class BackspaceInterceptingTextView: NSTextView {
     var onDragActiveChange: ((Bool) -> Void)?
     var placeholderString: String = "" { didSet { needsDisplay = true } }
     var allowNextEmptySync = false
+    /// SOUL-SOUL_DESKTOP-378: last laid-out document height reported to
+    /// `textDidChange`. Used to skip intrinsic-size invalidation (and the
+    /// expensive main-thread cursor-rect walk it triggers) when a keystroke
+    /// doesn't change the composer's height. Seeded to a sentinel so the first
+    /// change always invalidates. Reset to the sentinel after any programmatic
+    /// text replacement (see `updateNSView`) to keep the cache coherent.
+    var lastDocumentHeight: CGFloat = -1
 
     private let lineHeight: CGFloat = 20
     private let minLines: CGFloat = 3
+
+    /// Laid-out document height (full content height, no maxLines cap). Shared
+    /// by `intrinsicContentSize` and the `textDidChange` height-change gate so
+    /// both measure the text identically.
+    func currentDocumentHeight() -> CGFloat {
+        guard let lm = layoutManager, let tc = textContainer else {
+            return minLines * lineHeight
+        }
+        lm.ensureLayout(for: tc)
+        return ceil(lm.usedRect(for: tc).height) + 2
+    }
 
     /// SOUL-SOUL_DESKTOP-112: report the full content height (no maxLines
     /// cap). The enclosing `ClampedComposerScrollView` applies the clamp on
     /// its own intrinsic size and uses the document view's natural height
     /// to drive its scroller.
     override var intrinsicContentSize: NSSize {
-        guard let lm = layoutManager, let tc = textContainer else {
-            return NSSize(width: NSView.noIntrinsicMetric, height: minLines * lineHeight)
-        }
-        lm.ensureLayout(for: tc)
-        let used = ceil(lm.usedRect(for: tc).height) + 2
-        return NSSize(width: NSView.noIntrinsicMetric, height: max(minLines * lineHeight, used))
+        NSSize(width: NSView.noIntrinsicMetric,
+               height: max(minLines * lineHeight, currentDocumentHeight()))
     }
 
     /// Claim file drops at the NSTextView level and route them through the
