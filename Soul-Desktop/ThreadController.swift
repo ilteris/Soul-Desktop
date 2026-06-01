@@ -976,6 +976,23 @@ final class ThreadController {
             )
         }
     }
+
+    /// Repoint this controller back to the primary checkout after its session
+    /// worktree has been landed and removed. The inverse of `forkToWorktree`'s
+    /// `self.project.path = worktreePath`. Because `SoulProject` is a value
+    /// type and `ThreadController` is `@Observable`, mutating `project.path`
+    /// re-fires `ComposerView`'s `.task(id: projectPath)`, so the branch label
+    /// — and the working root the next turn spawns from — follow the primary
+    /// branch instead of a now-deleted worktree directory. No-op if already
+    /// rooted at the primary path.
+    func detachFromWorktree(toPrimaryPath primaryPath: String) {
+        guard project.path != primaryPath else { return }
+        project.path = primaryPath
+        items.append(.status(
+            id: UUID(),
+            text: "↩ Worktree landed — active directory back to the main checkout"
+        ))
+    }
 }
 
 /// Shared classifier for Claude Code's `<local-command-*>` scaffolding. Used

@@ -415,6 +415,14 @@ extension SidebarView {
                 await MainActor.run {
                     let suffix = result.sealedCommit ? " after sealing tracked changes" : ""
                     showRepairToast("Landed \(result.branchName) to main\(suffix)")
+                    // Repoint any live controller for this session back to the
+                    // primary checkout so its bottom-bar branch label and
+                    // working root follow main instead of the now-removed
+                    // worktree. ComposerView re-reads the branch reactively off
+                    // the changed projectPath.
+                    for controller in activeThreads where controller.sessionId == session.id {
+                        controller.detachFromWorktree(toPrimaryPath: project.path)
+                    }
                     workspace.invalidateSessions(projectId: session.project)
                 }
                 await workspace.refreshSessions(projectId: session.project)
