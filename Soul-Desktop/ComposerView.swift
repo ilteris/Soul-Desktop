@@ -181,10 +181,12 @@ struct ComposerView: View {
         forceClearText = true
         prompt = ""
         droppedAttachments = []
-        // SOUL-217: don't clear the chip on send — keep it visible while
-        // the agent is processing so the user retains the "/pulse"
-        // context. Cleared automatically when isWorking flips false
-        // (see .onChange below).
+        // Clear the slash-command chip on send. The "/pulse" context now
+        // lives in the conversation bubble; leaving the chip in the composer
+        // reads as a stray second copy. (Supersedes SOUL-217, which kept it
+        // visible during processing — the isWorking fallback below stays as a
+        // belt-and-suspenders clear for queued sends.)
+        activeCommand = nil
         showingCommandPalette = false
     }
 
