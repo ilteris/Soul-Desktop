@@ -425,6 +425,20 @@ enum SidebarRowResolver {
     /// resolver partitions on archivedIds separately so the disclosure can
     /// still show them.
     static func shouldShow(_ session: SoulSession, in ctx: VisibilityContext) -> Bool {
+        // SOUL-SOUL_DESKTOP-346: Codex app-server spawns proactive "suggested
+        // tasks" sessions on its own. The kernel tags them human/conversation,
+        // so they'd otherwise clutter the sidebar as ordinary on-disk rows
+        // (the live-overlay filter in resolve() only covers mounted
+        // controllers). Identify by the exact scaffold first-prompt and drop
+        // them here — a desktop-side override of kernel visibility, same
+        // pattern as isUnownedPartialCapture below. Gated on the Codex
+        // provider so a non-Codex session can never be hidden by this rule.
+        let proactiveProvider = session.provider ?? session.source ?? session.liveProvider
+        if proactiveProvider == Provider.codex.rawValue,
+           SessionTitleResolver.isCodexProactiveScaffold(session.firstUserPrompt) {
+            return traceDrop("0-codex-proactive-suggestion", session.id)
+        }
+
         // Kernel contract path. When the kernel has classified visibility,
         // Desktop consumes that field instead of re-interpreting ledger
         // semantics from counts/titles/provider artifacts.

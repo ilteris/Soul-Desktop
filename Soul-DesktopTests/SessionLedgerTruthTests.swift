@@ -844,6 +844,44 @@ struct SessionLedgerTruthTests {
         #expect(!resolved.active.contains { $0.id == "codex-live" })
     }
 
+    /// SOUL-SOUL_DESKTOP-346: a Codex proactive "suggested tasks" session
+    /// that lands on disk (kernel tags it human/conversation) is dropped by
+    /// the first-prompt scaffold rule, while a genuine Codex chat passes.
+    @Test func resolverHidesCodexProactiveSuggestionDiskRow() {
+        var proactive = SoulSession(
+            id: "codex-proactive",
+            project: "soul-desktop",
+            timestamp: Date(),
+            title: "Suggested tasks",
+            source: "codex",
+            loadable: true,
+            replayable: true
+        )
+        proactive.provider = "codex"
+        proactive.sessionVisibility = "human"
+        proactive.sessionKind = "conversation"
+        proactive.promptCount = 2
+        proactive.firstUserPrompt = "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do"
+
+        var realChat = SoulSession(
+            id: "codex-real",
+            project: "soul-desktop",
+            timestamp: Date(),
+            title: "Fix the drag and drop",
+            source: "codex",
+            loadable: true,
+            replayable: true
+        )
+        realChat.provider = "codex"
+        realChat.sessionVisibility = "human"
+        realChat.sessionKind = "conversation"
+        realChat.promptCount = 3
+        realChat.firstUserPrompt = "when I drag and drop a file into the threadview it crashes"
+
+        #expect(SidebarRowResolver.shouldShow(proactive, in: Self.defaultCtx) == false)
+        #expect(SidebarRowResolver.shouldShow(realChat, in: Self.defaultCtx) == true)
+    }
+
     /// Companion to the above: a live Codex `LiveSessionRecord` retained after
     /// controller eviction is excluded too, so the ghost can't leak back in
     /// through the liveRecords overlay path.

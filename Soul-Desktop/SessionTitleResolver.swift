@@ -307,6 +307,23 @@ enum SessionTitleResolver {
             || text.contains("<cwd>")
     }
 
+    /// True when a session's first user prompt is the Codex app-server's
+    /// proactive "suggested tasks" scaffold (`# Overview … Generate 0 to 3
+    /// hyperpersonalized suggestions …`). Codex spins these up on its own —
+    /// the user never typed them — yet the kernel tags them
+    /// human/conversation, so they otherwise surface as ordinary sidebar
+    /// rows. `SidebarRowResolver` uses this to keep them out of the chat
+    /// list. (SOUL-SOUL_DESKTOP-346)
+    static func isCodexProactiveScaffold(_ text: String?) -> Bool {
+        guard let text else { return false }
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: #" +"#, with: " ", options: .regularExpression)
+            .lowercased()
+        return normalized.hasPrefix("# overview generate 0 to 3 hyperpersonalized suggestions")
+    }
+
     private static func isStructuredSkillScaffold(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = trimmed
