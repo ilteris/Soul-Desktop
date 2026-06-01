@@ -170,17 +170,33 @@ struct ContextUsage {
     // MARK: - Claude (precise)
 
     private static func computeClaude(sessionId: String, cwd: String) -> ContextUsage? {
-        // Claude encodes cwd by replacing "/" → "-". For an absolute path
-        // starting with "/" the result already begins with "-"; do NOT
-        // prepend another or the lookup hits a phantom "--Users-…" path,
-        // returns nil, and the chip silently falls back to the Pi
-        // byte-estimate (which overcounts because hooks.jsonl is fatter
-        // than the agent transcript per real token).
+        // Claude encodes a cwd into its projects-dir name by replacing BOTH
+        // "/" and "." with "-". The "." substitution is load-bearing: every
+        // Soul worktree lives under `~/.soul/worktrees/…`, so a "/"-only
+        // encoding produces `-Users-…-.soul-…` while Claude's real dir is
+        // `-Users-…--soul-…` (the dot collapses to a second dash). The miss
+        // returned nil and the context chip silently vanished for every
+        // worktree-hosted Claude session (SOUL-SOUL_DESKTOP context chip bug).
         let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
-        let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-        let path = ("~/.claude/projects/\(encoded)/\(sessionId).jsonl" as NSString).expandingTildeInPath
-        guard FileManager.default.fileExists(atPath: path),
-              let data = try? String(contentsOfFile: path, encoding: .utf8)
+        let encoded = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+        let dir = ("~/.claude/projects/\(encoded)" as NSString).expandingTildeInPath
+        // Prefer the resolved transcript id, but Claude rotates the transcript
+        // on every `/compact` and the kernel's newest NativeSessionID can name
+        // a rollout that hasn't been written to disk yet. When the resolved id
+        // is missing, fall back to the most-recently-modified `*.jsonl` in the
+        // project dir so the chip tracks the live transcript across rotations.
+        let preferred = "\(dir)/\(sessionId).jsonl"
+        let path: String
+        if FileManager.default.fileExists(atPath: preferred) {
+            path = preferred
+        } else if let newest = newestTranscript(inDir: dir) {
+            path = newest
+        } else {
+            return nil
+        }
+        guard let data = try? String(contentsOfFile: path, encoding: .utf8)
         else { return nil }
 
         var lastUsage: (input: Int, cacheCreate: Int, cacheRead: Int)? = nil
@@ -350,6 +366,24 @@ struct ContextUsage {
 
     /// Coarse estimate: file bytes / 4 ≈ tokens. Works for any JSON/JSONL
     /// transcript where the bulk of the content is the conversation text.
+    /// Newest `*.jsonl` transcript in a Claude project dir, by modification
+    /// time. Used as the fallback when the resolved native-session id names a
+    /// rollout that isn't on disk (post-`/compact` rotation, or a freshly
+    /// minted id the agent hasn't written to yet).
+    private static func newestTranscript(inDir dir: String) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+            return nil
+        }
+        let jsonls = entries.filter { $0.hasSuffix(".jsonl") }
+        return jsonls
+            .map { "\(dir)/\($0)" }
+            .max(by: { lhs, rhs in
+                let a = (try? FileManager.default.attributesOfItem(atPath: lhs)[.modificationDate] as? Date) ?? .distantPast
+                let b = (try? FileManager.default.attributesOfItem(atPath: rhs)[.modificationDate] as? Date) ?? .distantPast
+                return a < b
+            })
+    }
+
     private static func estimateBytesAtPath(_ path: String, max: Int) -> ContextUsage? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               let size = attrs[.size] as? Int, size > 0

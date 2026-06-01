@@ -816,6 +816,62 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.isEmpty)
     }
 
+    /// SOUL-SOUL_DESKTOP-346: live Codex controllers must not surface as
+    /// sidebar rows — Codex app-server spins up proactive "suggestion"
+    /// sessions that read as confusing ghosts. A live Claude controller in
+    /// the same project still appears.
+    @Test func resolverExcludesLiveCodexControllers() {
+        let project = SessionLedgerTruthTests.testProject()
+
+        let codex = ThreadController(provider: .codex, project: project)
+        codex.sessionId = "codex-live"
+        codex.items = [.userMessage(id: UUID(), text: "suggestion", timestamp: Date())]
+
+        let claude = ThreadController(provider: .claude, project: project)
+        claude.sessionId = "claude-live"
+        claude.items = [.userMessage(id: UUID(), text: "real chat", timestamp: Date())]
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [],
+            activeControllers: [codex, claude],
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.contains { $0.id == "claude-live" })
+        #expect(!resolved.active.contains { $0.id == "codex-live" })
+    }
+
+    /// Companion to the above: a live Codex `LiveSessionRecord` retained after
+    /// controller eviction is excluded too, so the ghost can't leak back in
+    /// through the liveRecords overlay path.
+    @Test func resolverExcludesLiveCodexRecords() {
+        let project = SessionLedgerTruthTests.testProject()
+        let record = LiveSessionRecord(
+            id: "codex-evicted",
+            projectId: project.id,
+            provider: Provider.codex.rawValue,
+            title: "Codex suggestion",
+            startedAt: Date(),
+            lastActivityAt: Date(),
+            isWorking: true
+        )
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [],
+            activeControllers: [],
+            liveRecords: [record],
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.isEmpty)
+    }
+
     @Test func resolverPreservesLiveOverlayFromEvictedSessionRecord() {
         let project = SessionLedgerTruthTests.testProject()
         let sessions = AppSessionCoordinator()

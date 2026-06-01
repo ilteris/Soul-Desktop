@@ -145,6 +145,15 @@ enum SidebarRowResolver {
             guard ctrl.project.id.lowercased() == inputs.projectKey.lowercased() else {
                 continue
             }
+            // SOUL-SOUL_DESKTOP-346: don't surface live Codex rows. Codex
+            // app-server spins up proactive "suggestion" sessions that read
+            // as confusing ghost rows in the sidebar. Skipping the live
+            // injection here keeps them out while still letting any real,
+            // finalized Codex chat appear through the on-disk path below.
+            guard ctrl.provider != .codex else {
+                _ = traceDrop("8-live-codex-excluded", ctrl.sessionId ?? "thread-\(ctrl.id)")
+                continue
+            }
             guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
                 continue
             }
@@ -209,6 +218,14 @@ enum SidebarRowResolver {
         let mountedLiveIds = Set(inputs.activeControllers.map { $0.sessionId ?? "thread-\($0.id)" })
         for record in inputs.liveRecords {
             guard record.projectId.lowercased() == inputs.projectKey.lowercased() else {
+                continue
+            }
+            // SOUL-SOUL_DESKTOP-346: same live-Codex exclusion as the
+            // activeControllers loop — liveRecords are minted from those same
+            // controllers, so a Codex ghost retained after eviction would
+            // otherwise leak back in here.
+            guard record.provider != Provider.codex.rawValue else {
+                _ = traceDrop("8-live-codex-excluded", record.id)
                 continue
             }
             guard !mountedLiveIds.contains(record.id) else {
