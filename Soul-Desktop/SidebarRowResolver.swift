@@ -551,26 +551,31 @@ enum SidebarRowResolver {
     /// When `defaults write com.test.Soul-Desktop.dev soul.sidebar.trace
     /// -bool true` is set, every visibility decision is logged with rule +
     /// sid. File-based because NSLog routinely gets lost in log stream.
-    private static func traceDrop(_ rule: String, _ sid: String) -> Bool {
+    private static func traceDrop(_ rule: @autoclosure () -> String, _ sid: String) -> Bool {
         if verboseTraceEnabled {
-            NSLog("[sidebar-trace] DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(rule)")
-            traceWrite("DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(rule)")
+            let r = rule()
+            NSLog("[sidebar-trace] DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(r)")
+            traceWrite("DROP proj=\(currentTraceProject) sid=\(sid.prefix(8)) rule=\(r)")
         }
         return false
     }
 
     private static let tracePath = NSString(string: "~/tmp/soul-sidebar-trace.log").expandingTildeInPath
     private static let traceQueue = DispatchQueue(label: "soul.sidebar.trace.file")
-    private static var traceEnabled: Bool {
+    // Read once at process start, not per call: these getters sit in the
+    // per-row resolve loop that SwiftUI re-runs for every project's sessions on
+    // each sidebar invalidation. A live `UserDefaults.bool(forKey:)` here was
+    // the dominant idle-CPU leaf (CFString key lookup × hundreds of dropped
+    // rows × repeated re-renders). Toggling the flag now takes effect on the
+    // next launch — acceptable for an opt-in `defaults write` diagnostic.
+    private static let traceEnabled: Bool =
         UserDefaults.standard.bool(forKey: "soul.sidebar.trace")
-    }
 
     /// Per-row resolver traces are intentionally louder than scan traces and
     /// run from SwiftUI render paths. Keep them opt-in so resize/drag invalidations
     /// don't flood Console or the file trace during normal diagnostics.
-    private static var verboseTraceEnabled: Bool {
+    private static let verboseTraceEnabled: Bool =
         UserDefaults.standard.bool(forKey: "soul.sidebar.trace.verbose")
-    }
 
     static func traceWrite(_ line: String) {
         guard traceEnabled else { return }
