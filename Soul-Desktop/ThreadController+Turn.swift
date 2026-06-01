@@ -505,6 +505,12 @@ extension ThreadController {
     func recoverStalledTurn(source: String = "manual") async {
         guard let sid = sessionId else { return }
         await cancelActiveProviderTurn()
+        // SOUL-SOUL_DESKTOP-379 (A): drain any coalesced stream buffer before we
+        // mutate `items`, so the recovery status row can't paint ahead of the
+        // last frame of streamed content still queued. Mirrors the flush in
+        // appendCancelStatusIfNeeded on the cancel path. The await above can let
+        // more chunks buffer, so flush here (after it), not before.
+        flushPendingStreamUpdates()
         let stalledSeconds = Int(Date().timeIntervalSince(lastActivityAt))
         markInFlightToolCallsStopped()
         let label = source == "auto" ? "⏱ auto-recovered stalled turn (\(stalledSeconds)s)"

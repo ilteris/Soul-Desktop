@@ -967,6 +967,12 @@ extension ThreadController {
         // Respond with an error so the provider doesn't stall, and log it.
         await runtimes.acp?.respondError(id: id, code: -32601, message: "method not implemented: \(method)")
 
+        // SOUL-SOUL_DESKTOP-379 (A): the synchronous drain in handle() can't
+        // protect this row — it's appended here, inside an async Task, so more
+        // stream chunks can buffer across the respondError await above. Flush
+        // now so the "request ignored" status can't paint ahead of streamed
+        // content still queued.
+        flushPendingStreamUpdates()
         let text = "■ ACP request ignored: \(method)"
         items.append(.status(id: UUID(), text: text))
 
