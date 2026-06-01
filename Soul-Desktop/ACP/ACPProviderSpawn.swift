@@ -41,6 +41,9 @@ extension ACPProviderSpawn {
             guard let path = which("npx") else { return nil }
             return .init(executablePath: path, arguments: ["-y", "pi-acp"], environment: env)
         case .claude:
+            if let local = localClaudeACPSpawn(env: env) {
+                return local
+            }
             guard let path = which("npx") else { return nil }
             return .init(
                 executablePath: path,
@@ -102,6 +105,39 @@ private func localGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
     guard FileManager.default.fileExists(atPath: entry) else { return nil }
     guard let node = which("node") else { return nil }
     return .init(executablePath: node, arguments: [entry] + geminiACPArguments(), environment: env)
+}
+
+/// Resolve a local claude-agent-acp checkout when opted in via
+/// `SOUL_CLAUDE_ACP_LOCAL`. Accepted values:
+///   "1" / "true"  → use the default ~/Code/claude-agent-acp/dist/index.js
+///   "<abs path>"  → use that path verbatim as the JS entry point
+/// Returns nil when unset, empty, "0", or pointing at a missing file; caller
+/// falls back to `npx -y @agentclientprotocol/claude-agent-acp`.
+private func localClaudeACPSpawn(env: [String: String]) -> ACPProviderSpawn? {
+    guard let raw = ProcessInfo.processInfo.environment["SOUL_CLAUDE_ACP_LOCAL"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+          !raw.isEmpty,
+          raw != "0",
+          raw.lowercased() != "false"
+    else { return nil }
+
+    let home = NSHomeDirectory()
+    let entry: String
+    if raw == "1" || raw.lowercased() == "true" {
+        entry = "\(home)/Code/claude-agent-acp/dist/index.js"
+    } else {
+        entry = (raw as NSString).expandingTildeInPath
+    }
+    guard FileManager.default.fileExists(atPath: entry),
+          let node = which("node")
+    else { return nil }
+
+    return .init(
+        executablePath: node,
+        arguments: [entry],
+        environment: env,
+        scrubEnvKeys: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"]
+    )
 }
 
 private func geminiACPArguments() -> [String] {
