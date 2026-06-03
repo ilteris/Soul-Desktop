@@ -139,7 +139,7 @@ struct ThreadView: View {
         queuedItems: [ThreadItem],
         showWorkingIndicator: Bool
     ) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
             if hiddenMainCount > 0 {
                 Text("\(hiddenMainCount) earlier items hidden while this session is live")
