@@ -65,11 +65,19 @@ struct AgentThoughtRow: View {
                 // and triggered exponential `_FlexFrameLayout.sizeThatFits`
                 // recursion inside the outer ThreadView's LazyVStack —
                 // 100% main thread beachball.
-                Text(thoughtAttributed)
-                    .font(SoulFont.code(12).italic())
-                    .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if isStreaming {
+                    Text("Receiving reasoning...")
+                        .font(SoulFont.code(12).italic())
+                        .foregroundStyle(SoulColor.fgMuted.opacity(0.7))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(thoughtAttributed)
+                        .font(SoulFont.code(12).italic())
+                        .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .transition(.opacity)
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -126,24 +134,29 @@ struct AgentMessageRow: View, Equatable {
             // re-evals when stored input is unchanged — items.count growth
             // during streaming no longer re-runs the markdown parse +
             // linkify regex on every other visible row.
-            // Agent replies: render in full for the typical case; only
-            // collapse when the reply is abnormally large (>400 lines) so
-            // the rendered text layer can't exceed Metal's texture limit.
-            // While streaming, set collapseAbove to Int.max so partial
-            // bodies never collapse mid-stream — the abrupt shrink would
-            // strand the user's viewport above the new (shorter) content
-            // and paint the canvas blank. Collapse triggers on the final
-            // chunk when `isStreaming` flips false.
-            CollapsibleBubbleBody(
-                text: split.visible,
-                isHistorical: isHistorical,
-                mutedFg: mutedFg,
-                previewLineCount: 200,
-                collapseAbove: isStreaming ? Int.max : 400,
-                revealChunk: 100
-            )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+            // Streaming + user scroll samples showed the remaining beachball in
+            // MarkdownView -> NSAttributedString metrics. The controller keeps
+            // receiving chunks into the row model, but the live UI does not
+            // lay out the growing text; it reveals the completed markdown once.
+            if isStreaming {
+                Text("Receiving response...")
+                    .font(SoulType.body)
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                CollapsibleBubbleBody(
+                    text: split.visible,
+                    isHistorical: isHistorical,
+                    mutedFg: mutedFg,
+                    previewLineCount: 200,
+                    collapseAbove: 400,
+                    revealChunk: 100
+                )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .transition(.opacity)
+            }
 
             // Footer renders for live AND historical messages. Earlier
             // versions hid the buttons on historical bubbles, which left
@@ -152,7 +165,7 @@ struct AgentMessageRow: View, Equatable {
             // slightly more muted styling via the parent `mutedFg`.
             // Footer sits above the trace chip so action buttons stay
             // adjacent to the message they act on.
-            if showFooter {
+            if showFooter && !isStreaming {
             HStack(spacing: 4) {
                 FooterButton(systemName: "doc.on.doc", help: "Copy as Markdown") {
                     NSPasteboard.general.clearContents()
@@ -188,7 +201,7 @@ struct AgentMessageRow: View, Equatable {
             .animation(.easeInOut(duration: 0.12), value: isHovering)
             }
 
-            if let trace = split.trace {
+            if let trace = split.trace, !isStreaming {
                 SoulTraceChip(trace: trace)
                     .padding(.top, 4)
             }
