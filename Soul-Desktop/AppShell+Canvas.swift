@@ -152,21 +152,14 @@ extension AppShell {
     @ViewBuilder
     var mountedThreadsCanvas: some View {
         ZStack {
-            // SOUL-SOUL_DESKTOP-363: mount EVERY mounted thread (capped at 3)
-            // and toggle visibility, instead of conditionally mounting only
-            // the active one. Previously a single un-`.id()`'d ThreadView was
-            // reused across controller swaps, so SwiftUI kept one view identity
-            // — and one `transcriptScrollView` `@State`. Switching INTO a
-            // session inherited the PREVIOUS controller's NSScrollView clip
-            // origin; if the new document was shorter the origin pointed
-            // off-document → blank transcript (the intermittent P1). Keying each
-            // ThreadView `.id(controller.id)` gives every session its own stable
-            // `@State` (hence its own clip origin). Mount-all-toggle-opacity
-            // (vs `.id()`-on-a-single-slot) avoids tearing down / rebuilding the
-            // NSScrollView on every switch — no rebuild flash, scroll position
-            // preserved per pane.
-            ForEach(sessions.mountedThreads, id: \.id) { ctrl in
-                let isActive = ctrl.id == sessions.activeThreadKey
+            // Render exactly one ThreadView. Keeping inactive ThreadViews
+            // mounted at opacity 0 preserves per-session NSScrollView state,
+            // but SwiftUI still lays those invisible trees out. During live
+            // streaming that multiplied NavigationStack/MoveLayout work and
+            // produced the 100% CPU beachball sampled on 2026-06-03. The
+            // controller remains mounted in AppSessionCoordinator; only the
+            // SwiftUI layout tree is single-active.
+            if let ctrl = sessions.activeThread {
                 ThreadView(
                     controller: ctrl,
                     prompt: sessions.bindingForDraft(ctrl.id),
@@ -179,9 +172,6 @@ extension AppShell {
                 )
                 .environment(\.autoCompactController, autoCompact)
                 .id(ctrl.id)
-                .opacity(isActive ? 1 : 0)
-                .allowsHitTesting(isActive)
-                .zIndex(isActive ? 1 : 0)
             }
             if sessions.activeThreadKey == nil {
                 let project = currentProject()
