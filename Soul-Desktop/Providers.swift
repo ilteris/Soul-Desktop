@@ -20,9 +20,20 @@ enum Provider: String, CaseIterable, Identifiable {
     /// them and the sidebar looked empty under the Gemini chip.
     /// Returns nil for empty/unknown tags so callers can choose a fallback.
     static func canonical(fromTag tag: String?) -> Provider? {
-        guard let tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !tag.isEmpty else { return nil }
-        switch tag.lowercased() {
+        guard let trimmed = tag?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        var key = trimmed.lowercased()
+        // SOUL-SOUL_DESKTOP-267: the kernel orphan-recovery path
+        // (soul_finalize_orphans.py) stamps source="recovered_<tool>"
+        // (recovered_gemini, recovered_pi, …). Strip that prefix so a
+        // recovered session folds to the same identity as a live one and
+        // isn't dropped by the sidebar Source filter or rendered with the
+        // generic fallback glyph — same single-source-of-truth principle as
+        // SOUL-381: every provider-string spelling resolves here, once.
+        if key.hasPrefix("recovered_") {
+            key = String(key.dropFirst("recovered_".count))
+        }
+        switch key {
         case "gemini", "geminicli": return .geminiCLI   // geminiCLI.lowercased() == "geminicli"
         case "claude":              return .claude
         case "pi", "pi-native":     return .pi

@@ -275,6 +275,13 @@ struct SessionLedgerTruthTests {
         fallback.sessionVisibility = nil
         #expect(SidebarRowResolver.shouldShow(fallback, in: geminiCtx) == true)
         #expect(SidebarRowResolver.shouldShow(fallback, in: claudeCtx) == false)
+
+        // SOUL-SOUL_DESKTOP-267: a recovered gemini row (provider stamped
+        // "recovered_gemini" by soul_finalize_orphans.py) must survive the
+        // Gemini chip. This was the missing "1 of 3" row in stock-activity.
+        let recovered = geminiRow(taggedProvider: "recovered_gemini", source: nil)
+        #expect(SidebarRowResolver.shouldShow(recovered, in: geminiCtx) == true)
+        #expect(SidebarRowResolver.shouldShow(recovered, in: claudeCtx) == false)
     }
 
     /// Pi has the identical latent bug: the chip historically set "pi-native"
@@ -291,6 +298,15 @@ struct SessionLedgerTruthTests {
         #expect(Provider.canonical(fromTag: "  ") == nil)
         #expect(Provider.canonical(fromTag: nil) == nil)
         #expect(Provider.canonical(fromTag: "wat") == nil)
+        // SOUL-SOUL_DESKTOP-267: the kernel orphan-recovery path stamps
+        // source="recovered_<tool>". These must fold to the same identity as
+        // the live spelling, or recovered sessions vanish under the chip.
+        #expect(Provider.canonical(fromTag: "recovered_gemini") == .geminiCLI)
+        #expect(Provider.canonical(fromTag: "recovered_pi") == .pi)
+        #expect(Provider.canonical(fromTag: "recovered_claude") == .claude)
+        #expect(Provider.canonical(fromTag: "recovered_codex") == .codex)
+        #expect(Provider.canonical(fromTag: "RECOVERED_GEMINI") == .geminiCLI)
+        #expect(Provider.canonical(fromTag: "recovered_wat") == nil)
     }
 
     @Test func promptBearingLedgerIsVisibleConversation() throws {
