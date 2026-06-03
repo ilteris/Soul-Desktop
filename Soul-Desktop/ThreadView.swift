@@ -380,6 +380,13 @@ struct ThreadView: View {
         }
     }
 
+    private func transcriptCanScroll() -> Bool {
+        guard let scrollView = transcriptScrollView,
+              let documentView = scrollView.documentView
+        else { return false }
+        return documentView.bounds.height > scrollView.contentView.bounds.height + 1
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
@@ -407,6 +414,9 @@ struct ThreadView: View {
                     case .tracking, .interacting, .decelerating:
                         if controller.isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
+                        if transcriptCanScroll() {
+                            bottomSentinelVisible = false
+                        }
                         userInteracting = true
                     case .idle, .animating:
                         controller.streamPreviewPublishingSuspended = false
