@@ -168,6 +168,7 @@ final class ThreadController {
     /// the authoritative ledger are never truncated.
     @ObservationIgnored var pendingStreamUpdates: [SessionUpdate] = []
     @ObservationIgnored var streamFlushScheduled = false
+    @ObservationIgnored var agentStreamBuffer = AgentStreamBuffer()
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
 
     /// Sends issued while a turn is already running get parked here and

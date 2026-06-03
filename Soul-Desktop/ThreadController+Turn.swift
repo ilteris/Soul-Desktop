@@ -150,6 +150,7 @@ extension ThreadController {
             // streamed content is committed even if the turn ended between
             // coalesce ticks.
             flushPendingStreamUpdates()
+            materializeBufferedAgentStreams()
             isWorking = false
             turnStartedAt = nil
             stopStallWatchdog()
@@ -214,6 +215,7 @@ extension ThreadController {
                     )
                     guard promptRequest.canDispatch else { return }
                     try await sendCodex(promptRequest)
+                    materializeBufferedAgentStreams()
 
                     // Persist the codex agent's final reply text to the
                     // kernel hooks ledger, same way the ACP branch does.
@@ -343,6 +345,7 @@ extension ThreadController {
                 // tail. The kernel ledger is authoritative; this flush is the
                 // contract that keeps it whole.
                 flushPendingStreamUpdates()
+                materializeBufferedAgentStreams()
 
                 // Persist the agent's full reply text to the kernel hooks
                 // ledger. Without this, the conversation only lives in the
@@ -387,6 +390,7 @@ extension ThreadController {
                 suppressNextInterruptedTurnError = false
             } else {
                 let msg = Self.humanReadable(error)
+                materializeBufferedAgentStreams()
                 items.append(.error(id: UUID(), text: msg))
                 lastError = msg
             }
@@ -505,6 +509,7 @@ extension ThreadController {
         // appendCancelStatusIfNeeded on the cancel path. The await above can let
         // more chunks buffer, so flush here (after it), not before.
         flushPendingStreamUpdates()
+        materializeBufferedAgentStreams()
         let stalledSeconds = Int(Date().timeIntervalSince(lastActivityAt))
         markInFlightToolCallsStopped()
         let label = source == "auto" ? "⏱ auto-recovered stalled turn (\(stalledSeconds)s)"

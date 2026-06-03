@@ -206,6 +206,7 @@ extension ThreadController {
             print("[codex stderr] \(line)")
         case .terminated(let cause):
             flushPendingCodexDeltas()
+            materializeBufferedAgentStreams()
             markProviderProcessTerminated(cause: cause)
             items.append(.error(id: UUID(), text: "codex child terminated: \(cause)"))
         }
@@ -262,14 +263,15 @@ extension ThreadController {
     /// changed (once per frame, not once per token).
     private func applyCodexAgentText(itemId: String, delta: String) {
         guard let uuid = codexItemMap[itemId] else { return }
-        if let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .agentMessage(let id, let prior, let wasComplete, let ts) = items[idx] {
-            // A stray delta arriving after the bubble finalized must NOT reopen
-            // it to complete:false — codex's completion `text` is authoritative
-            // and the row already rendered done. Drop the late delta.
-            guard !wasComplete else { return }
-            items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
+        if items.contains(where: { item in
+            if case .agentMessage(let id, _, let complete, _) = item, id == uuid {
+                return complete
+            }
+            return false
+        }) {
+            return
         }
+        agentStreamBuffer.appendCodex(itemId: itemId, text: delta, kind: .message)
     }
 
     /// Append a batched reasoning delta into the open agent-thought bubble.
@@ -277,13 +279,15 @@ extension ThreadController {
     /// (still no lazy bubble creation — only fills a bubble item/started made).
     private func applyCodexReasoning(itemId: String, delta: String) {
         guard let uuid = codexItemMap[itemId] else { return }
-        if let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .agentThought(let id, let prior, let wasComplete, let ts) = items[idx] {
-            // Same finalize guard as agent text: a late reasoning delta must
-            // not reopen a completed thought bubble.
-            guard !wasComplete else { return }
-            items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
+        if items.contains(where: { item in
+            if case .agentThought(let id, _, let complete, _) = item, id == uuid {
+                return complete
+            }
+            return false
+        }) {
+            return
         }
+        agentStreamBuffer.appendCodex(itemId: itemId, text: delta, kind: .thought)
     }
 
     private func handleCodexRequest(id: JSONRPCID, method: String, params: JSONValue?) async {
@@ -378,9 +382,13 @@ extension ThreadController {
         switch itemType {
         case "agentMessage":
             let text = stringField(item, "text") ?? ""
-            items.append(.agentMessage(id: uuid, text: text, complete: terminal, timestamp: now))
+            agentStreamBuffer.registerCodexItem(itemId: codexId, id: uuid, kind: .message, initialText: text)
+            if terminal {
+                materializeCodexStreamItem(itemType: itemType, codexId: codexId, item: item)
+            }
             openAgentMessageId = uuid
         case "commandExecution":
+            materializeBufferedAgentStreams()
             // Build the title from command + argv so the row shows the FULL
             // command line, not just the bare executable. Codex sometimes
             // sends `command: "soul"` + `argv: ["soul", "task", "list"]`;
@@ -398,6 +406,7 @@ extension ThreadController {
                 details: nil
             ))
         case "fileChange":
+            materializeBufferedAgentStreams()
             let details = codexFileChangeDetails(from: item)
             let title = codexFileChangeTitle(from: item)
             let status = stringField(item, "status") ?? "pending"
@@ -414,6 +423,7 @@ extension ThreadController {
                 details: details
             ))
         case "mcpToolCall":
+            materializeBufferedAgentStreams()
             let server = stringField(item, "server") ?? "mcp"
             let tool = stringField(item, "tool") ?? "?"
             let status = stringField(item, "status") ?? "pending"
@@ -426,6 +436,7 @@ extension ThreadController {
                 details: nil
             ))
         case "webSearch":
+            materializeBufferedAgentStreams()
             let query = stringField(item, "query") ?? ""
             items.append(.toolCall(
                 id: uuid,
@@ -436,6 +447,7 @@ extension ThreadController {
                 details: nil
             ))
         case "imageView":
+            materializeBufferedAgentStreams()
             let path = stringField(item, "path") ?? "(image)"
             items.append(.toolCall(
                 id: uuid,
@@ -473,15 +485,10 @@ extension ThreadController {
             // ship visible text — creating a bubble preemptively just to
             // delete it (or worse, leave a "reasoning hidden" placeholder)
             // is the wrong default.
-            if !initial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                items.append(.agentThought(id: uuid, text: initial, complete: false, timestamp: now))
-                openAgentThoughtId = uuid
-            } else {
-                // Drop the mapping so item/completed doesn't try to fill a
-                // bubble that was never created.
-                codexItemMap.removeValue(forKey: codexId)
-            }
+            agentStreamBuffer.registerCodexItem(itemId: codexId, id: uuid, kind: .thought, initialText: initial)
+            openAgentThoughtId = uuid
         case "plan":
+            materializeBufferedAgentStreams()
             let entries = codexPlanEntries(from: item)
             if entries.isEmpty {
                 let text = stringField(item, "text") ?? ""
@@ -490,11 +497,14 @@ extension ThreadController {
                 items.append(.plan(id: uuid, entries: entries))
             }
         case "enteredReviewMode":
+            materializeBufferedAgentStreams()
             let review = stringField(item, "review") ?? "review"
             items.append(.status(id: uuid, text: "🔍 entered review: \(review)"))
         case "exitedReviewMode":
+            materializeBufferedAgentStreams()
             items.append(.status(id: uuid, text: "✓ exited review"))
         case "contextCompaction":
+            materializeBufferedAgentStreams()
             items.append(.status(id: uuid, text: "⤵ context compacted"))
         default:
             // Unknown codex item types used to render as `· <itemType>`
@@ -561,6 +571,10 @@ extension ThreadController {
     /// were only known at end-of-call (e.g. agent message final text, file
     /// change diff, command output).
     private func completeCodexItem(itemType: String, codexId: String, item: [String: JSONValue]) {
+        if itemType == "agentMessage" || itemType == "reasoning" {
+            materializeCodexStreamItem(itemType: itemType, codexId: codexId, item: item)
+            return
+        }
         guard let uuid = codexItemMap[codexId],
               let idx = items.firstIndex(where: { $0.id == uuid })
         else { return }
@@ -658,6 +672,43 @@ extension ThreadController {
             openAgentThoughtId = nil
         default:
             break  // status / error rows finalize themselves on append
+        }
+    }
+
+    private func materializeCodexStreamItem(itemType: String, codexId: String, item: [String: JSONValue]) {
+        let final: String? = {
+            if let flat = stringField(item, "text"), !flat.isEmpty { return flat }
+            if let flat = stringField(item, "summary"), !flat.isEmpty { return flat }
+            if let flat = stringField(item, "content"), !flat.isEmpty { return flat }
+            if case .array(let parts)? = item["summary"] {
+                let joined = parts.compactMap { part -> String? in
+                    guard case .object(let o) = part,
+                          case .string(let s)? = o["text"] else { return nil }
+                    return s
+                }.joined(separator: "\n\n")
+                if !joined.isEmpty { return joined }
+            }
+            if case .array(let parts)? = item["content"] {
+                let joined = parts.compactMap { part -> String? in
+                    guard case .object(let o) = part,
+                          case .string(let s)? = o["text"] else { return nil }
+                    return s
+                }.joined(separator: "\n\n")
+                if !joined.isEmpty { return joined }
+            }
+            return nil
+        }()
+        guard let segment = agentStreamBuffer.drainCodexItem(itemId: codexId, finalText: final) else {
+            codexItemMap.removeValue(forKey: codexId)
+            return
+        }
+        switch segment.kind {
+        case .message:
+            items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+            openAgentMessageId = nil
+        case .thought:
+            items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+            openAgentThoughtId = nil
         }
     }
 

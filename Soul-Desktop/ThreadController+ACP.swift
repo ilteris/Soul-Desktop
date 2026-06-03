@@ -53,6 +53,21 @@ extension ThreadController {
         }
     }
 
+    func materializeBufferedAgentStreams() {
+        let completed = agentStreamBuffer.drainAll()
+        guard !completed.isEmpty else { return }
+        for segment in completed {
+            switch segment.kind {
+            case .message:
+                items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+                openAgentMessageId = nil
+            case .thought:
+                items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+                openAgentThoughtId = nil
+            }
+        }
+    }
+
     func apply(_ update: SessionUpdate) {
         let _applyStart = DispatchTime.now()
         let _applyKind = Self.kindLabel(update)
@@ -113,11 +128,13 @@ extension ThreadController {
             }
         case .renderToolCall(let payload, isUpdate: false):
             if silentCapture != nil { break }
+            materializeBufferedAgentStreams()
             insertToolCall(payload, isUpdate: false)
         case .renderToolCall(let payload, isUpdate: true):
             if silentCapture != nil { break }
             insertToolCall(payload, isUpdate: true)
         case .renderPlan(let payload):
+            materializeBufferedAgentStreams()
             insertPlan(payload)
         case .updateAvailableCommands(let payload):
             updateCommands(payload)
@@ -194,41 +211,7 @@ extension ThreadController {
     }
 
     private func appendAgentChunk(_ chunk: String) {
-        // A new message bubble ends any open thought bubble. The thought
-        // chunks always precede the visible reply in Claude's stream, so
-        // closing here keeps narrative order: thought → message.
-        openAgentThoughtId = nil
-        let bubbleId: UUID
-        if let openId = openAgentMessageId,
-           let idx = items.firstIndex(where: { $0.id == openId }),
-           case .agentMessage(let id, let existing, _, let ts) = items[idx] {
-            // SOUL-SOUL_DESKTOP-264 sanity probe: permanent assertion that
-            // the in-app chunk stream is clean. We chased AfterAgent
-            // content-doubling first in this accumulator, but a live trace
-            // (2026-05-23, session 82a1b676, 7547-char reply that doubled
-            // to 15379 on disk) showed THIS probe never fires — the
-            // doubling lives downstream in the kernel middleware writer
-            // (version 8.6.27-fidelity), not here. Keep the probe as a
-            // sanity check: if it ever DOES fire, the upstream stream
-            // started re-emitting content and the SOUL-264 picture has
-            // changed. Gated on soul.acp.trace so it costs nothing in
-            // normal use.
-            if UserDefaults.standard.bool(forKey: "soul.acp.trace"),
-               chunk.count >= 128,
-               existing.count >= 128 {
-                let probe = String(chunk.prefix(128))
-                if existing.range(of: probe) != nil {
-                    NSLog("[acp-chunk-sanity] WARN: incoming agent_message_chunk's first 128 chars already exist in buffer — upstream stream is re-emitting (existingLen=\(existing.count), chunkLen=\(chunk.count), bubbleId=\(id.uuidString.prefix(8))) probe=\(probe.prefix(40))…")
-                }
-            }
-            items[idx] = .agentMessage(id: id, text: existing + chunk, complete: false, timestamp: ts)
-            bubbleId = id
-        } else {
-            let id = UUID()
-            openAgentMessageId = id
-            items.append(.agentMessage(id: id, text: chunk, complete: false, timestamp: Date()))
-            bubbleId = id
-        }
+        let bubbleId = agentStreamBuffer.appendACPMessage(chunk)
         // SOUL-SOUL_DESKTOP-065: persist each chunk to disk so the reply
         // text survives an abrupt child teardown (manual quit / force-quit
         // / OS sleep) that would otherwise lose everything written between
@@ -266,24 +249,7 @@ extension ThreadController {
     }
 
     private func appendAgentThoughtChunk(_ chunk: String) {
-        if let openId = openAgentThoughtId,
-           let idx = items.firstIndex(where: { $0.id == openId }),
-           case .agentThought(let id, let existing, _, let ts) = items[idx] {
-            let combined = normalizeThoughtJoin(prior: existing, incoming: chunk)
-            items[idx] = .agentThought(id: id, text: combined, complete: false, timestamp: ts)
-        } else {
-            // Symmetric to appendAgentChunk: opening a thought bubble closes
-            // any open message bubble. Without this, a stream of shape
-            // message-chunk → thought-chunks → message-chunks (observed on
-            // Pi) appends the second batch of message chunks back into the
-            // first bubble — which sits ABOVE the thought bubble in items[],
-            // so the reply text visually grows above the thinking card and
-            // pushes it down. SOUL-SOUL_DESKTOP-070.
-            openAgentMessageId = nil
-            let id = UUID()
-            openAgentThoughtId = id
-            items.append(.agentThought(id: id, text: chunk, complete: false, timestamp: Date()))
-        }
+        _ = agentStreamBuffer.appendACPThought(chunk, normalize: normalizeThoughtJoin)
     }
 
     /// Walk the tail of `items` looking for a recent toolCall whose
@@ -980,6 +946,7 @@ extension ThreadController {
         // now so the "request ignored" status can't paint ahead of streamed
         // content still queued.
         flushPendingStreamUpdates()
+        materializeBufferedAgentStreams()
         let text = "■ ACP request ignored: \(method)"
         items.append(.status(id: UUID(), text: text))
 

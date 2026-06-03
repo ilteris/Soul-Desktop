@@ -65,17 +65,10 @@ struct AgentThoughtRow: View {
                 // and triggered exponential `_FlexFrameLayout.sizeThatFits`
                 // recursion inside the outer ThreadView's LazyVStack —
                 // 100% main thread beachball.
-                if isStreaming {
-                    Text("Receiving reasoning...")
-                        .font(SoulFont.code(12).italic())
-                        .foregroundStyle(SoulColor.fgMuted.opacity(0.7))
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(thoughtAttributed)
-                        .font(SoulFont.code(12).italic())
-                        .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(thoughtAttributed)
+                    .font(SoulFont.code(12).italic())
+                    .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 12)
@@ -133,26 +126,18 @@ struct AgentMessageRow: View, Equatable {
             // during streaming no longer re-runs the markdown parse +
             // linkify regex on every other visible row.
             // Streaming + user scroll samples showed the remaining beachball in
-            // MarkdownView -> NSAttributedString metrics. The controller keeps
-            // receiving chunks into the row model, but the live UI does not
-            // lay out the growing text; it reveals the completed markdown once.
-            if isStreaming {
-                Text("Receiving response...")
-                    .font(SoulType.body)
-                    .foregroundStyle(SoulColor.fgMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                CollapsibleBubbleBody(
-                    text: split.visible,
-                    isHistorical: isHistorical,
-                    mutedFg: mutedFg,
-                    previewLineCount: 200,
-                    collapseAbove: 400,
-                    revealChunk: 100
-                )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // MarkdownView -> NSAttributedString metrics. The controller now
+            // keeps incomplete assistant text out of the observed transcript
+            // model, so this row should normally render only completed text.
+            CollapsibleBubbleBody(
+                text: split.visible,
+                isHistorical: isHistorical,
+                mutedFg: mutedFg,
+                previewLineCount: 200,
+                collapseAbove: 400,
+                revealChunk: 100
+            )
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Footer renders for live AND historical messages. Earlier
             // versions hid the buttons on historical bubbles, which left

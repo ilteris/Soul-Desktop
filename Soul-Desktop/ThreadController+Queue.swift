@@ -123,6 +123,7 @@ func drainQueuedPromptAfterTurn() {
         // SOUL-SOUL_DESKTOP-379 (A): drain coalesced content first so the
         // "cancel sent" marker lands after whatever streamed before it.
         flushPendingStreamUpdates()
+        materializeBufferedAgentStreams()
         if case .status(_, let last)? = items.last, last == "■ cancel sent" {
             return
         }

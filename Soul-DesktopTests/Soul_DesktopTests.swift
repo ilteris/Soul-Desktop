@@ -138,28 +138,27 @@ struct Soul_DesktopTests {
     @Test func codexCoalesceBuffersDeltasOffGraphThenFlushesOnce() throws {
         let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
         let uuid = UUID()
-        controller.items = [.agentMessage(id: uuid, text: "", complete: false, timestamp: Date())]
         controller.codexItemMap = ["c1": uuid]
+        controller.agentStreamBuffer.registerCodexItem(itemId: "c1", id: uuid, kind: .message, initialText: "")
 
         controller.enqueueCodexDelta(itemId: "c1", delta: "Hel", kind: .agentText)
         controller.enqueueCodexDelta(itemId: "c1", delta: "lo", kind: .agentText)
 
-        // Pre-flush: the observed item is untouched; deltas live in the buffer.
-        guard case .agentMessage(_, let pre, _, _) = controller.items[0] else {
-            Issue.record("expected agentMessage"); return
-        }
-        #expect(pre == "")
+        // Pre-flush: the observed transcript is untouched; deltas live in buffers.
+        #expect(controller.items.isEmpty)
         #expect(controller.pendingCodexOrder == ["c1"])
 
         controller.flushPendingCodexDeltas()
 
-        // Post-flush: a single batched mutation carries both deltas; buffer +
-        // schedule flag reset so the next enqueue re-arms the timer.
+        // Post-flush: deltas have moved into the stream buffer, not the
+        // observed transcript. Materialization is the explicit UI boundary.
+        #expect(controller.items.isEmpty)
+        controller.materializeBufferedAgentStreams()
         guard case .agentMessage(_, let post, let complete, _) = controller.items[0] else {
             Issue.record("expected agentMessage"); return
         }
         #expect(post == "Hello")
-        #expect(complete == false)
+        #expect(complete == true)
         #expect(controller.pendingCodexOrder.isEmpty)
         #expect(controller.codexFlushScheduled == false)
     }
@@ -168,17 +167,17 @@ struct Soul_DesktopTests {
     @Test func codexCoalesceKeepsPerItemTextAndIsIdempotent() throws {
         let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
         let a = UUID(); let b = UUID()
-        controller.items = [
-            .agentMessage(id: a, text: "", complete: false, timestamp: Date()),
-            .agentThought(id: b, text: "", complete: false, timestamp: Date()),
-        ]
         controller.codexItemMap = ["a": a, "b": b]
+        controller.agentStreamBuffer.registerCodexItem(itemId: "a", id: a, kind: .message, initialText: "")
+        controller.agentStreamBuffer.registerCodexItem(itemId: "b", id: b, kind: .thought, initialText: "")
 
         // Interleaved deltas for two items accumulate independently.
         controller.enqueueCodexDelta(itemId: "a", delta: "ans", kind: .agentText)
         controller.enqueueCodexDelta(itemId: "b", delta: "rea", kind: .reasoning)
         controller.enqueueCodexDelta(itemId: "a", delta: "wer", kind: .agentText)
         controller.flushPendingCodexDeltas()
+        #expect(controller.items.isEmpty)
+        controller.materializeBufferedAgentStreams()
 
         guard case .agentMessage(_, let aText, _, _) = controller.items[0],
               case .agentThought(_, let bText, _, _) = controller.items[1] else {
