@@ -138,8 +138,6 @@ struct ThreadView: View {
             Color.clear
                 .frame(height: 44)
                 .id("__bottom__")
-                .onAppear { bottomSentinelVisible = true }
-                .onDisappear { bottomSentinelVisible = false }
         }
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
@@ -359,49 +357,6 @@ struct ThreadView: View {
                     performScrollRestore(proxy: proxy)
                     repairTranscriptScrollView(reason: "hydrated")
                 }
-                // SOUL-SOUL_DESKTOP-081: re-pin the anchor when canvas width
-                // changes (right side panel opens / closes / resizes).
-                // Without this, LazyVStack row remeasurement leaves
-                // ScrollView's absolute offset pointing at different content.
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear { canvasWidth = geo.size.width }
-                            .onChange(of: geo.size.width) { _, newWidth in
-                                guard abs(newWidth - canvasWidth) > 0.5 else { return }
-                                if transcriptScrollView?.window?.inLiveResize == true {
-                                    canvasWidth = newWidth
-                                    return
-                                }
-                                pendingCanvasWidth = newWidth
-                            }
-                    }
-                )
-                .onChange(of: pendingCanvasWidth) { _, newWidth in
-                    canvasWidthRepinTask?.cancel()
-                    canvasWidthRepinTask = Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(80))
-                        guard !Task.isCancelled else { return }
-                        canvasWidth = newWidth
-                    }
-                }
-                .onChange(of: canvasWidth) { _, _ in
-                    // SOUL-SOUL_DESKTOP-188: with the anchor source-of-truth
-                    // fixed (updateAnchor now searches the rendered list,
-                    // not controller.items), re-pinning on width change
-                    // correctly keeps the topmost-visible item at the
-                    // viewport top — preserving the user's reading
-                    // position when the file preview panel opens or
-                    // closes. The -184 "skip re-pin unless at bottom"
-                    // workaround was a band-aid for the stale-anchor bug
-                    // and is no longer needed.
-                    guard !suppressAnchorWrites else { return }
-                    if let id = anchor.itemId {
-                        withTransaction(Transaction(animation: nil)) {
-                            proxy.scrollTo(id, anchor: .top)
-                        }
-                    }
-                }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
                     followLiveTurn(proxy: proxy)
                     // SOUL-SOUL_DESKTOP-189: only repair layout when not actively running a turn.
@@ -427,17 +382,6 @@ struct ThreadView: View {
                     canvasWidthRepinTask?.cancel()
                     controller.scrollAnchorItemId = anchor.itemId
                 }
-                HStack {
-                    Spacer(minLength: 0)
-                    jumpToBottomButton(proxy: proxy)
-                }
-                .frame(maxWidth: 760)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24)
-                .frame(height: 0, alignment: .bottomTrailing)
-                .offset(y: -18)
-                .zIndex(1)
-
                 composerSection(proxy: proxy)
             }
         }

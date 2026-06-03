@@ -114,7 +114,6 @@ extension AppShell {
             }
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-        .geometryGroup()
         .onDrop(
             of: DropAttachmentHandler.acceptedTypes,
             isTargeted: Binding(

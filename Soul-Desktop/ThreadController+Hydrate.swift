@@ -700,6 +700,16 @@ extension ThreadController {
             SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
             return
         }
+        injectFinalizeRecordIfFresh(rec, sessionId: sid)
+    }
+
+    func injectFinalizeRecordIfFresh(_ rec: SoulRegistry.FinalizeRecord?, sessionId sid: String) {
+        // SOUL-SOUL_DESKTOP-100: trace each branch.
+        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
+        guard let rec else {
+            SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
+            return
+        }
         let hasContent = (rec.intent?.isEmpty == false)
             || (rec.summary?.isEmpty == false)
             || (rec.rationale?.isEmpty == false)

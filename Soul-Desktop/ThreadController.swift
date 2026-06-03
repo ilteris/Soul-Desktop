@@ -693,7 +693,14 @@ final class ThreadController {
         let sessionDir = "\(projectDir)/\(sid)"
         let watcher = FinalizeWatcher(directoryPaths: [projectDir, sessionDir]) { [weak self] in
             guard let self, let sid = self.sessionId else { return }
-            self.injectFinalizeSummaryIfFresh(sessionId: sid)
+            let projectId = self.project.id
+            Task.detached(priority: .utility) {
+                let rec = SoulRegistry.latestFinalize(projectKey: projectId, sessionId: sid)
+                await MainActor.run {
+                    guard self.sessionId == sid else { return }
+                    self.injectFinalizeRecordIfFresh(rec, sessionId: sid)
+                }
+            }
         }
         finalizeWatcher = watcher
         watcher.start()
