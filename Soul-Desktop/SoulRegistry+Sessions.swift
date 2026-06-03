@@ -16,18 +16,60 @@ typealias SessionListPayload = LedgerSessionListPayload
 typealias SessionListRecord = LedgerSessionListRecord
 
 extension SoulRegistry {
+    private struct SessionListShape: Equatable {
+        var sessionDir: String?
+        var hooksPath: String?
+        var hooksMtime: Double?
+        var finalizePath: String?
+        var finalizeMtime: Double?
+    }
+
+    private struct SessionListPayloadCache {
+        var payload: SessionListPayload
+        var shapesById: [String: SessionListShape]
+    }
+
+    private static let sessionListPayloadCacheLock = NSLock()
+    nonisolated(unsafe) private static var sessionListPayloadCache: [String: SessionListPayloadCache] = [:]
 
     /// Single shell-out to `soul session list -p <key> --json --include-machine`. Returns nil
     /// on CLI failure (executable missing, non-zero exit, decode error) —
     /// callers degrade to empty. SOUL-SOUL_DESKTOP-263.
     static func loadSessionListPayload(projectKey: String) -> SessionListPayload? {
+        let currentShapes = scanSessionListShapes(projectKey: projectKey)
+        sessionListPayloadCacheLock.lock()
+        let cached = sessionListPayloadCache[projectKey]
+        sessionListPayloadCacheLock.unlock()
+
+        if let cached {
+            return refreshCachedSessionListPayload(
+                projectKey: projectKey,
+                cached: cached,
+                currentShapes: currentShapes
+            )
+        }
+
+        return loadFullSessionListPayload(projectKey: projectKey, shapes: currentShapes)
+    }
+
+    private static func loadFullSessionListPayload(
+        projectKey: String,
+        shapes: [String: SessionListShape]
+    ) -> SessionListPayload? {
         let trace = UserDefaults.standard.bool(forKey: "soul.sidebar.trace")
         guard let data = SoulCLI.runSync(["session", "list", "-p", projectKey, "--json", "--include-machine"]) else {
             if trace { NSLog("[sidebar-load] FAIL project=\(projectKey) reason=cli-returned-nil") }
             return nil
         }
         do {
-            return try decodeLedgerSessionListPayload(from: data)
+            let payload = try decodeLedgerSessionListPayload(from: data)
+            sessionListPayloadCacheLock.lock()
+            sessionListPayloadCache[projectKey] = SessionListPayloadCache(
+                payload: payload,
+                shapesById: shapes
+            )
+            sessionListPayloadCacheLock.unlock()
+            return payload
         } catch {
             // Decode failures here are how SOUL-093-class shape drifts surface:
             // a single schema mismatch nukes the whole project's payload, so
@@ -40,6 +82,145 @@ extension SoulRegistry {
             }
             return nil
         }
+    }
+
+    private static func refreshCachedSessionListPayload(
+        projectKey: String,
+        cached: SessionListPayloadCache,
+        currentShapes: [String: SessionListShape]
+    ) -> SessionListPayload {
+        var recordsById = Dictionary(uniqueKeysWithValues: cached.payload.sessions.map { ($0.session_id, $0) })
+        let cachedIds = Set(cached.shapesById.keys)
+        let currentIds = Set(currentShapes.keys)
+        let removedIds = cachedIds.subtracting(currentIds)
+        let candidateIds = currentIds.sorted()
+
+        for id in removedIds {
+            recordsById[id] = nil
+        }
+
+        for id in candidateIds {
+            let oldShape = cached.shapesById[id]
+            let newShape = currentShapes[id]
+            guard oldShape != newShape || recordsById[id] == nil else { continue }
+
+            if let record = loadSingleSessionListRecord(projectKey: projectKey, sessionId: id) {
+                recordsById[id] = record
+            } else if recordsById[id] == nil {
+                recordsById[id] = fallbackRecord(projectKey: projectKey, sessionId: id, shape: newShape)
+            } else if let shape = newShape {
+                recordsById[id]?.session_dir = shape.sessionDir
+                recordsById[id]?.hooks_path = shape.hooksPath
+                recordsById[id]?.hooks_mtime = shape.hooksMtime
+                recordsById[id]?.finalize_path = shape.finalizePath
+                recordsById[id]?.finalize_mtime = shape.finalizeMtime
+                recordsById[id]?.has_finalize = shape.finalizePath != nil
+            }
+        }
+
+        let payload = SessionListPayload(
+            project: cached.payload.project,
+            sessions: Array(recordsById.values)
+        )
+        sessionListPayloadCacheLock.lock()
+        sessionListPayloadCache[projectKey] = SessionListPayloadCache(
+            payload: payload,
+            shapesById: currentShapes
+        )
+        sessionListPayloadCacheLock.unlock()
+        return payload
+    }
+
+    private static func loadSingleSessionListRecord(projectKey: String, sessionId: String) -> SessionListRecord? {
+        guard let data = SoulCLI.runSync(["session", "show", sessionId, "-p", projectKey, "--json"]) else {
+            return nil
+        }
+        return try? decodeLedgerSessionListRecord(from: data)
+    }
+
+    private static func fallbackRecord(
+        projectKey: String,
+        sessionId: String,
+        shape: SessionListShape?
+    ) -> SessionListRecord? {
+        guard let shape else { return nil }
+        let json = """
+        {
+          "session_id": "\(sessionId)",
+          "session_dir": \(jsonLiteral(shape.sessionDir)),
+          "hooks_path": \(jsonLiteral(shape.hooksPath)),
+          "hooks_mtime": \(numberLiteral(shape.hooksMtime)),
+          "finalize_path": \(jsonLiteral(shape.finalizePath)),
+          "finalize_mtime": \(numberLiteral(shape.finalizeMtime)),
+          "has_finalize": \(shape.finalizePath == nil ? "false" : "true")
+        }
+        """
+        return try? decodeLedgerSessionListRecord(from: Data(json.utf8))
+    }
+
+    private static func jsonLiteral(_ value: String?) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let encoded = String(data: data, encoding: .utf8)
+        else { return "null" }
+        return encoded
+    }
+
+    private static func numberLiteral(_ value: Double?) -> String {
+        guard let value else { return "null" }
+        return String(value)
+    }
+
+    private static func scanSessionListShapes(projectKey: String) -> [String: SessionListShape] {
+        var shapes: [String: SessionListShape] = [:]
+        let fm = FileManager.default
+        for root in projectSessionDirs(projectKey) {
+            guard let entries = try? fm.contentsOfDirectory(atPath: root) else { continue }
+            for name in entries {
+                let path = "\(root)/\(name)"
+                var isDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
+
+                if isDirectory.boolValue, UUID(uuidString: name) != nil {
+                    var shape = shapes[name] ?? SessionListShape()
+                    shape.sessionDir = path
+                    let hooks = "\(path)/hooks.jsonl"
+                    if fm.fileExists(atPath: hooks) {
+                        shape.hooksPath = hooks
+                        shape.hooksMtime = mtimeSeconds(hooks)
+                    }
+                    shapes[name] = shape
+                    continue
+                }
+
+                guard !isDirectory.boolValue, name.hasSuffix(".json") else { continue }
+                let stem = String(name.dropLast(5))
+                let id: String?
+                if UUID(uuidString: stem) != nil {
+                    id = stem
+                } else if let tail = stem.split(separator: "_").last,
+                          UUID(uuidString: String(tail)) != nil {
+                    id = String(tail)
+                } else {
+                    id = nil
+                }
+                guard let id else { continue }
+                var shape = shapes[id] ?? SessionListShape()
+                let candidateMtime = mtimeSeconds(path)
+                if shape.finalizePath == nil || (candidateMtime ?? 0) > (shape.finalizeMtime ?? 0) {
+                    shape.finalizePath = path
+                    shape.finalizeMtime = candidateMtime
+                }
+                shapes[id] = shape
+            }
+        }
+        return shapes
+    }
+
+    private static func mtimeSeconds(_ path: String) -> Double? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let date = attrs[.modificationDate] as? Date
+        else { return nil }
+        return date.timeIntervalSince1970
     }
 
     // MARK: - Sessions

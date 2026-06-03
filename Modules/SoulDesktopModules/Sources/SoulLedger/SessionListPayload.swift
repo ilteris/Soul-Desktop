@@ -5,6 +5,11 @@ import Foundation
 public struct LedgerSessionListPayload: Decodable, Sendable {
     public var project: String
     public var sessions: [LedgerSessionListRecord]
+
+    public init(project: String, sessions: [LedgerSessionListRecord]) {
+        self.project = project
+        self.sessions = sessions
+    }
 }
 
 public struct LedgerSessionListRecord: Decodable, Sendable {

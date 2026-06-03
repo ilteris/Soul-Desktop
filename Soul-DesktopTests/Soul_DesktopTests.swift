@@ -60,6 +60,34 @@ struct Soul_DesktopTests {
         #expect(result.timedOut == true)
     }
 
+    @Test func registryWatcherFloorsFullRescanCadence() throws {
+        let now = DispatchTime(uptimeNanoseconds: 10_000_000_000)
+        let lastFire = DispatchTime(uptimeNanoseconds: 9_000_000_000)
+
+        let deadline = RegistryWatcher.nextFireDeadline(
+            now: now,
+            lastFireAt: lastFire,
+            debounceInterval: 0.25,
+            minimumFireInterval: 5
+        )
+
+        #expect(deadline.uptimeNanoseconds == 14_000_000_000)
+    }
+
+    @Test func registryWatcherUsesDebounceWhenMinimumCadenceElapsed() throws {
+        let now = DispatchTime(uptimeNanoseconds: 20_000_000_000)
+        let lastFire = DispatchTime(uptimeNanoseconds: 10_000_000_000)
+
+        let deadline = RegistryWatcher.nextFireDeadline(
+            now: now,
+            lastFireAt: lastFire,
+            debounceInterval: 0.25,
+            minimumFireInterval: 5
+        )
+
+        #expect(deadline.uptimeNanoseconds == 20_250_000_000)
+    }
+
     @Test func testCompactSlashCommandIsRecognized() throws {
         // SOUL-SOUL_DESKTOP-359: /compact must parse as a slash command and
         // be classified as a Soul command so the composer intercepts it
