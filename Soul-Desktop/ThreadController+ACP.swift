@@ -71,6 +71,7 @@ extension ThreadController {
     }
 
     func publishBufferedStreamPreviewSoon() {
+        guard !streamPreviewPublishingSuspended else { return }
         let now = Date()
         if now.timeIntervalSince(lastStreamPreviewPublishAt) >= Self.streamPreviewInterval {
             liveStreamPreview = agentStreamBuffer.preview()

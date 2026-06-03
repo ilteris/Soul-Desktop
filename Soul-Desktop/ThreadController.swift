@@ -172,6 +172,7 @@ final class ThreadController {
     var liveStreamPreview: String? = nil
     @ObservationIgnored var lastStreamPreviewPublishAt: Date = .distantPast
     @ObservationIgnored var streamPreviewPublishScheduled = false
+    @ObservationIgnored var streamPreviewPublishingSuspended = false
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
     @ObservationIgnored static let streamPreviewInterval: TimeInterval = 0.25
 

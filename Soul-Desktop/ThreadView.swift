@@ -348,8 +348,11 @@ struct ThreadView: View {
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
                         if controller.isWorking { freezeLiveTranscript() }
+                        controller.streamPreviewPublishingSuspended = true
                         userInteracting = true
                     case .idle, .animating:
+                        controller.streamPreviewPublishingSuspended = false
+                        controller.publishBufferedStreamPreviewSoon()
                         userInteracting = false
                         if !controller.isWorking {
                             frozenTranscriptRows = nil
