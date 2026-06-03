@@ -133,15 +133,17 @@ extension ThreadController {
             }
             switch action {
             case .startItem(let itemType, let codexId, let item):
+                // A new row must not jump ahead of streamed text still buffered
+                // for the prior item: drain first.
+                flushPendingCodexDeltas()
                 appendCodexItem(itemType: itemType, codexId: codexId, item: item, terminal: false)
             case .appendAgentText(let itemId, let delta):
-                guard let uuid = codexItemMap[itemId] else { return }
-                if let idx = items.firstIndex(where: { $0.id == uuid }),
-                   case .agentMessage(let id, let prior, _, let ts) = items[idx] {
-                    items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
-                }
-                lastActivityAt = Date()
+                enqueueCodexDelta(itemId: itemId, delta: delta, kind: .agentText)
             case .completeItem(let itemType, let codexId, let item):
+                // Completion reads `prior` off items[idx]; without draining, a
+                // completion payload lacking a final `text` would fall back to
+                // stale prior and drop the buffered deltas.
+                flushPendingCodexDeltas()
                 completeCodexItem(itemType: itemType, codexId: codexId, item: item)
             case .completeTurn(let turnId, let status, let errorMessage):
                 let turnIdMatches: Bool = {
@@ -151,6 +153,11 @@ extension ThreadController {
                     return true
                 }()
                 guard turnIdMatches else { return }
+                // Drain any trailing buffered text before the turn boundary so
+                // the AfterAgent ledger read (Turn.dispatchPending) persists the
+                // whole reply, not a frame-truncated tail. The kernel ledger is
+                // authoritative; a truncated flush here would corrupt it.
+                flushPendingCodexDeltas()
                 if let cont = codexTurnContinuation {
                     codexTurnContinuation = nil
                     if status == "failed", let errorMessage {
@@ -161,17 +168,13 @@ extension ThreadController {
                     }
                 }
             case .appendReasoning(let itemId, let delta):
-                // Codex's reasoning stream. Append each delta into the open
-                // agent-thought bubble so the user sees what the agent is
-                // reasoning through. Without this the `item/started` event
-                // creates an empty `Thinking…` card and the deltas vanish.
-                guard let uuid = codexItemMap[itemId] else { return }
-                if let idx = items.firstIndex(where: { $0.id == uuid }),
-                   case .agentThought(let id, let prior, _, let ts) = items[idx] {
-                    items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
-                }
+                // Codex's reasoning stream — coalesced like agent text. The
+                // open agent-thought bubble (created by item/started) accrues
+                // the batched delta on flush, so a fast reasoning stream no
+                // longer re-renders the transcript per token.
+                enqueueCodexDelta(itemId: itemId, delta: delta, kind: .reasoning)
             case .appendOutput(let itemId, let delta):
-                appendCodexOutputDelta(itemId: itemId, delta: delta)
+                enqueueCodexDelta(itemId: itemId, delta: delta, kind: .output)
             case .updatePlan(let itemId, let item):
                 updateCodexPlan(itemId: itemId, item: item)
             case .updateTokenUsage(let lastTotalTokens, let modelContextWindow):
@@ -189,6 +192,7 @@ extension ThreadController {
                     connectivity = .reconnecting(message: message)
                 } else {
                     connectivity = .normal
+                    flushPendingCodexDeltas()
                     items.append(.status(id: UUID(), text: "⚠ connection lost — \(message)"))
                 }
             case .transportWarning(let message):
@@ -201,8 +205,77 @@ extension ThreadController {
         case .stderr(let line):
             print("[codex stderr] \(line)")
         case .terminated(let cause):
+            flushPendingCodexDeltas()
             markProviderProcessTerminated(cause: cause)
             items.append(.error(id: UUID(), text: "codex child terminated: \(cause)"))
+        }
+    }
+
+    /// SOUL-SOUL_DESKTOP-379: buffer a codex streaming delta and schedule a
+    /// coalesced flush. Deltas for one item accumulate under its codex id, so a
+    /// window's worth of tokens collapses into a single `items` mutation (one
+    /// render) instead of one render per token. Mirrors the ACP coalescer
+    /// (`enqueueStreamUpdate`) for the provider that doesn't flow through
+    /// `apply(_:)`.
+    func enqueueCodexDelta(itemId: String, delta: String, kind: CodexDeltaKind) {
+        guard !delta.isEmpty else { return }
+        if var existing = pendingCodexDeltas[itemId] {
+            existing.text += delta
+            pendingCodexDeltas[itemId] = existing
+        } else {
+            pendingCodexDeltas[itemId] = (kind, delta)
+            pendingCodexOrder.append(itemId)
+        }
+        guard !codexFlushScheduled else { return }
+        codexFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.streamCoalesceInterval) { [weak self] in
+            MainActor.assumeIsolated { self?.flushPendingCodexDeltas() }
+        }
+    }
+
+    /// Drain every buffered codex delta in arrival order as one synchronous
+    /// batch. Idempotent and safe to force-call: a no-op when empty. Called on
+    /// the coalesce timer and synchronously before any non-delta codex mutation
+    /// (item start/completion, status/error rows, the turn boundary) so a row
+    /// can never paint ahead of buffered streamed text, and before the
+    /// AfterAgent ledger read via the universal `flushPendingStreamUpdates`.
+    func flushPendingCodexDeltas() {
+        codexFlushScheduled = false
+        guard !pendingCodexOrder.isEmpty else { return }
+        let order = pendingCodexOrder
+        let deltas = pendingCodexDeltas
+        pendingCodexOrder.removeAll(keepingCapacity: true)
+        pendingCodexDeltas.removeAll(keepingCapacity: true)
+        for itemId in order {
+            guard let entry = deltas[itemId] else { continue }
+            switch entry.kind {
+            case .agentText: applyCodexAgentText(itemId: itemId, delta: entry.text)
+            case .reasoning: applyCodexReasoning(itemId: itemId, delta: entry.text)
+            case .output: appendCodexOutputDelta(itemId: itemId, delta: entry.text)
+            }
+        }
+    }
+
+    /// Append a batched agent-text delta to the open agentMessage bubble.
+    /// Extracted verbatim from the former inline `.appendAgentText` case so the
+    /// coalesced flush reconstructs the identical item — only the cadence
+    /// changed (once per frame, not once per token).
+    private func applyCodexAgentText(itemId: String, delta: String) {
+        guard let uuid = codexItemMap[itemId] else { return }
+        if let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .agentMessage(let id, let prior, _, let ts) = items[idx] {
+            items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
+        }
+    }
+
+    /// Append a batched reasoning delta into the open agent-thought bubble.
+    /// Extracted verbatim from the former inline `.appendReasoning` case
+    /// (still no lazy bubble creation — only fills a bubble item/started made).
+    private func applyCodexReasoning(itemId: String, delta: String) {
+        guard let uuid = codexItemMap[itemId] else { return }
+        if let idx = items.firstIndex(where: { $0.id == uuid }),
+           case .agentThought(let id, let prior, _, let ts) = items[idx] {
+            items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
         }
     }
 
@@ -215,6 +288,7 @@ extension ThreadController {
                 decision: .string("ignored"),
                 handled: false
             )
+            flushPendingCodexDeltas()
             items.append(.status(id: UUID(), text: "■ Codex request ignored: \(method)"))
             return
         }
@@ -233,6 +307,7 @@ extension ThreadController {
                 decision: decision,
                 handled: true
             )
+            flushPendingCodexDeltas()
             items.append(.status(id: UUID(), text: "■ Codex command approval cancelled"))
             return
         }
@@ -244,6 +319,7 @@ extension ThreadController {
             decision: decision,
             handled: true
         )
+        flushPendingCodexDeltas()
         items.append(.status(id: UUID(), text: "✓ Codex command approval handled"))
     }
 

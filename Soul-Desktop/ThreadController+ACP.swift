@@ -38,6 +38,13 @@ extension ThreadController {
     /// events (terminated/request) so ordering is preserved.
     func flushPendingStreamUpdates() {
         streamFlushScheduled = false
+        // Universal turn-level drain. Codex streams through a separate buffer
+        // (it never enqueues ACP SessionUpdates), so drain it here too — that
+        // way every force-flush site that already calls this (cancel, recover,
+        // the AfterAgent ledger read, turn teardown) protects codex ordering
+        // and ledger integrity for free. Each buffer is empty for the other
+        // provider, so the cross-drain is a no-op guard.
+        flushPendingCodexDeltas()
         guard !pendingStreamUpdates.isEmpty else { return }
         let batch = pendingStreamUpdates
         pendingStreamUpdates.removeAll(keepingCapacity: true)

@@ -567,6 +567,21 @@ final class ThreadController {
     /// Active codex turn id, captured at `turn/start` and used to filter
     /// `turn/completed` notifications belonging to this turn.
     var codexActiveTurnId: String?
+    /// SOUL-SOUL_DESKTOP-379: Codex streaming coalescing. The codex app-server
+    /// emits agent-text / reasoning / output deltas token-by-token, and
+    /// `handleCodex` mutated `items` (observed) per delta — a full transcript
+    /// re-render per letter. The ACP coalescer (453b122) never covered this
+    /// because codex doesn't flow through `apply(_:)`. Accumulate deltas here
+    /// off the observation graph, keyed by codex item id, and flush as one
+    /// batched `items` mutation at most once per `streamCoalesceInterval`. The
+    /// universal turn-level drain (`flushPendingStreamUpdates`) and every
+    /// inline non-delta codex mutation force this buffer first, so a status
+    /// row, an item completion, or the AfterAgent ledger read can never paint
+    /// ahead of buffered streamed text.
+    enum CodexDeltaKind { case agentText, reasoning, output }
+    @ObservationIgnored var pendingCodexDeltas: [String: (kind: CodexDeltaKind, text: String)] = [:]
+    @ObservationIgnored var pendingCodexOrder: [String] = []
+    @ObservationIgnored var codexFlushScheduled = false
     /// Per-thread ACP session state, constructed lazily on first need.
     /// Owns codex token counters (and, in later refactor steps, the agent
     /// client handles + event stream). Historical-only threads loaded from
