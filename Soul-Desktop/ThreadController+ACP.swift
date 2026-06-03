@@ -55,6 +55,8 @@ extension ThreadController {
 
     func materializeBufferedAgentStreams() {
         let completed = agentStreamBuffer.drainAll()
+        liveStreamPreview = nil
+        streamPreviewPublishScheduled = false
         guard !completed.isEmpty else { return }
         for segment in completed {
             switch segment.kind {
@@ -64,6 +66,26 @@ extension ThreadController {
             case .thought:
                 items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
                 openAgentThoughtId = nil
+            }
+        }
+    }
+
+    func publishBufferedStreamPreviewSoon() {
+        let now = Date()
+        if now.timeIntervalSince(lastStreamPreviewPublishAt) >= Self.streamPreviewInterval {
+            liveStreamPreview = agentStreamBuffer.preview()
+            lastStreamPreviewPublishAt = now
+            return
+        }
+        guard !streamPreviewPublishScheduled else { return }
+        streamPreviewPublishScheduled = true
+        let delay = Self.streamPreviewInterval - now.timeIntervalSince(lastStreamPreviewPublishAt)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.02, delay)) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.streamPreviewPublishScheduled = false
+                self.liveStreamPreview = self.agentStreamBuffer.preview()
+                self.lastStreamPreviewPublishAt = Date()
             }
         }
     }
@@ -212,6 +234,7 @@ extension ThreadController {
 
     private func appendAgentChunk(_ chunk: String) {
         let bubbleId = agentStreamBuffer.appendACPMessage(chunk)
+        publishBufferedStreamPreviewSoon()
         // SOUL-SOUL_DESKTOP-065: persist each chunk to disk so the reply
         // text survives an abrupt child teardown (manual quit / force-quit
         // / OS sleep) that would otherwise lose everything written between
@@ -250,6 +273,7 @@ extension ThreadController {
 
     private func appendAgentThoughtChunk(_ chunk: String) {
         _ = agentStreamBuffer.appendACPThought(chunk, normalize: normalizeThoughtJoin)
+        publishBufferedStreamPreviewSoon()
     }
 
     /// Walk the tail of `items` looking for a recent toolCall whose

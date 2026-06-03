@@ -83,6 +83,7 @@ extension ThreadController {
         }
 
         turnStartedAt = Date()
+        liveStreamPreview = nil
         startStallWatchdog()
         return prompt
     }

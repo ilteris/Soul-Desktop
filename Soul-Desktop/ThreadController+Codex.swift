@@ -272,6 +272,7 @@ extension ThreadController {
             return
         }
         agentStreamBuffer.appendCodex(itemId: itemId, text: delta, kind: .message)
+        publishBufferedStreamPreviewSoon()
     }
 
     /// Append a batched reasoning delta into the open agent-thought bubble.
@@ -288,6 +289,7 @@ extension ThreadController {
             return
         }
         agentStreamBuffer.appendCodex(itemId: itemId, text: delta, kind: .thought)
+        publishBufferedStreamPreviewSoon()
     }
 
     private func handleCodexRequest(id: JSONRPCID, method: String, params: JSONValue?) async {

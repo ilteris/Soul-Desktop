@@ -92,7 +92,7 @@ struct ThreadView: View {
                 rows: frozenTranscriptRows,
                 hiddenMainCount: frozenHiddenMainCount,
                 queuedItems: [],
-                showWorkingIndicator: false
+                showWorkingIndicator: controller.isWorking
             )
         } else {
             liveTranscriptList
@@ -167,6 +167,10 @@ struct ThreadView: View {
                 BranchSeedIndicator().padding(.top, 18)
             }
             if showWorkingIndicator {
+                if let preview = controller.liveStreamPreview {
+                    LiveStreamPreview(text: preview)
+                        .padding(.top, 18)
+                }
                 WorkingIndicator(controller: controller).padding(.top, 18)
             }
             ForEach(queuedItems, id: \.id) { item in
@@ -601,6 +605,30 @@ private struct TranscriptRowSnapshot: Identifiable {
     let nestedChildren: [ThreadItem]
 
     var id: UUID { item.id }
+}
+
+private struct LiveStreamPreview: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(SoulType.body)
+            .foregroundStyle(SoulColor.fg.opacity(0.78))
+            .lineLimit(10)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(SoulColor.bgElevated.opacity(0.35))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(SoulColor.border.opacity(0.25), lineWidth: 0.5)
+            )
+            .transaction { $0.animation = nil }
+    }
 }
 
 /// SOUL-SOUL_DESKTOP-096: reference-type holder for scroll-anchor state.

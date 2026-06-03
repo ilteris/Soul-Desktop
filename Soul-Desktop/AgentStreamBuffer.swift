@@ -85,6 +85,19 @@ final class AgentStreamBuffer {
         }
     }
 
+    func preview(limit: Int = 1200) -> String? {
+        queue.sync {
+            let text = segments
+                .filter { $0.kind == .message }
+                .map(\.text)
+                .joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            if text.count <= limit { return text }
+            return String(text.suffix(limit))
+        }
+    }
+
     func clear() {
         queue.sync {
             segments.removeAll(keepingCapacity: true)

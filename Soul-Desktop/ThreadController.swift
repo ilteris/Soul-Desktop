@@ -169,7 +169,11 @@ final class ThreadController {
     @ObservationIgnored var pendingStreamUpdates: [SessionUpdate] = []
     @ObservationIgnored var streamFlushScheduled = false
     @ObservationIgnored var agentStreamBuffer = AgentStreamBuffer()
+    var liveStreamPreview: String? = nil
+    @ObservationIgnored private var lastStreamPreviewPublishAt: Date = .distantPast
+    @ObservationIgnored private var streamPreviewPublishScheduled = false
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
+    @ObservationIgnored static let streamPreviewInterval: TimeInterval = 0.25
 
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each
