@@ -99,7 +99,7 @@ struct ChatRow: View {
             }
             .layoutPriority(1)
             Spacer(minLength: 0)
-            if let worktreePath = session.worktreePath, !worktreePath.isEmpty {
+            if session.isWorktreePresent, let worktreePath = session.worktreePath {
                 WorktreeMergeabilityBadge(result: mergeability)
                     .task(id: "\(worktreePath):\(session.lastActivityAt?.timeIntervalSince1970 ?? session.timestamp.timeIntervalSince1970)") {
                         await refreshMergeability(worktreePath: worktreePath)
@@ -152,7 +152,7 @@ struct ChatRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering in
             hovering = isHovering
-            if isHovering, let worktreePath = session.worktreePath, !worktreePath.isEmpty {
+            if isHovering, session.isWorktreePresent, let worktreePath = session.worktreePath {
                 Task { await refreshMergeability(worktreePath: worktreePath) }
             }
         }

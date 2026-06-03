@@ -395,7 +395,7 @@ extension SidebarView {
                     repairSessionLink(session)
                 }
             }
-            if session.worktreePath?.isEmpty == false {
+            if session.isWorktreePresent {
                 Divider()
                 Button("Land worktree to main") {
                     landSessionWorktree(session)
@@ -489,7 +489,7 @@ extension SidebarView {
         var buckets: [String: [SoulSession]] = [:]
         for s in lives {
             let key: String = {
-                guard let p = s.worktreePath, !p.isEmpty else { return mainWorktreeLabel }
+                guard s.isWorktreePresent, let p = s.worktreePath else { return mainWorktreeLabel }
                 return (p as NSString).lastPathComponent
             }()
             buckets[key, default: []].append(s)

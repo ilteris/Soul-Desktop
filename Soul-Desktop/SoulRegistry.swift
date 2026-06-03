@@ -74,6 +74,12 @@ struct SoulSession: Identifiable, Hashable, Codable {
     /// sessions. Read from hooks.jsonl `SESSION_START` (live) or the
     /// finalized session JSON top-level field. Drives sidebar sub-grouping.
     var worktreePath: String? = nil
+    /// Returns true if `worktreePath` is specified and the directory actually exists on disk.
+    var isWorktreePresent: Bool {
+        guard let path = worktreePath, !path.isEmpty else { return false }
+        let expanded = (path as NSString).expandingTildeInPath
+        return FileManager.default.fileExists(atPath: expanded)
+    }
     /// Which agent owns this session's persistence file. Set by `allSessions`
     /// via `agentMatch`. Used by `AppShell.loadSession` to pick the right
     /// harness on click so a Claude session clicked while the harness is
