@@ -49,13 +49,6 @@ struct DiffView: View {
         }
         .padding(.vertical, details.kind.isOutput ? 0 : 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Single text-selection scope for the whole diff card. Without this
-        // each per-line Text would become its own NSTextView; with N lines
-        // that's N selection participants in every drag-tick layout pass —
-        // the bug that pegged the main thread to 100% during selection. One
-        // scope at this level lets AppKit treat the diff as a single
-        // selectable block.
-        .textSelection(.enabled)
         .background(SoulColor.bgElevated, in: RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)

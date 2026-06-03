@@ -250,6 +250,7 @@ struct ThreadView: View {
                     else { return false }
                     let itemCountBefore = controller.items.count
                     if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
+                        freezeLiveTranscript()
                         Task { await controller.dispatchPending(pending) }
                     }
                     let accepted = controller.items.count > itemCountBefore
@@ -342,11 +343,7 @@ struct ThreadView: View {
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
-                        if controller.isWorking, frozenTranscriptRows == nil {
-                            let snapshot = currentTranscriptSnapshot()
-                            frozenTranscriptRows = snapshot.rows
-                            frozenHiddenMainCount = snapshot.hiddenMainCount
-                        }
+                        if controller.isWorking { freezeLiveTranscript() }
                         userInteracting = true
                     case .idle, .animating:
                         userInteracting = false
@@ -408,14 +405,16 @@ struct ThreadView: View {
                     }
                 }
                 .onChange(of: controller.isWorking) { _, isWorking in
+                    if isWorking {
+                        freezeLiveTranscript()
+                        return
+                    }
                     // When a live turn completes (isWorking transitions to false), the WorkingIndicator
                     // is removed and the document shrinks by a tiny bit. Run a clean repair here to
                     // align the scroll bounds after the transition.
-                    if !isWorking {
-                        frozenTranscriptRows = nil
-                        frozenHiddenMainCount = 0
-                        repairTranscriptScrollView(reason: "isWorking")
-                    }
+                    frozenTranscriptRows = nil
+                    frozenHiddenMainCount = 0
+                    repairTranscriptScrollView(reason: "isWorking")
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores
@@ -484,6 +483,13 @@ struct ThreadView: View {
             ? Array(allMainItems.suffix(renderLimit))
             : allMainItems
         return (transcriptRows(from: mainItems), hiddenMainCount)
+    }
+
+    private func freezeLiveTranscript() {
+        guard frozenTranscriptRows == nil else { return }
+        let snapshot = currentTranscriptSnapshot()
+        frozenTranscriptRows = snapshot.rows
+        frozenHiddenMainCount = snapshot.hiddenMainCount
     }
 
     /// Restores the saved scroll anchor when a previously-mounted thread view

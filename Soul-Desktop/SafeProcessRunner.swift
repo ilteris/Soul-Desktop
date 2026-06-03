@@ -58,16 +58,21 @@ enum SafeProcessRunner {
             stdinPipe = pipe
         }
 
-        let termination = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            termination.signal()
-        }
-
         let stdoutBox = NSMutableData()
         let stderrBox = NSMutableData()
         let stdoutLock = NSLock()
         let stderrLock = NSLock()
         let drainGroup = DispatchGroup()
+        let statusLock = NSLock()
+        var terminationStatus: Int32?
+
+        let termination = DispatchSemaphore(value: 0)
+        process.terminationHandler = { process in
+            statusLock.lock()
+            terminationStatus = process.terminationStatus
+            statusLock.unlock()
+            termination.signal()
+        }
 
         drainGroup.enter()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -108,7 +113,10 @@ enum SafeProcessRunner {
 
         _ = drainGroup.wait(timeout: .now() + 1)
 
-        let status = timedOut ? timeoutStatus : process.terminationStatus
+        statusLock.lock()
+        let capturedStatus = terminationStatus
+        statusLock.unlock()
+        let status = timedOut ? timeoutStatus : (capturedStatus ?? EXIT_FAILURE)
         return SafeProcessResult(
             status: status,
             stdout: stdoutBox as Data,

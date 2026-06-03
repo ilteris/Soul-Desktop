@@ -71,7 +71,6 @@ struct SoulTraceChip: View {
                 Text(value)
                     .font(SoulFont.ui(12))
                     .foregroundStyle(SoulColor.fgMuted)
-                    .textSelection(.enabled)
             }
         }
     }

@@ -75,8 +75,6 @@ struct AgentThoughtRow: View {
                         .font(SoulFont.code(12).italic())
                         .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
                         .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .transition(.opacity)
                 }
             }
         }
@@ -154,8 +152,6 @@ struct AgentMessageRow: View, Equatable {
                     revealChunk: 100
                 )
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .transition(.opacity)
             }
 
             // Footer renders for live AND historical messages. Earlier
@@ -386,7 +382,6 @@ struct UserMessageRow: View {
                                     )
                                 )
                         )
-                        .textSelection(.enabled)
                     }
                 }
             } else {
@@ -409,7 +404,6 @@ struct UserMessageRow: View {
                             )
                         )
                 )
-                .textSelection(.enabled)
             }
         }
     }

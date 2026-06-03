@@ -713,7 +713,6 @@ private struct CodeBlockView: View {
                 .foregroundStyle(fg)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
 
             if lineCount > Self.collapseThreshold {
                 Button {
