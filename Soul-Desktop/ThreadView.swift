@@ -187,6 +187,8 @@ struct ThreadView: View {
             Color.clear
                 .frame(height: 44)
                 .id("__bottom__")
+                .onAppear { bottomSentinelVisible = true }
+                .onDisappear { bottomSentinelVisible = false }
         }
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
@@ -338,6 +340,11 @@ struct ThreadView: View {
                     // boundaries (user→agent, tool→agent, etc.) keep the
                     // full 18pt for visual breathing room.
                     transcriptList
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    jumpToBottomButton(proxy: proxy)
+                        .padding(.trailing, 22)
+                        .padding(.bottom, 14)
                 }
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(.hidden)
