@@ -412,6 +412,9 @@ struct ThreadView: View {
                         repairTranscriptScrollView(reason: "layout")
                     }
                 }
+                .onChange(of: controller.liveStreamPreview) { _, _ in
+                    followLiveTurn(proxy: proxy)
+                }
                 .onChange(of: controller.isWorking) { _, isWorking in
                     if isWorking {
                         freezeLiveTranscript()
@@ -529,6 +532,11 @@ struct ThreadView: View {
     /// hydration and session activation so opening an old session cannot
     /// force the transcript to the bottom.
     private func followLiveTurn(proxy: ScrollViewProxy) {
+        guard controller.isWorking,
+              !controller.isHydrating,
+              !userInteracting
+        else { return }
+        proxy.scrollTo("__bottom__", anchor: .bottom)
     }
 
     /// A user message coming after non-user content opens a new turn — give it
