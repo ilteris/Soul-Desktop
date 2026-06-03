@@ -31,15 +31,6 @@ Requires:
 
 Open `Soul-Desktop.xcodeproj` in Xcode, pick the `Soul-Desktop Dev` scheme, hit run.
 
-For a watch-and-rebuild dev loop:
-
-```
-brew install fswatch
-./scripts/dev.sh
-```
-
-This rebuilds and relaunches the app on every save to `Soul-Desktop/*.swift`.
-
 ## How it's wired
 
 ```
