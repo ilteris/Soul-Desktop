@@ -65,6 +65,7 @@ struct ThreadView: View {
     @State private var pendingCanvasWidth: CGFloat = 0
     @State private var canvasWidthRepinTask: Task<Void, Never>?
     @State private var transcriptScrollView: NSScrollView?
+    @State private var transcriptScrollObserver: NSObjectProtocol?
 
     /// AppShell-owned auto-compact watcher. Threaded in via environment
     /// (see AutoCompactController.swift) so we don't widen ThreadView's
@@ -187,8 +188,6 @@ struct ThreadView: View {
             Color.clear
                 .frame(height: 44)
                 .id("__bottom__")
-                .onAppear { bottomSentinelVisible = true }
-                .onDisappear { bottomSentinelVisible = false }
         }
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
@@ -329,6 +328,58 @@ struct ThreadView: View {
         )
     }
 
+    private func attachTranscriptScrollView(_ scrollView: NSScrollView) {
+        guard transcriptScrollView !== scrollView else {
+            updateBottomVisibility(scrollView)
+            return
+        }
+        detachTranscriptScrollObserver()
+        transcriptScrollView = scrollView
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        transcriptScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            updateBottomVisibility(scrollView)
+        }
+        DispatchQueue.main.async {
+            updateBottomVisibility(scrollView)
+        }
+    }
+
+    private func detachTranscriptScrollObserver() {
+        if let transcriptScrollObserver {
+            NotificationCenter.default.removeObserver(transcriptScrollObserver)
+            self.transcriptScrollObserver = nil
+        }
+    }
+
+    private func updateBottomVisibility(_ scrollView: NSScrollView? = nil) {
+        let scrollView = scrollView ?? transcriptScrollView
+        guard let scrollView,
+              let documentView = scrollView.documentView
+        else {
+            bottomSentinelVisible = true
+            return
+        }
+        let visibleHeight = scrollView.contentView.bounds.height
+        let documentHeight = documentView.bounds.height
+        guard documentHeight > visibleHeight + 1 else {
+            bottomSentinelVisible = true
+            return
+        }
+        let visibleMaxY = scrollView.contentView.bounds.maxY
+        bottomSentinelVisible = visibleMaxY >= documentHeight - 24
+    }
+
+    private func updateBottomVisibilityAfterLayout() {
+        DispatchQueue.main.async {
+            updateBottomVisibility()
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
@@ -349,7 +400,7 @@ struct ThreadView: View {
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(.hidden)
                 .background(NSScrollViewConfigurator { sv in
-                    transcriptScrollView = sv
+                    attachTranscriptScrollView(sv)
                 })
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
@@ -409,6 +460,7 @@ struct ThreadView: View {
                     repairTranscriptScrollView(reason: "hydrated")
                 }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
+                    updateBottomVisibilityAfterLayout()
                     followLiveTurn(proxy: proxy)
                     // SOUL-SOUL_DESKTOP-189: only repair layout when not actively running a turn.
                     // During an active turn (isWorking == true), the document grows rather than shrinks,
@@ -419,6 +471,7 @@ struct ThreadView: View {
                     }
                 }
                 .onChange(of: controller.isWorking) { _, isWorking in
+                    updateBottomVisibilityAfterLayout()
                     if isWorking {
                         freezeLiveTranscript()
                         return
@@ -430,11 +483,15 @@ struct ThreadView: View {
                     frozenHiddenMainCount = 0
                     repairTranscriptScrollView(reason: "isWorking")
                 }
+                .onChange(of: controller.liveStreamPreview) { _, _ in
+                    updateBottomVisibilityAfterLayout()
+                }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores
                 // the right position.
                 .onDisappear {
                     canvasWidthRepinTask?.cancel()
+                    detachTranscriptScrollObserver()
                     controller.scrollAnchorItemId = anchor.itemId
                 }
                 composerSection(proxy: proxy)
