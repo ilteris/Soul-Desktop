@@ -74,8 +74,21 @@ final class LiveSoulRegistryStore: SoulRegistryStore, @unchecked Sendable {
     /// Hit disk, recompute both project lists, publish to observers.
     /// Call this on app launch, project-mutation events, or when the user
     /// explicitly asks for a refresh.
+    ///
+    /// WARNING: `SoulRegistry.projects()` spawns the `soul` CLI synchronously
+    /// (SafeProcessRunner blocks up to 30s on `termination.wait`). Calling this
+    /// directly on the main actor freezes the UI and surfaces as the watchdog
+    /// SIGTERM that kills the hung child. Off-main callers should compute via
+    /// `SoulRegistry.projects()` in a detached task and then call `publish(_:)`
+    /// on the main actor instead.
     func refresh() {
-        let all = SoulRegistry.projects()
+        publish(SoulRegistry.projects())
+    }
+
+    /// Publish a precomputed project list (computed off-main) to the
+    /// `@Observable` cache. Call on the main actor — SwiftUI observes these
+    /// arrays. Single source of truth for the active-status filter.
+    func publish(_ all: [SoulProject]) {
         self.cachedProjects = all
         self.cachedActive = all.filter { ($0.status ?? "active") == "active" }
     }

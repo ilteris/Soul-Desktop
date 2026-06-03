@@ -73,10 +73,19 @@ struct LiveWorkspaceProjectService: WorkspaceProjectService {
     }
 
     func refreshProjects() async -> [SoulProject] {
+        // SoulRegistry.projects() spawns the `soul` CLI synchronously and blocks
+        // up to 30s (SafeProcessRunner.runSync). Run it OFF the main thread so a
+        // slow/hung CLI can't freeze the UI — the previous `MainActor.run` here
+        // ran the blocking spawn on the main actor, which is what surfaced as the
+        // main-thread hang + watchdog SIGTERM.
+        let all = await Task.detached(priority: .userInitiated) {
+            SoulRegistry.projects()
+        }.value
+        // Publish the @Observable cache on the main actor (SwiftUI observes it).
         await MainActor.run {
-            LiveSoulRegistryStore.shared.refresh()
-            return LiveSoulRegistryStore.shared.cachedActive
+            LiveSoulRegistryStore.shared.publish(all)
         }
+        return LiveSoulRegistryStore.shared.cachedActive
     }
 }
 
