@@ -227,10 +227,15 @@ struct SidebarView: View {
                     Spacer()
                     Menu {
                         Picker("Source", selection: $chatSourceFilter) {
+                            // Tags are canonical Provider.rawValue; the resolver
+                            // folds divergent ledger spellings ("geminicli",
+                            // "pi-native", …) through Provider.canonical before
+                            // comparing, so identity matches regardless of how a
+                            // row was tagged on disk (SOUL-SOUL_DESKTOP-381).
                             Text("All sources").tag(String?.none)
-                            Text("Claude").tag(String?.some("claude"))
-                            Text("Gemini").tag(String?.some("gemini"))
-                            Text("Pi").tag(String?.some("pi-native"))
+                            Text("Claude").tag(String?.some(Provider.claude.rawValue))
+                            Text("Gemini").tag(String?.some(Provider.geminiCLI.rawValue))
+                            Text("Pi").tag(String?.some(Provider.pi.rawValue))
                         }
                         Toggle("Hide untitled", isOn: $hideUntitled)
                         Toggle("Show unreadable sessions", isOn: $showUnreadable)

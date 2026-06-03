@@ -460,9 +460,8 @@ enum SidebarRowResolver {
                 return traceDrop("5-not-loadable-not-replayable", session.id)
             }
 
-            if let filter = ctx.chatSourceFilter,
-               (session.provider ?? session.source ?? session.liveProvider ?? "") != filter {
-                return traceDrop("6-source-filter want=\(filter) got=\(session.source ?? session.provider ?? session.liveProvider ?? "nil")", session.id)
+            if let filter = ctx.chatSourceFilter, !matchesSourceFilter(session, filter) {
+                return traceDrop("6-source-filter want=\(filter) got=\(session.provider ?? session.source ?? session.liveProvider ?? "nil")", session.id)
             }
 
             if ctx.hideUntitled {
@@ -513,9 +512,8 @@ enum SidebarRowResolver {
         }
 
         // 6. Provider chip filter.
-        if let filter = ctx.chatSourceFilter,
-           (session.source ?? session.liveProvider ?? "") != filter {
-            return traceDrop("6-source-filter want=\(filter) got=\(session.source ?? session.liveProvider ?? "nil")", session.id)
+        if let filter = ctx.chatSourceFilter, !matchesSourceFilter(session, filter) {
+            return traceDrop("6-source-filter want=\(filter) got=\(session.provider ?? session.source ?? session.liveProvider ?? "nil")", session.id)
         }
 
         // 7. Untitled toggle.
@@ -530,6 +528,22 @@ enum SidebarRowResolver {
             traceWrite("PASS proj=\(currentTraceProject) sid=\(session.id.prefix(8)) pc=\(session.promptCount) tt=\(session.transcriptTurns) writer=\(session.writer.rawValue) loadable=\(session.loadable) replayable=\(session.replayable)")
         }
         return true
+    }
+
+    /// True when `session` matches the active source-filter chip. Compares
+    /// canonical provider *identity*, not raw strings: the chip and the kernel
+    /// ledger spell the same provider differently ("gemini"/"geminicli"/
+    /// "geminiCLI", "pi"/"pi-native"), so an exact `==` silently dropped rows
+    /// (SOUL-SOUL_DESKTOP-381 — the Gemini chip hid every "geminicli"-tagged
+    /// row). Folds both sides through `Provider.canonical`. When the filter
+    /// string doesn't canonicalize (unknown chip value), falls back to exact
+    /// match so an unrecognized filter can't hide every row.
+    static func matchesSourceFilter(_ session: SoulSession, _ filter: String) -> Bool {
+        let tag = session.provider ?? session.source ?? session.liveProvider ?? ""
+        if let want = Provider.canonical(fromTag: filter) {
+            return Provider.canonical(fromTag: tag) == want
+        }
+        return tag == filter
     }
 
     private static func isUnownedPartialCapture(_ session: SoulSession) -> Bool {

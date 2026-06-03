@@ -8,6 +8,29 @@ enum Provider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Canonical provider identity from any recorded tag spelling. The kernel
+    /// ledger, the live overlay, and the sidebar filter chip have historically
+    /// used divergent strings for the same provider:
+    ///   - "gemini" / "geminicli" / "geminiCLI"  all mean Gemini-CLI
+    ///   - "pi" / "pi-native"                     both mean Pi
+    /// Folding them here (case-insensitively) is the single source of truth so
+    /// equality checks compare *identity*, not spelling. This closed the bug
+    /// (SOUL-SOUL_DESKTOP-381) where the Gemini source filter set "gemini" but
+    /// 22/28 sessions were tagged "geminicli", so rule 6's exact `!=` dropped
+    /// them and the sidebar looked empty under the Gemini chip.
+    /// Returns nil for empty/unknown tags so callers can choose a fallback.
+    static func canonical(fromTag tag: String?) -> Provider? {
+        guard let tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !tag.isEmpty else { return nil }
+        switch tag.lowercased() {
+        case "gemini", "geminicli": return .geminiCLI   // geminiCLI.lowercased() == "geminicli"
+        case "claude":              return .claude
+        case "pi", "pi-native":     return .pi
+        case "codex":               return .codex
+        default:                    return nil
+        }
+    }
+
     var label: String {
         switch self {
         case .geminiCLI: return "Gemini-CLI"
