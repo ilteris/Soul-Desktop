@@ -92,7 +92,8 @@ struct ThreadView: View {
         let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
-            ForEach(Array(mainItems.enumerated()), id: \.element.id) { i, item in
+            ForEach(mainItems) { item in
+                let i = mainItems.firstIndex(where: { $0.id == item.id }) ?? 0
                 ThreadItemRow(
                     projectPath: controller.project.path,
                     projectKey: controller.project.id,
