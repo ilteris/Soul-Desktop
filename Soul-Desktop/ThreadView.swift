@@ -612,14 +612,17 @@ private struct TranscriptRowSnapshot: Identifiable {
 
 private struct LiveStreamPreview: View {
     let text: String
+    @State private var displayedText: String = ""
+    @State private var textOpacity: Double = 1
 
     var body: some View {
-        Text(text)
+        Text(displayedText.isEmpty ? text : displayedText)
             .font(SoulType.body)
             .foregroundStyle(SoulColor.fg.opacity(0.78))
             .lineLimit(10)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(textOpacity)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(
@@ -630,7 +633,22 @@ private struct LiveStreamPreview: View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(SoulColor.border.opacity(0.25), lineWidth: 0.5)
             )
-            .transaction { $0.animation = nil }
+            .onAppear {
+                displayedText = text
+                textOpacity = 1
+            }
+            .onChange(of: text) { _, newText in
+                guard displayedText != newText else { return }
+                withAnimation(.easeOut(duration: 0.08)) {
+                    textOpacity = 0.72
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    displayedText = newText
+                    withAnimation(.easeOut(duration: 0.10)) {
+                        textOpacity = 1
+                    }
+                }
+            }
     }
 }
 
