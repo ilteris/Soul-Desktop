@@ -55,6 +55,10 @@ Three layers, top to bottom:
 - **Controller** — `ThreadController.swift` owns the per-thread state machine: spawn, resume, prompt, cancel, tool-call rendering, queue-on-busy, stall watchdog, slash-command expansion.
 - **ACP layer** — `Soul-Desktop/ACP/`. `ACPTransport` is the stdio framer, `ACPClient` is the JSON-RPC client, `ACPProtocol` is the type-checked notification decoder, `ACPProviderSpawn` resolves the right CLI invocation per provider.
 
+### Streaming UI invariant
+
+Provider token streams must never mutate observed transcript rows while incomplete. Agent text/reasoning deltas go into a non-observed stream buffer; the UI may show only a bounded, throttled preview, and preview publishing must pause during active scroll. Final markdown is materialized into transcript rows only at explicit safe boundaries such as item completion, turn completion, cancellation, recovery, or provider termination.
+
 ### Session resume
 
 Each provider has a different resume story; the desktop normalizes them through ACP's `session/load`:

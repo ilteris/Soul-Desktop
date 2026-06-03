@@ -27,3 +27,6 @@ Provider-specific behavior must be mapped into Soul's provider-neutral runtime c
 
 If a feature is exposed through ACP, app-server JSON-RPC, or a documented CLI path, Soul may render or route it. If it only exists inside a provider's private app/runtime state, Soul should either reconstruct it from the kernel ledger or document it as unsupported.
 
+## Streaming UI Invariant
+
+Provider token streams are not transcript rows. While an assistant response is incomplete, text and reasoning deltas must accumulate outside Observation in a stream buffer. The SwiftUI transcript may receive a bounded throttled preview, but preview publishing must pause during active scroll. Only materialize final markdown into `ThreadController.items` at explicit safe boundaries: item completion, turn completion, cancellation, recovery, or provider termination.

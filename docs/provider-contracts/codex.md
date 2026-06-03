@@ -70,7 +70,7 @@ Currently rendered or tracked surfaces include:
 - Connection retry and transport warnings
 - Command approval requests
 
-Streaming text, reasoning, and output deltas are coalesced before mutating the SwiftUI item graph. This keeps Codex streaming from invalidating the transcript view once per token.
+Streaming text and reasoning follow the shared streaming UI invariant: deltas accumulate outside the observed transcript graph, the UI receives only a bounded throttled preview, and final markdown is materialized into transcript rows at completion boundaries. Command output may continue to update tool rows because it is rendered as tool state, not assistant transcript text.
 
 ## Non-Goals
 
@@ -93,4 +93,3 @@ If a Codex feature is exposed by `codex app-server`, Soul may map it into the pr
 
 - preserve the behavior through Soul's ledger and session model, or
 - document the unsupported capability explicitly.
-
