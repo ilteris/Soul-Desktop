@@ -47,8 +47,6 @@ struct ThreadView: View {
     /// `.onDisappear`.
     @State private var anchor = ScrollAnchor()
 
-    @State private var bottomSentinelVisible: Bool = true
-
     /// True while the user's finger / trackpad is actively driving the
     /// scroll (any phase other than .idle). Sticky-follow consults this
     /// so streaming-content-grew snaps can't fight a manual scroll —
@@ -65,7 +63,6 @@ struct ThreadView: View {
     @State private var pendingCanvasWidth: CGFloat = 0
     @State private var canvasWidthRepinTask: Task<Void, Never>?
     @State private var transcriptScrollView: NSScrollView?
-    @State private var transcriptScrollObserver: NSObjectProtocol?
 
     /// AppShell-owned auto-compact watcher. Threaded in via environment
     /// (see AutoCompactController.swift) so we don't widen ThreadView's
@@ -300,25 +297,23 @@ struct ThreadView: View {
 
     @ViewBuilder
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
-        if !bottomSentinelVisible {
-            Button {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("__bottom__", anchor: .bottom)
-                }
-            } label: {
-                Image(systemName: "arrow.down")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(SoulColor.fg)
-                    .frame(width: 30, height: 30)
-                    .background(.regularMaterial, in: Circle())
-                    .overlay(
-                        Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
-                    )
-                    .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo("__bottom__", anchor: .bottom)
             }
-            .buttonStyle(.plain)
-            .help("Jump to bottom")
+        } label: {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SoulColor.fg)
+                .frame(width: 30, height: 30)
+                .background(.regularMaterial, in: Circle())
+                .overlay(
+                    Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
         }
+        .buttonStyle(.plain)
+        .help("Jump to bottom")
     }
 
     private var controllerDroppedAttachments: Binding<[String]> {
@@ -326,65 +321,6 @@ struct ThreadView: View {
             get: { controller.droppedAttachments },
             set: { controller.droppedAttachments = $0 }
         )
-    }
-
-    private func attachTranscriptScrollView(_ scrollView: NSScrollView) {
-        guard transcriptScrollView !== scrollView else {
-            updateBottomVisibility(scrollView)
-            return
-        }
-        detachTranscriptScrollObserver()
-        transcriptScrollView = scrollView
-        let clipView = scrollView.contentView
-        clipView.postsBoundsChangedNotifications = true
-        transcriptScrollObserver = NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { _ in
-            updateBottomVisibility(scrollView)
-        }
-        DispatchQueue.main.async {
-            updateBottomVisibility(scrollView)
-        }
-    }
-
-    private func detachTranscriptScrollObserver() {
-        if let transcriptScrollObserver {
-            NotificationCenter.default.removeObserver(transcriptScrollObserver)
-            self.transcriptScrollObserver = nil
-        }
-    }
-
-    private func updateBottomVisibility(_ scrollView: NSScrollView? = nil) {
-        let scrollView = scrollView ?? transcriptScrollView
-        guard let scrollView,
-              let documentView = scrollView.documentView
-        else {
-            bottomSentinelVisible = true
-            return
-        }
-        let visibleHeight = scrollView.contentView.bounds.height
-        let documentHeight = documentView.bounds.height
-        guard documentHeight > visibleHeight + 1 else {
-            bottomSentinelVisible = true
-            return
-        }
-        let visibleMaxY = scrollView.contentView.bounds.maxY
-        bottomSentinelVisible = visibleMaxY >= documentHeight - 24
-    }
-
-    private func updateBottomVisibilityAfterLayout() {
-        DispatchQueue.main.async {
-            updateBottomVisibility()
-        }
-    }
-
-    private func transcriptCanScroll() -> Bool {
-        guard let scrollView = transcriptScrollView,
-              let documentView = scrollView.documentView
-        else { return false }
-        return documentView.bounds.height > scrollView.contentView.bounds.height + 1
     }
 
     var body: some View {
@@ -407,16 +343,13 @@ struct ThreadView: View {
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .scrollIndicators(.hidden)
                 .background(NSScrollViewConfigurator { sv in
-                    attachTranscriptScrollView(sv)
+                    transcriptScrollView = sv
                 })
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
                         if controller.isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
-                        if transcriptCanScroll() {
-                            bottomSentinelVisible = false
-                        }
                         userInteracting = true
                     case .idle, .animating:
                         controller.streamPreviewPublishingSuspended = false
@@ -470,7 +403,6 @@ struct ThreadView: View {
                     repairTranscriptScrollView(reason: "hydrated")
                 }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
-                    updateBottomVisibilityAfterLayout()
                     followLiveTurn(proxy: proxy)
                     // SOUL-SOUL_DESKTOP-189: only repair layout when not actively running a turn.
                     // During an active turn (isWorking == true), the document grows rather than shrinks,
@@ -481,7 +413,6 @@ struct ThreadView: View {
                     }
                 }
                 .onChange(of: controller.isWorking) { _, isWorking in
-                    updateBottomVisibilityAfterLayout()
                     if isWorking {
                         freezeLiveTranscript()
                         return
@@ -493,15 +424,11 @@ struct ThreadView: View {
                     frozenHiddenMainCount = 0
                     repairTranscriptScrollView(reason: "isWorking")
                 }
-                .onChange(of: controller.liveStreamPreview) { _, _ in
-                    updateBottomVisibilityAfterLayout()
-                }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores
                 // the right position.
                 .onDisappear {
                     canvasWidthRepinTask?.cancel()
-                    detachTranscriptScrollObserver()
                     controller.scrollAnchorItemId = anchor.itemId
                 }
                 composerSection(proxy: proxy)
