@@ -170,8 +170,8 @@ final class ThreadController {
     @ObservationIgnored var streamFlushScheduled = false
     @ObservationIgnored var agentStreamBuffer = AgentStreamBuffer()
     var liveStreamPreview: String? = nil
-    @ObservationIgnored private var lastStreamPreviewPublishAt: Date = .distantPast
-    @ObservationIgnored private var streamPreviewPublishScheduled = false
+    @ObservationIgnored var lastStreamPreviewPublishAt: Date = .distantPast
+    @ObservationIgnored var streamPreviewPublishScheduled = false
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
     @ObservationIgnored static let streamPreviewInterval: TimeInterval = 0.25
 
