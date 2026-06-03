@@ -4,6 +4,8 @@ import AppKit
 import Combine
 
 struct ThreadView: View {
+    private static let maxRenderedTranscriptRows = 240
+
     @Bindable var controller: ThreadController
     @Binding var prompt: String
     var onCancel: () -> Void = {}
@@ -85,14 +87,25 @@ struct ThreadView: View {
         // inline under the parent's row via `nestedChildren`. Computed once
         // per body re-eval to avoid the O(N) lookup per enumerate iteration.
         let suppressedIds = controller.nestedSubagentChildItemIds
-        let mainItems = suppressedIds.isEmpty
+        let allMainItems = suppressedIds.isEmpty
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
+        let hiddenMainCount = max(0, allMainItems.count - Self.maxRenderedTranscriptRows)
+        let mainItems = hiddenMainCount > 0
+            ? Array(allMainItems.suffix(Self.maxRenderedTranscriptRows))
+            : allMainItems
         let queuedItems = split.queued
         let rows = transcriptRows(from: mainItems)
-        let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
+        let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) hidden=\(hiddenMainCount) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
+            if hiddenMainCount > 0 {
+                Text("\(hiddenMainCount) earlier items hidden while this session is live")
+                    .font(SoulFont.ui(11, weight: .medium))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
             ForEach(rows) { row in
                 ThreadItemRow(
                     projectPath: controller.project.path,
@@ -107,16 +120,6 @@ struct ThreadView: View {
                 .id(row.id)
                 .padding(.top, row.isTurnStart ? 10 : 0)
                 .frame(minHeight: 24, alignment: .topLeading)
-                .onAppear {
-                    guard !suppressAnchorWrites else { return }
-                    anchor.visibleIds.insert(row.id)
-                    updateAnchor(in: mainItems)
-                }
-                .onDisappear {
-                    guard !suppressAnchorWrites else { return }
-                    anchor.visibleIds.remove(row.id)
-                    updateAnchor(in: mainItems)
-                }
             }
             if branchSeedLoading {
                 BranchSeedIndicator().padding(.top, 18)
