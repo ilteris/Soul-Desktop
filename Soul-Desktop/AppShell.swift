@@ -329,9 +329,6 @@ struct AppShell: View {
                 if let thread { branchFrom(thread, to: provider) }
             }
         )
-        .animation(sidePanelAnimation, value: showSidebar)
-        .animation(sidePanelAnimation, value: rightPane.reviewVisible)
-        .animation(sidePanelAnimation, value: rightPane.filePreviewPath)
         .environment(\.openFilePreview) { raw in
             openPreviewPath(raw)
         }

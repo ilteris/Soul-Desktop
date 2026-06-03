@@ -88,7 +88,6 @@ extension AppShell {
                 }
                 if showTerminal {
                     terminalSection
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -185,21 +184,24 @@ extension AppShell {
                 .zIndex(isActive ? 1 : 0)
             }
             if sessions.activeThreadKey == nil {
-                switch workspace.snapshot.phase {
+                let project = currentProject()
+                let selectedProjectId = workspace.selectedProjectId ?? ""
+                let phase = workspace.snapshot.phase
+                switch phase {
                 case .booting:
                     SparkleSpinner(tint: SoulColor.fgMuted, size: 12)
                         .zIndex(100)
                 case .empty, .failed, .ready:
                     HeroEmptyState(
-                        projectName: currentProject()?.name ?? "your project",
-                        projectPath: currentProject()?.path,
-                        currentProjectID: workspace.selectedProjectId ?? "",
+                        projectName: project?.name ?? "your project",
+                        projectPath: project?.path,
+                        currentProjectID: selectedProjectId,
                         prompt: $prompt,
                         onSend: { display, agent, extraBlocks in startThread(display: display, agent: agent, extraBlocks: extraBlocks) },
                         onSelectProject: { workspace.selectProject($0) },
                         onNewProject: openNewProjectWizard,
-                        devCommand: currentProject()?.devCommand,
-                        devURL: currentProject()?.devURL,
+                        devCommand: project?.devCommand,
+                        devURL: project?.devURL,
                         devRunning: devServerRunning,
                         onRunLocal: runLocal,
                         pendingPermissionMode: $pendingPermissionMode,

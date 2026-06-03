@@ -184,9 +184,11 @@ final class SoulWorkspaceModel {
         let projects = await projectService.refreshProjects()
         guard currentGeneration == generation else { return }
         let selected = Self.resolveSelection(snapshot.selectedProjectId, projects: projects)
-        snapshot.projects = projects
-        snapshot.selectedProjectId = selected
-        snapshot.phase = projects.isEmpty ? .empty : .ready
+        var next = snapshot
+        next.projects = projects
+        next.selectedProjectId = selected
+        next.phase = projects.isEmpty ? .empty : .ready
+        snapshot = next
         persistSelectedProjectId(selected)
         updateWatcher()
     }
@@ -285,13 +287,15 @@ final class SoulWorkspaceModel {
             }
             return out
         }
-        snapshot.sessionsByProject[projectId] = ProjectSessions(
+        var next = snapshot
+        next.sessionsByProject[projectId] = ProjectSessions(
             rows: merged,
             freshness: freshness,
             loadedAt: Date()
         )
-        snapshot.staleProjects.remove(projectId)
-        snapshot.lastRefresh[projectId] = Date()
+        next.staleProjects.remove(projectId)
+        next.lastRefresh[projectId] = Date()
+        snapshot = next
     }
 
     private func persistSelectedProjectId(_ id: String?) {

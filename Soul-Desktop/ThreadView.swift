@@ -89,32 +89,32 @@ struct ThreadView: View {
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
         let queuedItems = split.queued
+        let rows = transcriptRows(from: mainItems)
         let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
-            ForEach(mainItems) { item in
-                let i = mainItems.firstIndex(where: { $0.id == item.id }) ?? 0
+            ForEach(rows) { row in
                 ThreadItemRow(
                     projectPath: controller.project.path,
                     projectKey: controller.project.id,
-                    item: item,
-                    isHistorical: controller.historicalIDs.contains(item.id),
+                    item: row.item,
+                    isHistorical: row.isHistorical,
                     isQueued: false,
-                    showAgentFooter: isLastInAgentRun(at: i, items: mainItems),
-                    nestedChildren: nestedChildren(for: item)
+                    showAgentFooter: row.showAgentFooter,
+                    nestedChildren: row.nestedChildren
                 )
-                .padding(.top, leadingGap(at: i, items: mainItems))
-                .id(item.id)
-                .padding(.top, isTurnStart(item: item, index: i, items: mainItems) ? 10 : 0)
+                .padding(.top, row.leadingGap)
+                .id(row.id)
+                .padding(.top, row.isTurnStart ? 10 : 0)
                 .frame(minHeight: 24, alignment: .topLeading)
                 .onAppear {
                     guard !suppressAnchorWrites else { return }
-                    anchor.visibleIds.insert(item.id)
+                    anchor.visibleIds.insert(row.id)
                     updateAnchor(in: mainItems)
                 }
                 .onDisappear {
                     guard !suppressAnchorWrites else { return }
-                    anchor.visibleIds.remove(item.id)
+                    anchor.visibleIds.remove(row.id)
                     updateAnchor(in: mainItems)
                 }
             }
@@ -144,18 +144,11 @@ struct ThreadView: View {
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
-        // SOUL-LAYOUT-CYCLE-2: refuse animation contexts propagated from
-        // above. AppShell attaches `.animation(sidePanelAnimation, value:
-        // showSidebar / reviewVisible / filePreviewPath)` to the
-        // NavigationSplitView root — those modifiers install an animation
-        // context on the WHOLE subtree, including this LazyVStack. When a
-        // panel toggles AND new agent rows land in the same animation
-        // window, every ForEach insert + structural `if` toggle inside the
-        // stack animates with MoveTransition, spinning the layout engine in
-        // StackLayout / _FlexFrameLayout / MoveLayout recursion. Row inserts
-        // should not inherit parent-driven animation; per-row hover/footer
-        // animations stay intact because they're scoped to their own
-        // subtrees.
+        // SOUL-LAYOUT-CYCLE-2: refuse any animation context propagated from
+        // parent containers. When panel toggles or transient chrome updates
+        // overlap with new transcript rows, animated ForEach inserts can push
+        // SwiftUI into StackLayout / _FlexFrameLayout / MoveLayout recursion.
+        // Row inserts are layout, not decoration.
         .transaction { $0.animation = nil }
     }
 
@@ -184,7 +177,6 @@ struct ThreadView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(SoulColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                .transition(.opacity)
             }
             ComposerView(
                 prompt: $prompt,
@@ -221,10 +213,14 @@ struct ThreadView: View {
                     if accepted {
                         userInteracting = false // Reset manual scroll override so following can activate
                         DispatchQueue.main.async {
-                            proxy.scrollTo("__bottom__", anchor: .bottom)
+                            withTransaction(Transaction(animation: nil)) {
+                                proxy.scrollTo("__bottom__", anchor: .bottom)
+                            }
                             repairTranscriptScrollView(reason: "send")
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                proxy.scrollTo("__bottom__", anchor: .bottom)
+                                withTransaction(Transaction(animation: nil)) {
+                                    proxy.scrollTo("__bottom__", anchor: .bottom)
+                                }
                                 repairTranscriptScrollView(reason: "send_settled")
                             }
                         }
@@ -285,7 +281,6 @@ struct ThreadView: View {
             }
             .buttonStyle(.plain)
             .help("Jump to bottom")
-            .transition(.opacity)
         }
     }
 
@@ -402,7 +397,9 @@ struct ThreadView: View {
                     // and is no longer needed.
                     guard !suppressAnchorWrites else { return }
                     if let id = anchor.itemId {
-                        proxy.scrollTo(id, anchor: .top)
+                        withTransaction(Transaction(animation: nil)) {
+                            proxy.scrollTo(id, anchor: .top)
+                        }
                     }
                 }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
@@ -499,7 +496,9 @@ struct ThreadView: View {
                 // this so the repair's clamp still runs and fixes an
                 // off-document origin → blank canvas.
                 scrollRestorePending = true
-                proxy.scrollTo(id, anchor: .top)
+                withTransaction(Transaction(animation: nil)) {
+                    proxy.scrollTo(id, anchor: .top)
+                }
             }
             repairTranscriptScrollView(reason: "restore")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -580,7 +579,9 @@ struct ThreadView: View {
         guard controller.isWorking, !controller.isHydrating, !userInteracting else { return }
         guard bottomSentinelVisible else { return }
         DispatchQueue.main.async {
-            proxy.scrollTo("__bottom__", anchor: .bottom)
+            withTransaction(Transaction(animation: nil)) {
+                proxy.scrollTo("__bottom__", anchor: .bottom)
+            }
         }
     }
 
@@ -621,6 +622,24 @@ struct ThreadView: View {
         return true
     }
 
+    /// Freeze all row-adjacent controller reads before SwiftUI starts diffing
+    /// the LazyVStack. Live transcript updates can otherwise re-enter layout
+    /// while each row is still deriving index/history/nesting from mutable
+    /// controller state.
+    private func transcriptRows(from items: [ThreadItem]) -> [TranscriptRowSnapshot] {
+        items.indices.map { i in
+            let item = items[i]
+            return TranscriptRowSnapshot(
+                item: item,
+                isHistorical: controller.historicalIDs.contains(item.id),
+                showAgentFooter: isLastInAgentRun(at: i, items: items),
+                leadingGap: leadingGap(at: i, items: items),
+                isTurnStart: isTurnStart(item: item, index: i, items: items),
+                nestedChildren: nestedChildren(for: item)
+            )
+        }
+    }
+
     /// Children-to-inline-render for a parent row. Empty unless the row is a
     /// `.toolCall(.subagent)` AND the controller has recorded nested
     /// subagent activity under that subagent's toolCallId.
@@ -633,6 +652,17 @@ struct ThreadView: View {
         return controller.nestedSubagentChildren(parentToolCallId: subagentId)
     }
 
+}
+
+private struct TranscriptRowSnapshot: Identifiable {
+    let item: ThreadItem
+    let isHistorical: Bool
+    let showAgentFooter: Bool
+    let leadingGap: CGFloat
+    let isTurnStart: Bool
+    let nestedChildren: [ThreadItem]
+
+    var id: UUID { item.id }
 }
 
 /// SOUL-SOUL_DESKTOP-096: reference-type holder for scroll-anchor state.

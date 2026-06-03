@@ -152,7 +152,6 @@ final class ProviderTranscriptWatcher {
         // ours or its parent.
         guard transcriptLooksLive(path: candidate.path) else { return }
         currentId = candidate.id
-        NSLog("[transcript-watcher] rotation detected → \(candidate.id)")
         onRotation?(candidate.id)
     }
 
