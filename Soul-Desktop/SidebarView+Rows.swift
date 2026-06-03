@@ -655,7 +655,12 @@ private struct LiveSessionRow: View {
 /// stable across its lifecycle (finalize → resume → re-finalize).
 enum ProviderIcon {
     static func customSymbolName(for raw: String?) -> String? {
-        switch raw {
+        // SOUL-SOUL_DESKTOP-267: normalize through the single canonicalizer
+        // first so every spelling — including "recovered_<tool>" from the
+        // kernel orphan-recovery path — resolves to one identity. Fall back
+        // to the raw string for tags canonical() doesn't know.
+        let key = Provider.canonical(fromTag: raw)?.rawValue ?? raw
+        switch key {
         case "claude": return "claude"
         case "codex":  return "codex"
         default:       return nil
@@ -663,7 +668,8 @@ enum ProviderIcon {
     }
 
     static func symbol(for raw: String?) -> String {
-        switch raw {
+        let key = Provider.canonical(fromTag: raw)?.rawValue ?? raw
+        switch key {
         case "claude":                  return "circle.hexagongrid"
         case "gemini", "geminiCLI":     return "g.square"
         case "pi", "pi-native":         return "p.square"
