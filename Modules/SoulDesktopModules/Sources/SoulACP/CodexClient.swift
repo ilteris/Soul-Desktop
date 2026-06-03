@@ -166,8 +166,19 @@ public actor CodexClient {
         }
     }
 
+    /// Wire-protocol dump (every JSON-RPC envelope in/out) is debug-only and
+    /// fires per message — per token while streaming. Off by default; the
+    /// `[codex stderr] ← wire: …` console spam is gated behind the same flag
+    /// as the codex protocol log. Read ONCE (a per-message UserDefaults read
+    /// would itself be hot). Enable with:
+    ///   defaults write Soul-Desktop soul.codex.trace -bool true
+    /// then relaunch. Real stderr + parse-errors are never gated.
+    private static let wireTraceEnabled = UserDefaults.standard.bool(forKey: "soul.codex.trace")
+
     private func sendOrFail(id: JSONRPCID, envelope: Data) async {
-        eventCont?.yield(.stderr("→ wire: \(String(data: envelope, encoding: .utf8) ?? "?")"))
+        if Self.wireTraceEnabled {
+            eventCont?.yield(.stderr("→ wire: \(String(data: envelope, encoding: .utf8) ?? "?")"))
+        }
         do {
             try await transport.send(envelope)
         } catch {
@@ -178,7 +189,9 @@ public actor CodexClient {
 
     private func notify(method: String, params: JSONValue) async throws {
         let envelope = try makeEnvelope(id: nil, method: method, params: params)
-        eventCont?.yield(.stderr("→ wire (notify): \(String(data: envelope, encoding: .utf8) ?? "?")"))
+        if Self.wireTraceEnabled {
+            eventCont?.yield(.stderr("→ wire (notify): \(String(data: envelope, encoding: .utf8) ?? "?")"))
+        }
         try await transport.send(envelope)
     }
 
@@ -225,7 +238,9 @@ public actor CodexClient {
 
     private func readLoop() async {
         for await line in transport.incomingLines {
-            eventCont?.yield(.stderr("\(wireTimestamp()) ← wire: \(line)"))
+            if Self.wireTraceEnabled {
+                eventCont?.yield(.stderr("\(wireTimestamp()) ← wire: \(line)"))
+            }
             guard let data = line.data(using: .utf8) else { continue }
             do {
                 let env = try decoder.decode(JSONRPCEnvelope.self, from: data)

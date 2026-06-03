@@ -301,9 +301,17 @@ public actor ACPClient {
 
     // MARK: read loop
 
+    /// Per-message wire dump (every incoming JSON-RPC line) is debug-only.
+    /// Gated behind the documented ACP trace flag, read ONCE. Enable with:
+    ///   defaults write Soul-Desktop soul.acp.trace -bool true
+    /// then relaunch. Parse-errors are never gated.
+    private static let wireTraceEnabled = UserDefaults.standard.bool(forKey: "soul.acp.trace")
+
     private func readLoop() async {
         for await line in transport.incomingLines {
-            eventCont?.yield(.stderr("\(wireTimestamp()) ← wire: \(line)"))
+            if Self.wireTraceEnabled {
+                eventCont?.yield(.stderr("\(wireTimestamp()) ← wire: \(line)"))
+            }
             guard let data = line.data(using: .utf8) else { continue }
             do {
                 let env = try decoder.decode(JSONRPCEnvelope.self, from: data)
