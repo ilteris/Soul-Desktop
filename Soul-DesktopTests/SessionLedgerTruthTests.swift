@@ -229,6 +229,70 @@ struct SessionLedgerTruthTests {
         #expect(SidebarRowResolver.shouldShow(session, in: claudeCtx) == false)
     }
 
+    /// SOUL-SOUL_DESKTOP-381: the Gemini source filter set "gemini" but the
+    /// majority of gemini sessions are tagged "geminicli" (lowercase) on disk.
+    /// Rule 6's old exact `!=` dropped them, so the sidebar looked empty under
+    /// the Gemini chip. The filter must compare canonical provider identity, so
+    /// every gemini spelling survives the Gemini chip and none leak under others.
+    @Test func sourceFilterFoldsDivergentGeminiSpellings() throws {
+        let project = SessionLedgerTruthTests.testProject()
+
+        func geminiRow(taggedProvider: String?, source: String?) -> SoulSession {
+            var s = SoulSession(
+                id: UUID().uuidString,
+                project: project.id,
+                timestamp: Date(),
+                title: "Gemini row",
+                source: source,
+                eventCount: 6,
+                promptCount: 3,
+                loadable: true,
+                replayable: true
+            )
+            s.sessionVisibility = "human"   // kernel-contract branch (rule 6 @ 463)
+            s.provider = taggedProvider
+            return s
+        }
+
+        let geminiCtx = SidebarRowResolver.VisibilityContext(
+            archivedIds: [], showUnreadable: false,
+            chatSourceFilter: Provider.geminiCLI.rawValue, hideUntitled: false
+        )
+        let claudeCtx = SidebarRowResolver.VisibilityContext(
+            archivedIds: [], showUnreadable: false,
+            chatSourceFilter: Provider.claude.rawValue, hideUntitled: false
+        )
+
+        // All three real-world gemini spellings survive the Gemini chip.
+        for tag in ["geminicli", "gemini", "geminiCLI"] {
+            let row = geminiRow(taggedProvider: tag, source: nil)
+            #expect(SidebarRowResolver.shouldShow(row, in: geminiCtx) == true)
+            #expect(SidebarRowResolver.shouldShow(row, in: claudeCtx) == false)
+        }
+
+        // Fallback branch (no sessionVisibility): source-tagged gemini row.
+        var fallback = geminiRow(taggedProvider: nil, source: "gemini")
+        fallback.sessionVisibility = nil
+        #expect(SidebarRowResolver.shouldShow(fallback, in: geminiCtx) == true)
+        #expect(SidebarRowResolver.shouldShow(fallback, in: claudeCtx) == false)
+    }
+
+    /// Pi has the identical latent bug: the chip historically set "pi-native"
+    /// but sessions are tagged "pi". Lock the canonical fold so both spellings
+    /// resolve to the same identity.
+    @Test func providerCanonicalFoldsAliases() throws {
+        #expect(Provider.canonical(fromTag: "geminicli") == .geminiCLI)
+        #expect(Provider.canonical(fromTag: "gemini") == .geminiCLI)
+        #expect(Provider.canonical(fromTag: "geminiCLI") == .geminiCLI)
+        #expect(Provider.canonical(fromTag: "pi") == .pi)
+        #expect(Provider.canonical(fromTag: "pi-native") == .pi)
+        #expect(Provider.canonical(fromTag: "claude") == .claude)
+        #expect(Provider.canonical(fromTag: "codex") == .codex)
+        #expect(Provider.canonical(fromTag: "  ") == nil)
+        #expect(Provider.canonical(fromTag: nil) == nil)
+        #expect(Provider.canonical(fromTag: "wat") == nil)
+    }
+
     @Test func promptBearingLedgerIsVisibleConversation() throws {
         try SessionLedgerTruthTests.withTempHome { _ in
             let project = SessionLedgerTruthTests.testProject()
