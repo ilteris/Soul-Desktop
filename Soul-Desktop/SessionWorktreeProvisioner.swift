@@ -24,9 +24,9 @@ enum SessionWorktreeProvisioner {
     static let autoProvisionKey = "soul.worktree.autoProvisionNewSessions"
     static let fallbackPolicyKey = "soul.worktree.fallbackPolicy"
 
-    /// Default ON. Absence of the key reads as enabled.
+    /// Default OFF. Absence of the key reads as disabled.
     static var autoProvisionEnabled: Bool {
-        if UserDefaults.standard.object(forKey: autoProvisionKey) == nil { return true }
+        if UserDefaults.standard.object(forKey: autoProvisionKey) == nil { return false }
         return UserDefaults.standard.bool(forKey: autoProvisionKey)
     }
 

@@ -52,9 +52,9 @@ struct SessionWorktreeProvisionerTests {
     }
 
     @Test
-    func autoProvisionDefaultsOnWhenUnset() {
+    func autoProvisionDefaultsOffWhenUnset() {
         UserDefaults.standard.removeObject(forKey: SessionWorktreeProvisioner.autoProvisionKey)
-        #expect(SessionWorktreeProvisioner.autoProvisionEnabled == true)
+        #expect(SessionWorktreeProvisioner.autoProvisionEnabled == false)
     }
 
     @Test
