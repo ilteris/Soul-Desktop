@@ -153,6 +153,7 @@ extension ThreadController {
             flushPendingStreamUpdates()
             materializeBufferedAgentStreams()
             isWorking = false
+            liveStreamPreview = nil
             turnStartedAt = nil
             stopStallWatchdog()
             drainQueuedPromptAfterTurn()
