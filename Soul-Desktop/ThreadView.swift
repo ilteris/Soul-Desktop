@@ -85,6 +85,22 @@ struct ThreadView: View {
     // surrounding ScrollViewReader / ZStack expression back under budget.
     @ViewBuilder
     private var transcriptList: some View {
+        if let frozenTranscriptRows {
+            transcriptStack(
+                projectPath: controller.project.path,
+                projectKey: controller.project.id,
+                rows: frozenTranscriptRows,
+                hiddenMainCount: frozenHiddenMainCount,
+                queuedItems: [],
+                showWorkingIndicator: false
+            )
+        } else {
+            liveTranscriptList
+        }
+    }
+
+    @ViewBuilder
+    private var liveTranscriptList: some View {
         let split = controller.groupedItemsSplit
         // Suppress rows that are nested under a subagent — those are rendered
         // inline under the parent's row via `nestedChildren`. Computed once
@@ -102,22 +118,40 @@ struct ThreadView: View {
             : allMainItems
         let queuedItems = split.queued
         let rows = transcriptRows(from: mainItems)
-        let renderedRows = frozenTranscriptRows ?? rows
-        let renderedHiddenMainCount = frozenTranscriptRows == nil ? hiddenMainCount : frozenHiddenMainCount
-        let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) hidden=\(hiddenMainCount) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
+        let isWorking = controller.isWorking
+        let _ = SoulSignposts.event("Flash.transcriptList.body", "main=\(mainItems.count) hidden=\(hiddenMainCount) queued=\(queuedItems.count) isWorking=\(isWorking) isHydrating=\(controller.isHydrating)")
+        transcriptStack(
+            projectPath: controller.project.path,
+            projectKey: controller.project.id,
+            rows: rows,
+            hiddenMainCount: hiddenMainCount,
+            queuedItems: queuedItems,
+            showWorkingIndicator: isWorking
+        )
+    }
+
+    @ViewBuilder
+    private func transcriptStack(
+        projectPath: String?,
+        projectKey: String,
+        rows: [TranscriptRowSnapshot],
+        hiddenMainCount: Int,
+        queuedItems: [ThreadItem],
+        showWorkingIndicator: Bool
+    ) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
-            if renderedHiddenMainCount > 0 {
-                Text("\(renderedHiddenMainCount) earlier items hidden while this session is live")
+            if hiddenMainCount > 0 {
+                Text("\(hiddenMainCount) earlier items hidden while this session is live")
                     .font(SoulFont.ui(11, weight: .medium))
                     .foregroundStyle(SoulColor.fgSubtle)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-            ForEach(renderedRows) { row in
+            ForEach(rows) { row in
                 ThreadItemRow(
-                    projectPath: controller.project.path,
-                    projectKey: controller.project.id,
+                    projectPath: projectPath,
+                    projectKey: projectKey,
                     item: row.item,
                     isHistorical: row.isHistorical,
                     isQueued: false,
@@ -132,13 +166,13 @@ struct ThreadView: View {
             if branchSeedLoading {
                 BranchSeedIndicator().padding(.top, 18)
             }
-            if controller.isWorking {
+            if showWorkingIndicator {
                 WorkingIndicator(controller: controller).padding(.top, 18)
             }
             ForEach(queuedItems, id: \.id) { item in
                 ThreadItemRow(
-                    projectPath: controller.project.path,
-                    projectKey: controller.project.id,
+                    projectPath: projectPath,
+                    projectKey: projectKey,
                     item: item,
                     isHistorical: false,
                     isQueued: true
@@ -316,8 +350,10 @@ struct ThreadView: View {
                         userInteracting = true
                     case .idle, .animating:
                         userInteracting = false
-                        frozenTranscriptRows = nil
-                        frozenHiddenMainCount = 0
+                        if !controller.isWorking {
+                            frozenTranscriptRows = nil
+                            frozenHiddenMainCount = 0
+                        }
                     }
                 }
                 .onAppear {
@@ -376,6 +412,8 @@ struct ThreadView: View {
                     // is removed and the document shrinks by a tiny bit. Run a clean repair here to
                     // align the scroll bounds after the transition.
                     if !isWorking {
+                        frozenTranscriptRows = nil
+                        frozenHiddenMainCount = 0
                         repairTranscriptScrollView(reason: "isWorking")
                     }
                 }
