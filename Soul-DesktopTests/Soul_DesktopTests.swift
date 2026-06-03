@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import SoulCore
 @testable import Soul_Desktop
 
 struct Soul_DesktopTests {
@@ -119,6 +120,98 @@ struct Soul_DesktopTests {
 
         let zero = ContextUsage(tokens: 0, max: 1_000_000, isEstimate: false, breakdown: nil)
         #expect(zero.fraction == 0.0)
+    }
+
+    // MARK: - SOUL-379 Codex stream-coalescing contract
+    //
+    // Pins the drain-ordering invariant the adversarial audit of 2b8f1b2
+    // flagged as untested: a future edit that breaks coalescing or the
+    // finalize guard now fails a red test instead of silently regressing.
+
+    private static func codexTestProject() -> SoulProject {
+        SoulProject(id: "test", name: "Test", path: "/tmp/soul-test",
+                    pillar: nil, tier: nil, status: nil,
+                    primaryHost: nil, devCommand: nil, devURL: nil)
+    }
+
+    @MainActor
+    @Test func codexCoalesceBuffersDeltasOffGraphThenFlushesOnce() throws {
+        let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
+        let uuid = UUID()
+        controller.items = [.agentMessage(id: uuid, text: "", complete: false, timestamp: Date())]
+        controller.codexItemMap = ["c1": uuid]
+
+        controller.enqueueCodexDelta(itemId: "c1", delta: "Hel", kind: .agentText)
+        controller.enqueueCodexDelta(itemId: "c1", delta: "lo", kind: .agentText)
+
+        // Pre-flush: the observed item is untouched; deltas live in the buffer.
+        guard case .agentMessage(_, let pre, _, _) = controller.items[0] else {
+            Issue.record("expected agentMessage"); return
+        }
+        #expect(pre == "")
+        #expect(controller.pendingCodexOrder == ["c1"])
+
+        controller.flushPendingCodexDeltas()
+
+        // Post-flush: a single batched mutation carries both deltas; buffer +
+        // schedule flag reset so the next enqueue re-arms the timer.
+        guard case .agentMessage(_, let post, let complete, _) = controller.items[0] else {
+            Issue.record("expected agentMessage"); return
+        }
+        #expect(post == "Hello")
+        #expect(complete == false)
+        #expect(controller.pendingCodexOrder.isEmpty)
+        #expect(controller.codexFlushScheduled == false)
+    }
+
+    @MainActor
+    @Test func codexCoalesceKeepsPerItemTextAndIsIdempotent() throws {
+        let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
+        let a = UUID(); let b = UUID()
+        controller.items = [
+            .agentMessage(id: a, text: "", complete: false, timestamp: Date()),
+            .agentThought(id: b, text: "", complete: false, timestamp: Date()),
+        ]
+        controller.codexItemMap = ["a": a, "b": b]
+
+        // Interleaved deltas for two items accumulate independently.
+        controller.enqueueCodexDelta(itemId: "a", delta: "ans", kind: .agentText)
+        controller.enqueueCodexDelta(itemId: "b", delta: "rea", kind: .reasoning)
+        controller.enqueueCodexDelta(itemId: "a", delta: "wer", kind: .agentText)
+        controller.flushPendingCodexDeltas()
+
+        guard case .agentMessage(_, let aText, _, _) = controller.items[0],
+              case .agentThought(_, let bText, _, _) = controller.items[1] else {
+            Issue.record("unexpected item shapes"); return
+        }
+        #expect(aText == "answer")
+        #expect(bText == "rea")
+
+        // A second flush with an empty buffer is a no-op (text unchanged).
+        controller.flushPendingCodexDeltas()
+        guard case .agentMessage(_, let aText2, _, _) = controller.items[0] else {
+            Issue.record("unexpected"); return
+        }
+        #expect(aText2 == "answer")
+    }
+
+    @MainActor
+    @Test func codexCoalesceLateDeltaDoesNotReopenCompletedBubble() throws {
+        // The finalize-guard hardening: a stray delta arriving after the bubble
+        // finalized must not flip complete:true back to false or append text.
+        let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
+        let uuid = UUID()
+        controller.items = [.agentMessage(id: uuid, text: "done", complete: true, timestamp: Date())]
+        controller.codexItemMap = ["c1": uuid]
+
+        controller.enqueueCodexDelta(itemId: "c1", delta: " extra", kind: .agentText)
+        controller.flushPendingCodexDeltas()
+
+        guard case .agentMessage(_, let text, let complete, _) = controller.items[0] else {
+            Issue.record("expected agentMessage"); return
+        }
+        #expect(text == "done")   // late delta dropped
+        #expect(complete == true) // bubble stays finalized
     }
 
 }

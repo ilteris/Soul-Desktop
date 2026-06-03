@@ -263,7 +263,11 @@ extension ThreadController {
     private func applyCodexAgentText(itemId: String, delta: String) {
         guard let uuid = codexItemMap[itemId] else { return }
         if let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .agentMessage(let id, let prior, _, let ts) = items[idx] {
+           case .agentMessage(let id, let prior, let wasComplete, let ts) = items[idx] {
+            // A stray delta arriving after the bubble finalized must NOT reopen
+            // it to complete:false — codex's completion `text` is authoritative
+            // and the row already rendered done. Drop the late delta.
+            guard !wasComplete else { return }
             items[idx] = .agentMessage(id: id, text: prior + delta, complete: false, timestamp: ts)
         }
     }
@@ -274,7 +278,10 @@ extension ThreadController {
     private func applyCodexReasoning(itemId: String, delta: String) {
         guard let uuid = codexItemMap[itemId] else { return }
         if let idx = items.firstIndex(where: { $0.id == uuid }),
-           case .agentThought(let id, let prior, _, let ts) = items[idx] {
+           case .agentThought(let id, let prior, let wasComplete, let ts) = items[idx] {
+            // Same finalize guard as agent text: a late reasoning delta must
+            // not reopen a completed thought bubble.
+            guard !wasComplete else { return }
             items[idx] = .agentThought(id: id, text: prior + delta, complete: false, timestamp: ts)
         }
     }
