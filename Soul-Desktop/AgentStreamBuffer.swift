@@ -93,7 +93,11 @@ final class AgentStreamBuffer {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             if text.count <= limit { return text }
-            return String(text.suffix(limit))
+            let headLimit = max(0, limit / 2)
+            let tailLimit = max(0, limit - headLimit)
+            let head = String(text.prefix(headLimit)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let tail = String(text.suffix(tailLimit)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return [head, "…", tail].filter { !$0.isEmpty }.joined(separator: "\n\n")
         }
     }
 

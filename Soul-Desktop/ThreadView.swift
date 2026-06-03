@@ -626,7 +626,6 @@ private struct LiveStreamPreview: View {
         Text(text)
             .font(SoulType.body)
             .foregroundStyle(SoulColor.fg.opacity(0.78))
-            .lineLimit(10)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)

@@ -54,8 +54,8 @@ extension ThreadController {
     }
 
     func materializeBufferedAgentStreams() {
+        let priorPreview = liveStreamPreview
         let completed = agentStreamBuffer.drainAll()
-        liveStreamPreview = nil
         streamPreviewPublishScheduled = false
         guard !completed.isEmpty else { return }
         for segment in completed {
@@ -67,6 +67,13 @@ extension ThreadController {
                 items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
                 openAgentThoughtId = nil
             }
+        }
+        if isWorking {
+            liveStreamPreview = priorPreview ?? completed.map(\.text)
+                .joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            liveStreamPreview = nil
         }
     }
 

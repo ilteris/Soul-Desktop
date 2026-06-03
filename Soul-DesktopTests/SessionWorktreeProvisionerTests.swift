@@ -5,7 +5,7 @@ import Foundation
 /// SOUL-364: per-session worktree provisioning. Covers the pure logic
 /// (branch naming, slug normalization, policy/setting defaults) and the new
 /// `isGitRepository` gate that decides whether a project root can be isolated.
-@Suite("SessionWorktreeProvisioner Tests")
+@Suite("SessionWorktreeProvisioner Tests", .serialized)
 struct SessionWorktreeProvisionerTests {
 
     private func run(_ args: [String], cwd: String) -> Bool {
@@ -55,6 +55,29 @@ struct SessionWorktreeProvisionerTests {
     func autoProvisionDefaultsOffWhenUnset() {
         UserDefaults.standard.removeObject(forKey: SessionWorktreeProvisioner.autoProvisionKey)
         #expect(SessionWorktreeProvisioner.autoProvisionEnabled == false)
+    }
+
+    @Test
+    func autoProvisionResolutionChain() {
+        // 1. Explicit per-session policy in PROJECTS.json
+        let pSession = SoulProject(id: "soul", name: "Soul OS", path: "~/dotfiles/soul", worktreePolicy: "per-session")
+        #expect(SessionWorktreeProvisioner.autoProvisionEnabled(for: pSession) == true)
+
+        // 2. Explicit off policy in PROJECTS.json
+        let pOff = SoulProject(id: "soul-desktop", name: "Soul Desktop", path: "~/Code/Soul-Desktop", worktreePolicy: "off")
+        #expect(SessionWorktreeProvisioner.autoProvisionEnabled(for: pOff) == false)
+
+        // 3. Fallback to global setting (e.g. false when global unset)
+        UserDefaults.standard.removeObject(forKey: SessionWorktreeProvisioner.autoProvisionKey)
+        let pFallback = SoulProject(id: "some-other", name: "Some Other", path: "~/Code/Some-Other", worktreePolicy: nil)
+        #expect(SessionWorktreeProvisioner.autoProvisionEnabled(for: pFallback) == false)
+
+        // 4. Fallback to global setting when true
+        UserDefaults.standard.set(true, forKey: SessionWorktreeProvisioner.autoProvisionKey)
+        #expect(SessionWorktreeProvisioner.autoProvisionEnabled(for: pFallback) == true)
+
+        // Clean up
+        UserDefaults.standard.removeObject(forKey: SessionWorktreeProvisioner.autoProvisionKey)
     }
 
     @Test

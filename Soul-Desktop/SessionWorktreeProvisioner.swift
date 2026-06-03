@@ -30,6 +30,15 @@ enum SessionWorktreeProvisioner {
         return UserDefaults.standard.bool(forKey: autoProvisionKey)
     }
 
+    /// Resolves project-aware worktree policy first, falling back to the global key, then to the built-in default (OFF).
+    static func autoProvisionEnabled(for project: SoulProject) -> Bool {
+        if let policy = project.worktreePolicy {
+            if policy == "per-session" { return true }
+            if policy == "off" { return false }
+        }
+        return autoProvisionEnabled
+    }
+
     /// Default `.block`. Only an explicit, recognized value changes it.
     static var fallbackPolicy: WorktreeFallbackPolicy {
         guard let raw = UserDefaults.standard.string(forKey: fallbackPolicyKey),
@@ -43,7 +52,7 @@ enum SessionWorktreeProvisioner {
     /// On failure: applies `fallbackPolicy` and surfaces a status/error row.
     @MainActor
     static func provision(controller: ThreadController) async {
-        guard autoProvisionEnabled else {
+        guard autoProvisionEnabled(for: controller.project) else {
             controller.worktreeProvisionState = .skipped(reason: "auto-provision disabled")
             return
         }

@@ -12,6 +12,7 @@ struct SoulProject: Identifiable, Hashable {
     var primaryHost: String?
     var devCommand: String?        // optional shell command, e.g. "npm run dev"
     var devURL: String?            // optional URL to open after dev server starts, e.g. "http://localhost:3002"
+    var worktreePolicy: String? = nil
 }
 
 /// Who authored this session's hooks.jsonl ledger. Pure provenance — does
@@ -429,7 +430,8 @@ enum SoulRegistry {
                     status: val["status"] as? String,
                     primaryHost: val["primary_host"] as? String,
                     devCommand: val["dev_command"] as? String,
-                    devURL: val["dev_url"] as? String
+                    devURL: val["dev_url"] as? String,
+                    worktreePolicy: val["worktree_policy"] as? String
                 )
             }
 
