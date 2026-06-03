@@ -4,7 +4,8 @@ import AppKit
 import Combine
 
 struct ThreadView: View {
-    private static let maxRenderedTranscriptRows = 240
+    private static let maxIdleTranscriptRows = 80
+    private static let maxWorkingTranscriptRows = 40
 
     @Bindable var controller: ThreadController
     @Binding var prompt: String
@@ -53,6 +54,8 @@ struct ThreadView: View {
     /// so streaming-content-grew snaps can't fight a manual scroll —
     /// the user's gesture always wins.
     @State private var userInteracting: Bool = false
+    @State private var frozenTranscriptRows: [TranscriptRowSnapshot]? = nil
+    @State private var frozenHiddenMainCount: Int = 0
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
@@ -90,23 +93,28 @@ struct ThreadView: View {
         let allMainItems = suppressedIds.isEmpty
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
-        let hiddenMainCount = max(0, allMainItems.count - Self.maxRenderedTranscriptRows)
+        let renderLimit = controller.isWorking
+            ? Self.maxWorkingTranscriptRows
+            : Self.maxIdleTranscriptRows
+        let hiddenMainCount = max(0, allMainItems.count - renderLimit)
         let mainItems = hiddenMainCount > 0
-            ? Array(allMainItems.suffix(Self.maxRenderedTranscriptRows))
+            ? Array(allMainItems.suffix(renderLimit))
             : allMainItems
         let queuedItems = split.queued
         let rows = transcriptRows(from: mainItems)
+        let renderedRows = frozenTranscriptRows ?? rows
+        let renderedHiddenMainCount = frozenTranscriptRows == nil ? hiddenMainCount : frozenHiddenMainCount
         let _ = SoulSignposts.event("Flash.transcriptList.body", "items=\(controller.items.count) main=\(mainItems.count) hidden=\(hiddenMainCount) queued=\(queuedItems.count) isWorking=\(controller.isWorking) isHydrating=\(controller.isHydrating)")
         LazyVStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
-            if hiddenMainCount > 0 {
-                Text("\(hiddenMainCount) earlier items hidden while this session is live")
+            if renderedHiddenMainCount > 0 {
+                Text("\(renderedHiddenMainCount) earlier items hidden while this session is live")
                     .font(SoulFont.ui(11, weight: .medium))
                     .foregroundStyle(SoulColor.fgSubtle)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-            ForEach(rows) { row in
+            ForEach(renderedRows) { row in
                 ThreadItemRow(
                     projectPath: controller.project.path,
                     projectKey: controller.project.id,
@@ -212,19 +220,7 @@ struct ThreadView: View {
                     }
                     let accepted = controller.items.count > itemCountBefore
                     if accepted {
-                        userInteracting = false // Reset manual scroll override so following can activate
-                        DispatchQueue.main.async {
-                            withTransaction(Transaction(animation: nil)) {
-                                proxy.scrollTo("__bottom__", anchor: .bottom)
-                            }
-                            repairTranscriptScrollView(reason: "send")
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                withTransaction(Transaction(animation: nil)) {
-                                    proxy.scrollTo("__bottom__", anchor: .bottom)
-                                }
-                                repairTranscriptScrollView(reason: "send_settled")
-                            }
-                        }
+                        userInteracting = false
                     }
                     return accepted
                 },
@@ -309,14 +305,19 @@ struct ThreadView: View {
                 .background(NSScrollViewConfigurator { sv in
                     transcriptScrollView = sv
                 })
-                .onScrollPhaseChange { _, newPhase, context in
-                    // Track interaction state so sticky-follow can yield
-                    // to manual scroll.
+                .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
+                        if controller.isWorking, frozenTranscriptRows == nil {
+                            let snapshot = currentTranscriptSnapshot()
+                            frozenTranscriptRows = snapshot.rows
+                            frozenHiddenMainCount = snapshot.hiddenMainCount
+                        }
                         userInteracting = true
                     case .idle, .animating:
                         userInteracting = false
+                        frozenTranscriptRows = nil
+                        frozenHiddenMainCount = 0
                     }
                 }
                 .onAppear {
@@ -431,30 +432,27 @@ struct ThreadView: View {
         }
     }
 
+    private func currentTranscriptSnapshot() -> (rows: [TranscriptRowSnapshot], hiddenMainCount: Int) {
+        let split = controller.groupedItemsSplit
+        let suppressedIds = controller.nestedSubagentChildItemIds
+        let allMainItems = suppressedIds.isEmpty
+            ? split.main
+            : split.main.filter { !suppressedIds.contains($0.id) }
+        let renderLimit = controller.isWorking
+            ? Self.maxWorkingTranscriptRows
+            : Self.maxIdleTranscriptRows
+        let hiddenMainCount = max(0, allMainItems.count - renderLimit)
+        let mainItems = hiddenMainCount > 0
+            ? Array(allMainItems.suffix(renderLimit))
+            : allMainItems
+        return (transcriptRows(from: mainItems), hiddenMainCount)
+    }
+
     /// Restores the saved scroll anchor when a previously-mounted thread view
     /// is attached again.
     private func performScrollRestore(proxy: ScrollViewProxy) {
-        let anchorId = anchor.itemId
-        DispatchQueue.main.async {
-            if let id = anchorId {
-                // SOUL-SOUL_DESKTOP-363: mark the restore in flight so the
-                // concurrent repair leaves the clip origin alone — scrollTo
-                // owns the position here. A nil anchor (fresh/cold open) skips
-                // this so the repair's clamp still runs and fixes an
-                // off-document origin → blank canvas.
-                scrollRestorePending = true
-                withTransaction(Transaction(animation: nil)) {
-                    proxy.scrollTo(id, anchor: .top)
-                }
-            }
-            repairTranscriptScrollView(reason: "restore")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                suppressAnchorWrites = false
-                scrollRestorePending = false
-                let splitNow = controller.groupedItemsSplit
-                updateAnchor(in: splitNow.main)
-            }
-        }
+        suppressAnchorWrites = false
+        scrollRestorePending = false
     }
 
     /// AppKit occasionally preserves an invalid clip-view origin while
@@ -473,63 +471,12 @@ struct ThreadView: View {
     /// gated on `!scrollRestorePending` so it never fights an in-flight
     /// `proxy.scrollTo` restore.
     private func repairTranscriptScrollView(reason: String, retries: Int = 12, lastHeight: CGFloat = -1) {
-        DispatchQueue.main.async {
-            guard let scrollView = transcriptScrollView else {
-                if retries > 0 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        repairTranscriptScrollView(reason: reason, retries: retries - 1, lastHeight: lastHeight)
-                    }
-                }
-                return
-            }
-            let clip = scrollView.contentView
-            // Avoid forcing AppKit layout while a turn is streaming; it can blank the
-            // SwiftUI transcript. The post-turn repair handles final alignment.
-            let working = controller.isWorking
-            if !working {
-                scrollView.needsLayout = true
-                scrollView.documentView?.needsLayout = true
-                scrollView.layoutSubtreeIfNeeded()
-                scrollView.documentView?.layoutSubtreeIfNeeded()
-            }
-
-            guard let documentView = scrollView.documentView else { return }
-            let documentHeight = max(documentView.bounds.height, documentView.frame.height)
-            let clipHeight = clip.bounds.height
-            // Skip the clamp while a scrollTo restore owns the position — see
-            // performScrollRestore / scrollRestorePending.
-            if !scrollRestorePending, documentHeight > 0, clipHeight > 0 {
-                let maxY = max(0, documentHeight - clipHeight)
-                let currentY = clip.bounds.origin.y
-                let clampedY = min(max(0, currentY), maxY)
-                if abs(clampedY - currentY) > 0.5 {
-                    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clampedY))
-                }
-                scrollView.reflectScrolledClipView(clip)
-            }
-
-            // Stop as soon as the document height stabilizes; otherwise keep
-            // polling so a late LazyVStack layout still gets re-clamped.
-            let stabilized = documentHeight > 0 && abs(documentHeight - lastHeight) < 0.5
-            if !working, retries > 0, !stabilized {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    repairTranscriptScrollView(reason: reason, retries: retries - 1, lastHeight: documentHeight)
-                }
-            }
-        }
     }
 
     /// Follow live prompt/response growth only. This deliberately ignores
     /// hydration and session activation so opening an old session cannot
     /// force the transcript to the bottom.
     private func followLiveTurn(proxy: ScrollViewProxy) {
-        guard controller.isWorking, !controller.isHydrating, !userInteracting else { return }
-        guard bottomSentinelVisible else { return }
-        DispatchQueue.main.async {
-            withTransaction(Transaction(animation: nil)) {
-                proxy.scrollTo("__bottom__", anchor: .bottom)
-            }
-        }
     }
 
     /// A user message coming after non-user content opens a new turn — give it
