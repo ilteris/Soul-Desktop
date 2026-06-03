@@ -354,10 +354,7 @@ extension ThreadController {
                 // alone, regardless of agent-side disk state.
                 let rawReply = mostRecentAgentReplyText()
                 let reply = rawReply.map(LedgerPreamble.scrubEchoed)
-                let agentMsgCount = items.filter { if case .agentMessage = $0 { return true } else { return false } }.count
-                NSLog("[ledger] AfterAgent gate: replyLen=\(reply?.count ?? -1) sid=\(sid) project=\(project.id) provider=\(provider.rawValue) agentMessagesInItems=\(agentMsgCount)")
                 if let reply, !reply.isEmpty {
-                    NSLog("[ledger] writing AfterAgent → \(project.id)/\(sid)")
                     ledger.appendHook(
                         projectKey: project.id,
                         sessionId: sid,
@@ -370,8 +367,6 @@ extension ThreadController {
                     // reply text; the per-chunk file can retire so it doesn't
                     // grow unbounded across a long session.
                     ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
-                } else {
-                    NSLog("[ledger] SKIPPED AfterAgent write — mostRecentAgentReplyText returned nil for sid=\(sid)")
                 }
 
                 // If this turn was a `/finalize` (the agent just wrote a
@@ -388,7 +383,6 @@ extension ThreadController {
                 current = popNextQueuedPromptForDispatch()
             }
         } catch {
-            NSLog("[ledger] dispatchPending CATCH: \(error) — AfterAgent write was bypassed by this throw")
             if suppressNextInterruptedTurnError {
                 suppressNextInterruptedTurnError = false
             } else {
