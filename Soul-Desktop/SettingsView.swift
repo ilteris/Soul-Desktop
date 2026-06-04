@@ -131,7 +131,7 @@ struct SettingsView: View {
         case .environments:    ComingSoonPane(title: "Environments", note: "Sandboxed shell environments per harness.")
         case .worktrees:       ComingSoonPane(title: "Worktrees", note: "Tracked under SOUL-SOUL_DESKTOP-002. Manage forked worktrees from here once shipped.")
         case .browser:         ComingSoonPane(title: "Browser", note: "In-app browser pane for previewing changes.")
-        case .computerUse:     ComingSoonPane(title: "Computer use", note: "Granular controls for screen + cursor automation.")
+        case .computerUse:     ComputerUsePane()
         case .advanced:        AdvancedPane()
         case .archived:        ComingSoonPane(title: "Archived chats", note: "Restore archived sessions from the registry.")
         }
