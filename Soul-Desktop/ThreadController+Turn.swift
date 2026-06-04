@@ -63,7 +63,6 @@ extension ThreadController {
 
         let prompt = QueuedPrompt(itemId: messageId, display: trimmedDisplay, agent: trimmedAgent, extraBlocks: extraBlocks)
         appendPromptHook(prompt, sessionId: sessionId ?? id)
-        SoulRegistry.flushHooks()
 
         var queueState = TurnQueueState(
             isWorking: isWorking,
@@ -83,6 +82,7 @@ extension ThreadController {
         }
 
         turnStartedAt = Date()
+        agentStreamBuffer.clear()
         liveStreamPreview = nil
         startStallWatchdog()
         return prompt
@@ -119,7 +119,6 @@ extension ThreadController {
             targetProvider: targetProvider
         )
         appendPromptHook(prompt, sessionId: sessionId ?? id)
-        SoulRegistry.flushHooks()
 
         var queueState = TurnQueueState(
             isWorking: isWorking,
@@ -135,6 +134,8 @@ extension ThreadController {
         }
 
         turnStartedAt = Date()
+        agentStreamBuffer.clear()
+        liveStreamPreview = nil
         startStallWatchdog()
         return prompt
     }
@@ -154,6 +155,7 @@ extension ThreadController {
             materializeBufferedAgentStreams()
             isWorking = false
             liveStreamPreview = nil
+            agentStreamBuffer.clear()
             turnStartedAt = nil
             stopStallWatchdog()
             drainQueuedPromptAfterTurn()
@@ -418,6 +420,20 @@ extension ThreadController {
             else { return nil }
             return cleaned
         }
+        let commandOnlyPromptCount = items.filter { item in
+            guard case .userMessage(_, let text, _) = item else { return false }
+            let stripped = SoulRegistry.stripCommandTags(text)
+            let cleaned = SessionTitleResolver.titleCandidateText(fromPrompt: stripped)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if case .bareSlash = SessionTitleResolver.classify(cleaned) {
+                return true
+            }
+            return false
+        }.count
+        let hasAgentResponse = items.contains { item in
+            guard case .agentMessage(_, let text, _, _) = item else { return false }
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         let hasUsableCustomTitle: Bool = {
             guard let title = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !title.isEmpty,
@@ -427,7 +443,11 @@ extension ThreadController {
             if SessionTitleResolver.isPromptCopyTitle(title, prompts: substantiveUserPrompts) { return false }
             return true
         }()
-        if substantiveUserPrompts.count == 1 && !hasUsableCustomTitle && !titleGenerationInFlight {
+        let shouldGenerateFromProse = substantiveUserPrompts.count == 1
+        let shouldGenerateFromCommandOnly = substantiveUserPrompts.isEmpty
+            && commandOnlyPromptCount == 1
+            && hasAgentResponse
+        if (shouldGenerateFromProse || shouldGenerateFromCommandOnly) && !hasUsableCustomTitle && !titleGenerationInFlight {
             titleGenerationInFlight = true
             Task { await generateTitle() }
         }

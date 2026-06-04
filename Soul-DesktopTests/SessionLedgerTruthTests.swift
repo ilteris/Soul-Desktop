@@ -514,6 +514,19 @@ struct SessionLedgerTruthTests {
         #expect(title == "when I do /pulse I get this error in the xcode console. when…")
     }
 
+    @Test func bareSlashCommandResolvesToReadableTitle() {
+        let title = SessionTitleResolver.resolve(.init(
+            customTitle: nil,
+            finalizeIntent: nil,
+            prompts: ["/finalize"],
+            firstAgentLine: nil,
+            branchSummary: nil,
+            skillHint: nil
+        ))
+
+        #expect(title == "Finalize")
+    }
+
     @Test func promptCopyCustomTitleDoesNotWinOverAgentFallback() {
         let prompt = "a problem that I notice is if I resize the application window, it jumps the scroll to the middle of the view. investigate"
         let title = SessionTitleResolver.resolve(.init(

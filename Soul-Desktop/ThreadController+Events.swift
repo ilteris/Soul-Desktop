@@ -58,6 +58,16 @@ extension ThreadController {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if case .prose = SessionTitleResolver.classify(cleaned), !SessionTitleResolver.isPlaceholderTitle(cleaned) {
                     userPrompts.append(cleaned)
+                } else if userPrompts.isEmpty,
+                          case .bareSlash = SessionTitleResolver.classify(cleaned) {
+                    userPrompts.append(SessionTitleResolver.resolve(.init(
+                        customTitle: nil,
+                        finalizeIntent: nil,
+                        prompts: [cleaned],
+                        firstAgentLine: nil,
+                        branchSummary: nil,
+                        skillHint: nil
+                    )))
                 }
             case .agentMessage(_, let text, _, _) where firstAgent == nil:
                 firstAgent = text

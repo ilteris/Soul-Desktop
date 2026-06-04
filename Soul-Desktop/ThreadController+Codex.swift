@@ -911,4 +911,38 @@ extension ThreadController {
             .filter { !$0.content.isEmpty }
     }
 
+    func nativeCompact(method: String) async {
+        guard method == "thread/compact/start" else {
+            NSLog("[ThreadController] unknown native compact method: \(method)")
+            return
+        }
+        guard provider == .codex else { return }
+
+        do {
+            try await ensureSession()
+        } catch {
+            NSLog("[ThreadController] ensureSession failed for native compact: \(error)")
+            return
+        }
+
+        guard let runtime = runtimes.codex else {
+            NSLog("[ThreadController] codex runtime adapter missing for native compact")
+            return
+        }
+
+        guard let threadID = acpSessionId else {
+            NSLog("[ThreadController] missing active thread/session id for native compact")
+            return
+        }
+
+        isWorking = true
+        defer { isWorking = false }
+
+        do {
+            try await runtime.compact(threadID: threadID)
+        } catch {
+            NSLog("[ThreadController] native codex compaction failed: \(error)")
+        }
+    }
+
 }

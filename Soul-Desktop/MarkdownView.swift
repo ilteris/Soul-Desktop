@@ -103,6 +103,7 @@ struct MarkdownView: View, Equatable {
             }
             return .systemAction
         })
+        .textSelection(.enabled)
     }
 
     /// Memoized parse result. SwiftUI re-evaluates body on every animation

@@ -69,6 +69,7 @@ struct AgentThoughtRow: View {
                     .font(SoulFont.code(12).italic())
                     .foregroundStyle(SoulColor.fgMuted.opacity(isHistorical ? 0.6 : 0.85))
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 12)

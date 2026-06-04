@@ -207,6 +207,12 @@ final class AutoCompactController {
             Task { @MainActor in
                 await thread.send(command)
             }
+        case .nativeCompact(let method, let bannerText):
+            banner = bannerText
+            scheduleBannerClear(thread: thread)
+            Task { @MainActor in
+                await thread.nativeCompact(method: method)
+            }
         case .showToast(let toast):
             pendingToast = toast
         case .skip:
@@ -230,6 +236,7 @@ final class AutoCompactController {
 extension AutoCompactController {
     enum Directive {
         case sendSlash(command: String, banner: String)
+        case nativeCompact(method: String, banner: String)
         case showToast(Toast)
         case skip(reason: String)
 
@@ -242,6 +249,10 @@ extension AutoCompactController {
                 guard let cmd = obj["command"] as? String else { return nil }
                 let banner = (obj["banner"] as? String) ?? "Compacting…"
                 return .sendSlash(command: cmd, banner: banner)
+            case "native_compact":
+                guard let method = obj["method"] as? String else { return nil }
+                let banner = (obj["banner"] as? String) ?? "Compacting…"
+                return .nativeCompact(method: method, banner: banner)
             case "show_toast":
                 let message = (obj["message"] as? String) ?? "Context filling — consider branching"
                 let actions = (obj["actions"] as? [[String: Any]]) ?? []

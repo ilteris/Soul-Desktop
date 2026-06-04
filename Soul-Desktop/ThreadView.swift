@@ -252,8 +252,10 @@ struct ThreadView: View {
                     else { return false }
                     let itemCountBefore = controller.items.count
                     if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
-                        freezeLiveTranscript()
-                        Task { await controller.dispatchPending(pending) }
+                        DispatchQueue.main.async {
+                            freezeLiveTranscript()
+                            Task { await controller.dispatchPending(pending) }
+                        }
                     }
                     let accepted = controller.items.count > itemCountBefore
                     if accepted {
@@ -345,6 +347,17 @@ struct ThreadView: View {
                 .background(NSScrollViewConfigurator { sv in
                     transcriptScrollView = sv
                 })
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ThreadCanvasWidthPreferenceKey.self,
+                            value: geo.size.width
+                        )
+                    }
+                )
+                .onPreferenceChange(ThreadCanvasWidthPreferenceKey.self) { width in
+                    handleCanvasWidthChange(width, proxy: proxy)
+                }
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
@@ -503,6 +516,26 @@ struct ThreadView: View {
         frozenHiddenMainCount = snapshot.hiddenMainCount
     }
 
+    private func handleCanvasWidthChange(_ width: CGFloat, proxy: ScrollViewProxy) {
+        guard width.isFinite, width > 0 else { return }
+        pendingCanvasWidth = width
+        canvasWidthRepinTask?.cancel()
+        canvasWidthRepinTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            let next = pendingCanvasWidth
+            guard abs(next - canvasWidth) >= 1 else { return }
+            canvasWidth = next
+            if controller.isWorking {
+                let snapshot = currentTranscriptSnapshot()
+                frozenTranscriptRows = snapshot.rows
+                frozenHiddenMainCount = snapshot.hiddenMainCount
+                followLiveTurn(proxy: proxy)
+            } else {
+                repairTranscriptScrollView(reason: "width")
+            }
+        }
+    }
+
     /// Restores the saved scroll anchor when a previously-mounted thread view
     /// is attached again.
     private func performScrollRestore(proxy: ScrollViewProxy) {
@@ -536,7 +569,30 @@ struct ThreadView: View {
               !controller.isHydrating,
               !userInteracting
         else { return }
-        proxy.scrollTo("__bottom__", anchor: .bottom)
+        DispatchQueue.main.async {
+            guard controller.isWorking,
+                  !controller.isHydrating,
+                  !userInteracting
+            else { return }
+            proxy.scrollTo("__bottom__", anchor: .bottom)
+            clampTranscriptToBottom()
+        }
+    }
+
+    private func clampTranscriptToBottom() {
+        guard let scrollView = transcriptScrollView,
+              let documentView = scrollView.documentView
+        else { return }
+        scrollView.layoutSubtreeIfNeeded()
+        documentView.layoutSubtreeIfNeeded()
+
+        let visibleHeight = scrollView.contentView.bounds.height
+        let documentHeight = documentView.bounds.height
+        let maxY = max(0, documentHeight - visibleHeight)
+        let targetY = documentView.isFlipped ? maxY : 0
+        let point = NSPoint(x: scrollView.contentView.bounds.origin.x, y: targetY)
+        scrollView.contentView.scroll(to: point)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     /// A user message coming after non-user content opens a new turn — give it
@@ -623,10 +679,12 @@ private struct LiveStreamPreview: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .font(SoulType.body)
-            .foregroundStyle(SoulColor.fg.opacity(0.78))
-            .fixedSize(horizontal: false, vertical: true)
+        MarkdownView(
+            text: text,
+            bodyColor: SoulColor.fg.opacity(0.78),
+            codeBackground: SoulColor.surface.opacity(0.7)
+        )
+            .equatable()
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -654,6 +712,14 @@ private struct LiveStreamPreview: View {
 final class ScrollAnchor {
     var visibleIds: Set<UUID> = []
     var itemId: UUID? = nil
+}
+
+private struct ThreadCanvasWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 struct ThreadItemRow: View {

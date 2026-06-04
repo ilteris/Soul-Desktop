@@ -54,7 +54,6 @@ extension ThreadController {
     }
 
     func materializeBufferedAgentStreams() {
-        let priorPreview = liveStreamPreview
         let completed = agentStreamBuffer.drainAll()
         streamPreviewPublishScheduled = false
         guard !completed.isEmpty else { return }
@@ -69,9 +68,7 @@ extension ThreadController {
             }
         }
         if isWorking {
-            liveStreamPreview = priorPreview ?? completed.map(\.text)
-                .joined()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            liveStreamPreview = agentStreamBuffer.preview()
         } else {
             liveStreamPreview = nil
         }

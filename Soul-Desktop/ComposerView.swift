@@ -68,6 +68,7 @@ struct ComposerView: View {
     /// while the modal is up.
     @State private var filePickerOpen: Bool = false
     @State private var forceClearText: Bool = false
+    @State private var draftText: String = ""
     /// Files dropped onto the composer surface (or anywhere in the parent's
     /// drop area — see AppShell+Canvas.swift). Rendered
     /// as a row of chips above the text field; converted to markdown links
@@ -89,15 +90,15 @@ struct ComposerView: View {
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
 
     private var hasSendableDraft: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedAttachments.isEmpty
+        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedAttachments.isEmpty
     }
 
     private func submit(currentText: String? = nil) {
         guard isSendEnabled else { return }
-        if let currentText, currentText != prompt {
-            prompt = currentText
+        if let currentText, currentText != draftText {
+            draftText = currentText
         }
-        let sourceText = currentText ?? prompt
+        let sourceText = currentText ?? draftText
         let trimmedArgs = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         let display: String
         let agent: String
@@ -179,6 +180,7 @@ struct ComposerView: View {
         guard accepted else { return }
         lastSent = finalDisplay
         forceClearText = true
+        draftText = ""
         prompt = ""
         droppedAttachments = []
         // Clear the slash-command chip on send. The "/pulse" context now
@@ -192,7 +194,7 @@ struct ComposerView: View {
 
     private var slashQuery: String? {
         guard activeCommand == nil else { return nil }
-        let trimmed = prompt
+        let trimmed = draftText
         guard trimmed.hasPrefix("/") else { return nil }
         let after = trimmed.dropFirst()
         if after.contains(" ") { return nil }
@@ -209,7 +211,7 @@ struct ComposerView: View {
 
     private func selectCommand(_ cmd: SlashCommand) {
         activeCommand = cmd
-        prompt = ""
+        draftText = ""
         showingCommandPalette = false
     }
 
@@ -343,7 +345,7 @@ struct ComposerView: View {
                             .padding(.top, 11)
                     }
                     ComposerTextField(
-                        text: $prompt,
+                        text: $draftText,
                         forceClearText: $forceClearText,
                         placeholder: activeCommand == nil ? "Ask Soul anything. @ to use plugins or mention files" : "",
                         onSubmit: { currentText in submit(currentText: currentText) },
@@ -370,11 +372,13 @@ struct ComposerView: View {
                             // rather than appending a new one. Falls back
                             // to shell-style lastSent recall otherwise.
                             if let tail = queuedTail {
+                                draftText = tail.text
                                 prompt = tail.text
                                 editingQueuedItemId = tail.id
                                 return true
                             }
                             guard !lastSent.isEmpty else { return false }
+                            draftText = lastSent
                             prompt = lastSent
                             return true
                         },
@@ -384,7 +388,15 @@ struct ComposerView: View {
                     .frame(maxWidth: .infinity)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 12)
+                    .onAppear {
+                        draftText = prompt
+                    }
                     .onChange(of: prompt) { _, new in
+                        if new != draftText {
+                            draftText = new
+                        }
+                    }
+                    .onChange(of: draftText) { _, new in
                         // Auto-commit: typing space after an exact command name
                         // ("/pulse ") drops the chip and clears the slash text,
                         // matching what clicking the popover row already does.
@@ -395,7 +407,7 @@ struct ComposerView: View {
                             if let match = commands.first(where: { $0.name.caseInsensitiveCompare(head) == .orderedSame }) {
                                 let tail = String(new[new.index(after: spaceIdx)...])
                                 activeCommand = match
-                                prompt = tail
+                                draftText = tail
                                 showingCommandPalette = false
                                 return
                             }

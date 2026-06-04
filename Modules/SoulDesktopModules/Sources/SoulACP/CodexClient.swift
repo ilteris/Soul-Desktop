@@ -147,6 +147,14 @@ public actor CodexClient {
         _ = try await call(method: "turn/interrupt", params: toJSONValue(params))
     }
 
+    public func compact(threadId: String) async throws {
+        guard initialized else { throw CodexClientError.notInitialized }
+        let params: [String: Any] = [
+            "threadId": threadId
+        ]
+        _ = try await call(method: "thread/compact/start", params: toJSONValue(params))
+    }
+
     public func respond(id: JSONRPCID, result: JSONValue) async throws {
         let data = try Self.makeCodexResponseEnvelope(id: id, result: result, encoder: encoder)
         try await transport.send(data)

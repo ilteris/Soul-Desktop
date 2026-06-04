@@ -133,5 +133,10 @@ public protocol ProviderRuntime: Sendable {
     func startNewSession(_ request: ProviderRuntimeNewSessionRequest) async throws -> ProviderRuntimeNewSessionResult
     func prompt(_ request: ProviderRuntimePromptRequest<PromptAttachment>) async throws
     func cancel(_ request: ProviderRuntimeCancelRequest) async
+    func compact(threadID: String) async throws
     func stop() async
+}
+
+extension ProviderRuntime {
+    public func compact(threadID: String) async throws {}
 }

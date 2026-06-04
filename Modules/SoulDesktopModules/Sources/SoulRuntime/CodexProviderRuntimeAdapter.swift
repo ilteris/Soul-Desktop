@@ -95,6 +95,14 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
         currentTurnID = nil
     }
 
+    public func compact(threadID: String) async throws {
+        guard let client else {
+            throw NSError(domain: "Soul-Desktop", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "codex client not initialized for compact"])
+        }
+        try await client.compact(threadId: threadID)
+    }
+
     public func respond(id: JSONRPCID, result: JSONValue) async {
         try? await client?.respond(id: id, result: result)
     }

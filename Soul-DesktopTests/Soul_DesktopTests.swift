@@ -101,6 +101,29 @@ struct Soul_DesktopTests {
         #expect(SlashCommandParse.parse("compact the code please").commandName == nil)
     }
 
+    @Test func testNativeCompactDirectiveParsing() throws {
+        let jsonStr = """
+        {
+            "action": "native_compact",
+            "method": "thread/compact/start",
+            "banner": "Compacting Codex context…",
+            "provider": "codex"
+        }
+        """
+        guard let data = jsonStr.data(using: .utf8),
+              let directive = AutoCompactController.Directive.parse(data)
+        else {
+            Issue.record("Failed to parse native_compact directive")
+            return
+        }
+        if case .nativeCompact(let method, let banner) = directive {
+            #expect(method == "thread/compact/start")
+            #expect(banner == "Compacting Codex context…")
+        } else {
+            Issue.record("Parsed directive was not .nativeCompact")
+        }
+    }
+
     @Test func testContextUsageFractionIsLinear() throws {
         // The donut ring draws straight off `fraction` — spent/budget, no
         // nonlinear curve. 79k / 1M must read as ~8% of the ring, not the

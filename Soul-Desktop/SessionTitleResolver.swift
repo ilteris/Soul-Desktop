@@ -378,7 +378,7 @@ enum SessionTitleResolver {
         for prompt in prompts {
             switch classify(prompt) {
             case .bareSlash(let name):
-                return name
+                return titleForBareSlashCommand(name)
             case .skillExpansion:
                 let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
                 if isMachineScaffold(trimmed)
@@ -396,6 +396,20 @@ enum SessionTitleResolver {
             }
         }
         return nil
+    }
+
+    private static func titleForBareSlashCommand(_ command: String) -> String {
+        let name = command
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !name.isEmpty else { return "Command" }
+        return name
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .map { part in
+                let lower = part.lowercased()
+                return lower.prefix(1).uppercased() + lower.dropFirst()
+            }
+            .joined(separator: " ")
     }
 
     /// Shortest sentence between 9 and 60 characters in the first paragraph

@@ -21,6 +21,7 @@ final class AgentStreamBuffer {
     }
 
     private let queue = DispatchQueue(label: "soul.desktop.agent-stream-buffer", qos: .userInitiated)
+    private var completedPreviewText = ""
     private var segments: [Segment] = []
     private var codexIdsByItemId: [String: UUID] = [:]
     private var codexKindsByItemId: [String: SegmentKind] = [:]
@@ -66,18 +67,23 @@ final class AgentStreamBuffer {
                 if let finalText, finalText.count > segments[index].text.count {
                     segments[index].text = finalText
                 }
-                return removeCompletedSegment(at: index)
+                let completed = removeCompletedSegment(at: index)
+                appendCompletedPreview(completed)
+                return completed
             }
             guard let finalText, !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
-            return CompletedSegment(id: id, kind: kind, text: finalText, timestamp: Date())
+            let completed = CompletedSegment(id: id, kind: kind, text: finalText, timestamp: Date())
+            appendCompletedPreview(completed)
+            return completed
         }
     }
 
     func drainAll() -> [CompletedSegment] {
         queue.sync {
             let completed = segments.compactMap(completedSegment)
+            completed.forEach(appendCompletedPreview)
             segments.removeAll(keepingCapacity: true)
             codexIdsByItemId.removeAll(keepingCapacity: true)
             codexKindsByItemId.removeAll(keepingCapacity: true)
@@ -85,24 +91,19 @@ final class AgentStreamBuffer {
         }
     }
 
-    func preview(limit: Int = 1200) -> String? {
+    func preview() -> String? {
         queue.sync {
-            let text = segments
-                .map(\.text)
-                .joined()
+            let text = ([completedPreviewText] + segments.map(\.text))
+                .joined(separator: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
-            if text.count <= limit { return text }
-            let headLimit = max(0, limit / 2)
-            let tailLimit = max(0, limit - headLimit)
-            let head = String(text.prefix(headLimit)).trimmingCharacters(in: .whitespacesAndNewlines)
-            let tail = String(text.suffix(tailLimit)).trimmingCharacters(in: .whitespacesAndNewlines)
-            return [head, "…", tail].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            return text
         }
     }
 
     func clear() {
         queue.sync {
+            completedPreviewText = ""
             segments.removeAll(keepingCapacity: true)
             codexIdsByItemId.removeAll(keepingCapacity: true)
             codexKindsByItemId.removeAll(keepingCapacity: true)
@@ -135,6 +136,17 @@ final class AgentStreamBuffer {
     private func removeCompletedSegment(at index: Int) -> CompletedSegment? {
         let segment = segments.remove(at: index)
         return completedSegment(segment)
+    }
+
+    private func appendCompletedPreview(_ completed: CompletedSegment?) {
+        guard let text = completed?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return
+        }
+        if !completedPreviewText.isEmpty {
+            completedPreviewText += "\n\n"
+        }
+        completedPreviewText += text
     }
 
     private func completedSegment(_ segment: Segment) -> CompletedSegment? {
