@@ -677,25 +677,18 @@ private struct TranscriptRowSnapshot: Identifiable {
 
 private struct LiveStreamPreview: View {
     let text: String
+    @State private var timestamp = Date()
 
     var body: some View {
-        MarkdownView(
-            text: text,
-            bodyColor: SoulColor.fg.opacity(0.78),
-            codeBackground: SoulColor.surface.opacity(0.7)
+        AgentMessageRow(
+            text: LedgerPreamble.scrubEchoed(text),
+            timestamp: timestamp,
+            isHistorical: false,
+            isStreaming: true,
+            showFooter: true
         )
             .equatable()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(SoulColor.bgElevated.opacity(0.35))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(SoulColor.border.opacity(0.25), lineWidth: 0.5)
-            )
             .transaction { $0.animation = nil }
     }
 }

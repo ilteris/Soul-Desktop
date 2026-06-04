@@ -1102,6 +1102,62 @@ struct SessionLedgerTruthTests {
         #expect(resolved.pinnedActiveId == oldestId)
     }
 
+    /// A command-only new chat can surface a live working row before the
+    /// active sid binding is visible to the sidebar. The resolver still pins
+    /// that row so `/pulse` starts are not hidden behind "Show more".
+    @Test func resolverPinsLiveWorkingRowWhenActiveSessionIdIsMissing() {
+        let project = SessionLedgerTruthTests.testProject()
+        var disk: [SoulSession] = []
+        for i in 1...5 {
+            var s = SoulSession(
+                id: "sid-\(i)",
+                project: project.id,
+                timestamp: Date(timeIntervalSince1970: TimeInterval(2000 - i)),
+                title: "Session \(i)",
+                loadable: true,
+                replayable: true
+            )
+            s.promptCount = 2
+            disk.append(s)
+        }
+
+        let staleLive = LiveSessionRecord(
+            id: "stale-live",
+            projectId: project.id,
+            provider: Provider.geminiCLI.rawValue,
+            title: "Older Live",
+            startedAt: Date(timeIntervalSince1970: 50),
+            lastActivityAt: Date(timeIntervalSince1970: 150),
+            isWorking: true
+        )
+        let live = LiveSessionRecord(
+            id: "live-pulse",
+            projectId: project.id,
+            provider: Provider.geminiCLI.rawValue,
+            title: "Pulse",
+            startedAt: Date(timeIntervalSince1970: 100),
+            lastActivityAt: Date(timeIntervalSince1970: 2500),
+            isWorking: true
+        )
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: disk,
+            activeControllers: [],
+            liveRecords: [staleLive, live],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx,
+            activeSessionId: nil,
+            activeProjectId: project.id
+        ))
+
+        #expect(resolved.active.count == 7)
+        #expect(resolved.active.first?.id == "sid-1")
+        #expect(resolved.pinnedActiveId == "live-pulse")
+    }
+
     /// The pin must NOT cross project boundaries — the same sid can exist
     /// under multiple project dirs.
     @Test func resolverDoesNotPinActiveSessionFromAnotherProject() {

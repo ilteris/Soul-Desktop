@@ -304,10 +304,16 @@ enum SidebarRowResolver {
         // (not in the view) so the single resolve() pass stays the authority
         // on whether the open row is renderable — the view just honors it.
         var pinnedActiveId: String? = nil
-        if let sid = inputs.activeSessionId,
-           inputs.activeProjectId?.lowercased() == inputs.projectKey.lowercased(),
-           active.contains(where: { $0.id == sid }) {
-            pinnedActiveId = sid
+        if inputs.activeProjectId?.lowercased() == inputs.projectKey.lowercased() {
+            if let sid = inputs.activeSessionId,
+               active.contains(where: { $0.id == sid }) {
+                pinnedActiveId = sid
+            } else if let liveWorking = mostRecentlyActiveLiveWorkingSession(in: active) {
+                // Command-only starts can briefly have a live controller row
+                // before AppShell's active sid plumbing catches up. Keep the
+                // row visible instead of hiding it behind "Show more".
+                pinnedActiveId = liveWorking.id
+            }
         }
 
         return Output(
@@ -315,6 +321,14 @@ enum SidebarRowResolver {
             archived: archived.sorted(by: sortFn),
             pinnedActiveId: pinnedActiveId
         )
+    }
+
+    private static func mostRecentlyActiveLiveWorkingSession(in sessions: [SoulSession]) -> SoulSession? {
+        sessions
+            .filter { $0.isLive && $0.isWorking }
+            .max { a, b in
+                (a.lastActivityAt ?? a.timestamp) < (b.lastActivityAt ?? b.timestamp)
+            }
     }
 
     private static func mergedDiskSessions(_ sessions: [SoulSession]) -> [SoulSession] {
