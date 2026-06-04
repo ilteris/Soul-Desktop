@@ -52,6 +52,7 @@ struct ThreadView: View {
     /// so streaming-content-grew snaps can't fight a manual scroll —
     /// the user's gesture always wins.
     @State private var userInteracting: Bool = false
+    @State private var shouldFollowLiveTurn: Bool = true
     @State private var frozenTranscriptRows: [TranscriptRowSnapshot]? = nil
     @State private var frozenHiddenMainCount: Int = 0
 
@@ -300,8 +301,12 @@ struct ThreadView: View {
     @ViewBuilder
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
         Button {
+            shouldFollowLiveTurn = true
             withAnimation(.easeOut(duration: 0.18)) {
                 proxy.scrollTo("__bottom__", anchor: .bottom)
+            }
+            DispatchQueue.main.async {
+                clampTranscriptToBottom()
             }
         } label: {
             Image(systemName: "arrow.down")
@@ -364,10 +369,15 @@ struct ThreadView: View {
                         if controller.isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
                         userInteracting = true
+                        shouldFollowLiveTurn = isTranscriptNearBottom()
                     case .idle, .animating:
                         controller.streamPreviewPublishingSuspended = false
                         controller.publishBufferedStreamPreviewSoon()
                         userInteracting = false
+                        shouldFollowLiveTurn = isTranscriptNearBottom()
+                        DispatchQueue.main.async {
+                            shouldFollowLiveTurn = isTranscriptNearBottom()
+                        }
                         if !controller.isWorking {
                             frozenTranscriptRows = nil
                             frozenHiddenMainCount = 0
@@ -433,12 +443,7 @@ struct ThreadView: View {
                         freezeLiveTranscript()
                         return
                     }
-                    // When a live turn completes (isWorking transitions to false), the WorkingIndicator
-                    // is removed and the document shrinks by a tiny bit. Run a clean repair here to
-                    // align the scroll bounds after the transition.
-                    frozenTranscriptRows = nil
-                    frozenHiddenMainCount = 0
-                    repairTranscriptScrollView(reason: "isWorking")
+                    finishLiveTurn(proxy: proxy)
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
                 // the controller on view detach so the next attach restores
@@ -561,22 +566,52 @@ struct ThreadView: View {
     private func repairTranscriptScrollView(reason: String, retries: Int = 12, lastHeight: CGFloat = -1) {
     }
 
+    /// The live turn handoff replaces the buffered preview row with the final
+    /// transcript row. Let SwiftUI commit that row swap, then re-pin to the
+    /// real bottom so AppKit does not preserve a stale anchor near turn start.
+    private func finishLiveTurn(proxy: ScrollViewProxy) {
+        frozenTranscriptRows = nil
+        frozenHiddenMainCount = 0
+        guard !controller.isHydrating, shouldFollowLiveTurn else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo("__bottom__", anchor: .bottom)
+            clampTranscriptToBottom()
+        }
+    }
+
     /// Follow live prompt/response growth only. This deliberately ignores
     /// hydration and session activation so opening an old session cannot
     /// force the transcript to the bottom.
     private func followLiveTurn(proxy: ScrollViewProxy) {
         guard controller.isWorking,
               !controller.isHydrating,
-              !userInteracting
+              !userInteracting,
+              shouldFollowLiveTurn
         else { return }
         DispatchQueue.main.async {
             guard controller.isWorking,
                   !controller.isHydrating,
-                  !userInteracting
+                  !userInteracting,
+                  shouldFollowLiveTurn
             else { return }
             proxy.scrollTo("__bottom__", anchor: .bottom)
             clampTranscriptToBottom()
         }
+    }
+
+    private func isTranscriptNearBottom(threshold: CGFloat = 28) -> Bool {
+        guard let scrollView = transcriptScrollView,
+              let documentView = scrollView.documentView
+        else { return true }
+        scrollView.layoutSubtreeIfNeeded()
+        documentView.layoutSubtreeIfNeeded()
+
+        let visibleHeight = scrollView.contentView.bounds.height
+        let documentHeight = documentView.bounds.height
+        let maxY = max(0, documentHeight - visibleHeight)
+        let currentY = scrollView.contentView.bounds.origin.y
+        let bottomY = documentView.isFlipped ? maxY : 0
+        return abs(currentY - bottomY) <= threshold
     }
 
     private func clampTranscriptToBottom() {
@@ -678,18 +713,53 @@ private struct TranscriptRowSnapshot: Identifiable {
 private struct LiveStreamPreview: View {
     let text: String
     @State private var timestamp = Date()
+    @State private var displayedText: String = ""
+    @State private var revealTask: Task<Void, Never>?
+
+    private var scrubbedText: String {
+        LedgerPreamble.scrubEchoed(text)
+    }
 
     var body: some View {
         AgentMessageRow(
-            text: LedgerPreamble.scrubEchoed(text),
+            text: displayedText,
             timestamp: timestamp,
             isHistorical: false,
             isStreaming: true,
             showFooter: true
         )
-            .equatable()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .transaction { $0.animation = nil }
+        .equatable()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            revealToward(scrubbedText)
+        }
+        .onChange(of: text) { _, _ in
+            revealToward(scrubbedText)
+        }
+        .onDisappear {
+            revealTask?.cancel()
+        }
+        .transaction { $0.animation = nil }
+    }
+
+    private func revealToward(_ target: String) {
+        if target.count < displayedText.count || !target.hasPrefix(displayedText) {
+            displayedText = target
+            return
+        }
+        guard target.count > displayedText.count else { return }
+        revealTask?.cancel()
+        revealTask = Task { @MainActor in
+            while displayedText.count < target.count {
+                let remaining = target.count - displayedText.count
+                let step = remaining > 600 ? 48 : remaining > 240 ? 32 : 14
+                displayedText = String(target.prefix(displayedText.count + min(step, remaining)))
+                try? await Task.sleep(nanoseconds: remaining > 600 ? 8_000_000 : 24_000_000)
+                if Task.isCancelled { return }
+            }
+            displayedText = target
+            revealTask = nil
+        }
     }
 }
 

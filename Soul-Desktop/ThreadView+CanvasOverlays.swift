@@ -166,8 +166,14 @@ struct WorkingIndicator: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            content(now: timeline.date)
+        }
+    }
+
+    @ViewBuilder
+    private func content(now: Date) -> some View {
         let _ = SoulSignposts.event("Flash.WorkingIndicator.body", "isWorking=\(controller.isWorking) items=\(controller.items.count)")
-        let now = Date()
         let secondsSinceActivity = Int(now.timeIntervalSince(controller.lastActivityAt))
         // SOUL-SOUL_DESKTOP-024: stall threshold is now provider-tuned
         // (Gemini 90s default, Claude 60s, Pi 120s — see Provider
@@ -194,7 +200,7 @@ struct WorkingIndicator: View {
             return nil
         }()
 
-        return HStack(spacing: 12) {
+        HStack(spacing: 12) {
             // SOUL-203 revision: drop the sparkle glyph — the shimmer
             // alone reads as motion. Stalled state keeps the small
             // orange ring spinner so the warning has a static anchor.

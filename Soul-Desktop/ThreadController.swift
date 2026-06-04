@@ -102,6 +102,21 @@ final class ThreadController {
             itemsVersion &+= 1
             transcriptLayoutNonce &+= 1
             SoulSignposts.event("Flash.items.didSet", "old=\(oldValue.count) new=\(items.count)")
+            
+            if !isHydrating, let hint = sessionTurnCountHint {
+                let oldUserMessages = oldValue.reduce(0) { count, item in
+                    if case .userMessage = item { return count + 1 }
+                    return count
+                }
+                let newUserMessages = items.reduce(0) { count, item in
+                    if case .userMessage = item { return count + 1 }
+                    return count
+                }
+                let delta = newUserMessages - oldUserMessages
+                if delta != 0 {
+                    sessionTurnCountHint = hint + delta
+                }
+            }
         }
     }
     /// Observable layout invalidation for the SwiftUI transcript viewport.
@@ -197,6 +212,12 @@ final class ThreadController {
     var queuedPrompts: [QueuedPrompt] = [] {
         didSet { queuedVersion &+= 1 }
     }
+    /// A queued prompt that the user promoted via Steer. It must remain in
+    /// `queuedPrompts` until the provider cancel resolves and the send loop
+    /// pops it, but it should render in the main transcript immediately.
+    var steeredVisiblePromptId: UUID? {
+        didSet { queuedVersion &+= 1 }
+    }
 
     /// Bumped on every `queuedPrompts` write so dependent caches
     /// (`queuedItemIDs`) can invalidate against a stable version key
@@ -214,7 +235,10 @@ final class ThreadController {
         if let cache = queuedItemIDsCache, cache.version == queuedVersion {
             return cache.value
         }
-        let result = Set(queuedPrompts.map(\.itemId))
+        var result = Set(queuedPrompts.map(\.itemId))
+        if let steeredVisiblePromptId {
+            result.remove(steeredVisiblePromptId)
+        }
         queuedItemIDsCache = (queuedVersion, result)
         return result
     }
@@ -271,6 +295,15 @@ final class ThreadController {
     var chapterCount: Int {
         refreshStatsCache()
         return statsCache?.chapters ?? 0
+    }
+
+    /// Session-list turn count from the kernel/provider ledger. The toolbar
+    /// prefers this when present so it matches the sidebar even if the mounted
+    /// controller only loaded a window of transcript rows.
+    var sessionTurnCountHint: Int? = nil
+
+    var displayTurnCount: Int {
+        max(sessionTurnCountHint ?? 0, chapterCount)
     }
 
     private func refreshStatsCache() {

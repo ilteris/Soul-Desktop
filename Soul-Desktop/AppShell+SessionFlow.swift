@@ -149,6 +149,10 @@ extension AppShell {
             controller.customTitle = seed
         }
         controller.lastActivityAt = session.lastActivityAt ?? session.timestamp
+        let sessionTurnCount = session.visibleTurnCount > 0
+            ? session.visibleTurnCount
+            : max(session.promptCount, session.transcriptTurns)
+        controller.sessionTurnCountHint = sessionTurnCount > 0 ? sessionTurnCount : nil
         controller.assignSessionId(session.id)
         if let snapshot = hydrationCache.snapshot(project: routedProject, sessionId: session.id, provider: provider) {
             controller.applyHydratedSnapshot(snapshot)

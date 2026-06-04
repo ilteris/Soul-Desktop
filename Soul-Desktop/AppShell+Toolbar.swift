@@ -359,7 +359,7 @@ struct SessionStatsChip: View {
     @Bindable var controller: ThreadController
 
     private var toolCount: Int { controller.toolCount }
-    private var chapterCount: Int { controller.chapterCount }
+    private var chapterCount: Int { controller.displayTurnCount }
 
     /// Conversation duration = last activity − first activity. Static —
     /// not now() − startedAt, so the chip doesn't drift while the window

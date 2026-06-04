@@ -42,7 +42,11 @@ func drainQueuedPromptAfterTurn() {
             steerPending: steerPending
         )
         guard queueState.claimQueuedPromptForDispatch() else { return nil }
-        return queuedPrompts.removeFirst()
+        let next = queuedPrompts.removeFirst()
+        if steeredVisiblePromptId == next.itemId {
+            steeredVisiblePromptId = nil
+        }
+        return next
     }
 
     func markInFlightToolCallsStopped() {
@@ -167,6 +171,10 @@ func drainQueuedPromptAfterTurn() {
             steerPending: steerPending
         )
         guard queueState.requestSteerToNextQueuedPrompt() else { return }
+        if let next = queuedPrompts.first {
+            steeredVisiblePromptId = next.itemId
+            relocateQueuedBubbleToEnd(next)
+        }
         suppressNextInterruptedTurnError = true
         steerPending = queueState.steerPending
         await cancelActiveProviderTurn()
@@ -192,6 +200,7 @@ func drainQueuedPromptAfterTurn() {
         )
         queueState.clearQueuedPrompts()
         queuedPrompts.removeAll()
+        steeredVisiblePromptId = nil
         if !queuedItemIDs.isEmpty {
             items.removeAll { item in
                 if case .userMessage(let id, _, _) = item {
@@ -238,6 +247,9 @@ func drainQueuedPromptAfterTurn() {
     func removeQueuedPrompt(itemId: UUID) {
         guard queuedPrompts.contains(where: { $0.itemId == itemId }) else { return }
         queuedPrompts.removeAll { $0.itemId == itemId }
+        if steeredVisiblePromptId == itemId {
+            steeredVisiblePromptId = nil
+        }
         items.removeAll {
             if case .userMessage(let id, _, _) = $0 { return id == itemId }
             return false
