@@ -62,7 +62,7 @@ struct ThreadControllerTests {
         // Slash commands should be skipped in favor of agent response if possible
         let id3 = UUID()
         controller.items[0] = ThreadItem.userMessage(id: id3, text: "/ls", timestamp: Date())
-        #expect(controller.displayTitle == "/ls") // fallback to user if no agent yet
+        #expect(controller.displayTitle == "Ls") // fallback to user if no agent yet
         
         let id4 = UUID()
         controller.items.append(ThreadItem.agentMessage(id: id4, text: "Here is the list of files:\n- index.ts\n- package.json", complete: true, timestamp: Date()))
