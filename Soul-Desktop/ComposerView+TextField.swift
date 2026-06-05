@@ -21,7 +21,7 @@ struct ComposerTextField: NSViewRepresentable {
     @Binding var text: String
     @Binding var forceClearText: Bool
     let placeholder: String
-    let onSubmit: (String) -> Void
+    let onSubmit: (String) -> Bool
     let onBackspaceWhenEmpty: () -> Void
     var preservesFocusedDraft: Bool = true
     var onTab: (() -> Bool)? = nil
@@ -189,7 +189,7 @@ final class ClampedComposerScrollView: NSScrollView {
 
 private final class BackspaceInterceptingTextView: NSTextView {
     var onBackspaceWhenEmpty: (() -> Void)?
-    var onCommit: ((String) -> Void)?
+    var onCommit: ((String) -> Bool)?
     /// Fired on plain Tab key. Returns true to consume the event, false to
     /// let the default focus-traversal behavior run. Used to commit the
     /// slash command popover's top match without forcing a Space keystroke.
@@ -311,8 +311,19 @@ private final class BackspaceInterceptingTextView: NSTextView {
         }
         if (event.keyCode == 36 || event.keyCode == 76),
             !event.modifierFlags.contains(.shift) {
+            let currentText = string
             allowNextEmptySync = true
-            onCommit?(string)
+            string = ""
+            lastDocumentHeight = -1
+            invalidateIntrinsicContentSize()
+            (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+            let accepted = onCommit?(currentText) ?? false
+            if !accepted {
+                string = currentText
+                lastDocumentHeight = -1
+                invalidateIntrinsicContentSize()
+                (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+            }
             return
         }
         if event.keyCode == 48, onTab?() == true {
@@ -330,8 +341,19 @@ private final class BackspaceInterceptingTextView: NSTextView {
             super.insertNewline(sender)
             return
         }
+        let currentText = string
         allowNextEmptySync = true
-        onCommit?(string)
+        string = ""
+        lastDocumentHeight = -1
+        invalidateIntrinsicContentSize()
+        (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+        let accepted = onCommit?(currentText) ?? false
+        if !accepted {
+            string = currentText
+            lastDocumentHeight = -1
+            invalidateIntrinsicContentSize()
+            (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+        }
     }
 
     override func insertNewlineIgnoringFieldEditor(_ sender: Any?) {
@@ -339,8 +361,19 @@ private final class BackspaceInterceptingTextView: NSTextView {
             super.insertNewlineIgnoringFieldEditor(sender)
             return
         }
+        let currentText = string
         allowNextEmptySync = true
-        onCommit?(string)
+        string = ""
+        lastDocumentHeight = -1
+        invalidateIntrinsicContentSize()
+        (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+        let accepted = onCommit?(currentText) ?? false
+        if !accepted {
+            string = currentText
+            lastDocumentHeight = -1
+            invalidateIntrinsicContentSize()
+            (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

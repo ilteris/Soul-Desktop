@@ -93,8 +93,9 @@ struct ComposerView: View {
         !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedAttachments.isEmpty
     }
 
-    private func submit(currentText: String? = nil) {
-        guard isSendEnabled else { return }
+    @discardableResult
+    private func submit(currentText: String? = nil) -> Bool {
+        guard isSendEnabled else { return false }
         if let currentText, currentText != draftText {
             draftText = currentText
         }
@@ -159,7 +160,7 @@ struct ComposerView: View {
         let finalDisplay = display + (displayLinks.isEmpty ? "" : (display.isEmpty ? "" : "\n\n") + displayLinks.joined(separator: " "))
         let finalAgent = agent + (agentLinks.isEmpty ? "" : (agent.isEmpty ? "" : "\n\n") + agentLinks.joined(separator: " "))
 
-        guard !finalDisplay.isEmpty else { return }
+        guard !finalDisplay.isEmpty else { return false }
         // SOUL-199: in edit-queued mode, replace the queued entry in place
         // instead of appending a new prompt. The agent sees the new text
         // when the queue drains; the visible bubble redraws too.
@@ -177,7 +178,7 @@ struct ComposerView: View {
         // has either painted/persisted the user bubble or updated an
         // existing queued bubble. Provider spawn/dispatch may still fail
         // later, but the user's text is already represented in app state.
-        guard accepted else { return }
+        guard accepted else { return false }
         lastSent = finalDisplay
         forceClearText = true
         draftText = ""
@@ -190,6 +191,7 @@ struct ComposerView: View {
         // belt-and-suspenders clear for queued sends.)
         activeCommand = nil
         showingCommandPalette = false
+        return true
     }
 
     private var slashQuery: String? {
