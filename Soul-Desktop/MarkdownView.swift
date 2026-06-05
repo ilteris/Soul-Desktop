@@ -954,8 +954,8 @@ private enum Block {
     case horizontalRule
 }
 
-/// SOUL-SOUL_DESKTOP-160: collapse `\n` inside `[text](url)` constructs to
-/// spaces before the markdown parser sees them. Agent outputs containing
+/// SOUL-SOUL_DESKTOP-160: collapse wrapped `[text](url)` constructs before
+/// the markdown parser sees them. Agent outputs containing
 /// long file:// URLs wrap across multiple lines, but markdown's inline
 /// link syntax doesn't allow newlines inside `[text]` or `(url)` — so
 /// `[applications/x/\nFILE.md](file:///long/wrapped/\nURL.md)` rendered
@@ -964,8 +964,9 @@ private enum Block {
 ///
 /// State machine walks the string. When `[` is seen, scans for the
 /// matching `]`; then if a `(` follows (whitespace/newline tolerated),
-/// scans for the matching `)`. The full `[text](url)` span is then
-/// re-emitted with internal `\n` replaced by ` `.
+/// scans for the matching `)`. Label newlines collapse to spaces for
+/// readability; URL target whitespace is removed so wrapped filesystem paths
+/// do not acquire bogus spaces.
 private func collapseMultilineLinks(_ s: String) -> String {
     var out = ""
     out.reserveCapacity(s.count)
@@ -999,10 +1000,11 @@ private func collapseMultilineLinks(_ s: String) -> String {
                         u = s.index(after: u)
                     }
                     if u < s.endIndex, s[u] == ")" {
-                        // Emit the entire span with internal `\n` → ` `.
-                        for ch in s[i...u] {
-                            out.append(ch == "\n" ? " " : ch)
-                        }
+                        out.append("[")
+                        out.append(collapseLinkLabel(s[s.index(after: i)..<j]))
+                        out.append("](")
+                        out.append(collapseLinkTarget(s[s.index(after: k)..<u]))
+                        out.append(")")
                         i = s.index(after: u)
                         continue
                     }
@@ -1013,6 +1015,28 @@ private func collapseMultilineLinks(_ s: String) -> String {
         i = s.index(after: i)
     }
     return out
+}
+
+private func collapseLinkLabel(_ label: Substring) -> String {
+    var out = ""
+    out.reserveCapacity(label.count)
+    var pendingSpace = false
+    for ch in label {
+        if ch == "\n" || ch == "\t" || ch == "\r" {
+            pendingSpace = true
+        } else {
+            if pendingSpace, !out.hasSuffix(" ") {
+                out.append(" ")
+            }
+            out.append(ch)
+            pendingSpace = false
+        }
+    }
+    return out
+}
+
+private func collapseLinkTarget(_ target: Substring) -> String {
+    target.filter { !$0.isWhitespace }.map(String.init).joined()
 }
 
 /// SOUL-SOUL_DESKTOP-160: horizontal-rule detection. Recognizes `***`,
