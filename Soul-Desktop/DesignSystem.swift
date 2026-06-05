@@ -45,8 +45,8 @@ enum SoulColor {
     // SOUL-215: cream → neutral gray off-white. Same luminance, much
     // less yellow saturation — the NavigationSplitView divider shadow
     // reads as a soft tonal step instead of a warm/dark gradient bleed.
-    static let bg            = dynamic(light: 0xEFEEEC, dark: 0x181818)
-    static let bgElevated    = dynamic(light: 0xF8F8F6, dark: 0x222222)
+    static let bg            = dynamic(light: 0xF4F3F1, dark: 0x181818)
+    static let bgElevated    = dynamic(light: 0xFFFFFF, dark: 0x222222)
     static let sidebar       = dynamic(light: 0xE6E5E2, dark: 0x1F1F1F, alpha: 0.6)
     static let surface       = dynamic(light: 0xE6E5E2, dark: 0x2A2A2A)
     static let border        = dynamic(light: 0xD2D1CD, dark: 0x333333)

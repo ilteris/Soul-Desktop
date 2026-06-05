@@ -34,6 +34,7 @@ struct ThreadView: View {
     /// an off-document origin.
     @State private var scrollRestorePending = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
+    @AppStorage("soul.uiShowThoughts") private var showThoughts: Bool = false
 
     /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
     /// reference-type holder so per-row writes during scroll do NOT
@@ -108,9 +109,18 @@ struct ThreadView: View {
         // inline under the parent's row via `nestedChildren`. Computed once
         // per body re-eval to avoid the O(N) lookup per enumerate iteration.
         let suppressedIds = controller.nestedSubagentChildItemIds
-        let allMainItems = suppressedIds.isEmpty
-            ? split.main
-            : split.main.filter { !suppressedIds.contains($0.id) }
+        let allMainItems: [ThreadItem] = {
+            let base = suppressedIds.isEmpty
+                ? split.main
+                : split.main.filter { !suppressedIds.contains($0.id) }
+            if !showThoughts {
+                return base.filter { item in
+                    if case .agentThought = item { return false }
+                    return true
+                }
+            }
+            return base
+        }()
         let renderLimit = controller.isWorking
             ? workingTranscriptRowLimit
             : Self.maxIdleTranscriptRows
@@ -531,9 +541,18 @@ struct ThreadView: View {
     private func currentTranscriptSnapshot() -> (rows: [TranscriptRowSnapshot], hiddenMainCount: Int) {
         let split = controller.groupedItemsSplit
         let suppressedIds = controller.nestedSubagentChildItemIds
-        let allMainItems = suppressedIds.isEmpty
-            ? split.main
-            : split.main.filter { !suppressedIds.contains($0.id) }
+        let allMainItems: [ThreadItem] = {
+            let base = suppressedIds.isEmpty
+                ? split.main
+                : split.main.filter { !suppressedIds.contains($0.id) }
+            if !showThoughts {
+                return base.filter { item in
+                    if case .agentThought = item { return false }
+                    return true
+                }
+            }
+            return base
+        }()
         let renderLimit = controller.isWorking
             ? workingTranscriptRowLimit
             : Self.maxIdleTranscriptRows

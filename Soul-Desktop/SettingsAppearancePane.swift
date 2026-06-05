@@ -8,6 +8,7 @@ struct AppearancePane: View {
     @AppStorage("soul.codeFontSize")  private var codeFontSize: Int = 13
     @AppStorage("soul.fontSmoothing") private var fontSmoothing: Bool = true
     @AppStorage("soul.pointerCursors")private var pointerCursors: Bool = true
+    @AppStorage("soul.uiShowThoughts") private var showThoughts: Bool = false
     @AppStorage(SoulColor.accentStorageKey) private var accentHex: Int = Int(SoulColor.defaultAccentHex)
     @AppStorage("soul.appearance") private var appearancePref: String = "system"
 
@@ -86,6 +87,12 @@ struct AppearancePane: View {
                     title: "Use pointer cursors",
                     description: "Change the cursor to a pointer when hovering over interactive elements",
                     value: $pointerCursors
+                )
+                Divider().padding(.leading, 14)
+                ToggleRow(
+                    title: "Show thinking process",
+                    description: "Display agent thought bubbles and reasoning chains in transcripts",
+                    value: $showThoughts
                 )
                 Divider().padding(.leading, 14)
                 StepperRow(
