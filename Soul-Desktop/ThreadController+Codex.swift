@@ -83,6 +83,8 @@ extension ThreadController {
                           userInfo: [NSLocalizedDescriptionKey: "codex client not initialized"])
         }
         codexItemMap.removeAll(keepingCapacity: true)
+        codexTurnDidCompact = false
+        codexPostCompactAgentTextSeen = false
         try await runtime.prompt(request)
         codexActiveTurnId = await runtime.activeTurnID
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -111,6 +113,20 @@ extension ThreadController {
             // `~/Library/Logs/Soul-Desktop/codex-protocol.jsonl` and the
             // mismatched shape is right there. No guessing.
             CodexProtocolLog.record(method: method, params: params)
+            if method == "thread/compacted" {
+                flushPendingCodexDeltas()
+                materializeBufferedAgentStreams()
+                let alreadyMarkedCompact = codexTurnDidCompact
+                if !alreadyMarkedCompact {
+                    items.append(.status(id: UUID(), text: "⤵ context compacted"))
+                }
+                codexTurnDidCompact = true
+                if !alreadyMarkedCompact {
+                    codexPostCompactAgentTextSeen = false
+                }
+                lastActivityAt = Date()
+                return
+            }
             let action = CodexRuntimeRenderingAction(method: method, params: params)
             // Most notifications = the agent is alive and emitting; bump the
             // stall watchdog's clock so it doesn't trip on tool-call /
@@ -263,6 +279,9 @@ extension ThreadController {
     /// changed (once per frame, not once per token).
     private func applyCodexAgentText(itemId: String, delta: String) {
         guard let uuid = codexItemMap[itemId] else { return }
+        if codexTurnDidCompact {
+            codexPostCompactAgentTextSeen = true
+        }
         if items.contains(where: { item in
             if case .agentMessage(let id, _, let complete, _) = item, id == uuid {
                 return complete
@@ -507,7 +526,12 @@ extension ThreadController {
             items.append(.status(id: uuid, text: "✓ exited review"))
         case "contextCompaction":
             materializeBufferedAgentStreams()
-            items.append(.status(id: uuid, text: "⤵ context compacted"))
+            let alreadyMarkedCompact = codexTurnDidCompact
+            codexTurnDidCompact = true
+            if !alreadyMarkedCompact {
+                codexPostCompactAgentTextSeen = false
+                items.append(.status(id: uuid, text: "⤵ context compacted"))
+            }
         default:
             // Unknown codex item types used to render as `· <itemType>`
             // status rows, leaking implementation names like `· userMessage`
@@ -706,6 +730,10 @@ extension ThreadController {
         }
         switch segment.kind {
         case .message:
+            if codexTurnDidCompact,
+               !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                codexPostCompactAgentTextSeen = true
+            }
             items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
             openAgentMessageId = nil
         case .thought:

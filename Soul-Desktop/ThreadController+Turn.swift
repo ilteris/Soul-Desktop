@@ -219,6 +219,18 @@ extension ThreadController {
                     )
                     guard promptRequest.canDispatch else { return }
                     try await sendCodex(promptRequest)
+                    if codexTurnDidCompact && !codexPostCompactAgentTextSeen {
+                        materializeBufferedAgentStreams()
+                        items.append(.status(id: UUID(), text: "↻ continuing after context compact"))
+                        let continuationRequest = ProviderRuntimePromptRequest<ContentBlock>(
+                            session: runtimeSessionSnapshot(),
+                            text: "Continue from where you left off after the context compaction. Do not restart or summarize; proceed with the next concrete step.",
+                            attachments: []
+                        )
+                        if continuationRequest.canDispatch {
+                            try await sendCodex(continuationRequest)
+                        }
+                    }
                     materializeBufferedAgentStreams()
 
                     // Persist the codex agent's final reply text to the

@@ -599,6 +599,14 @@ final class ThreadController {
     /// this continuation when it observes `turn/completed`, letting `send`
     /// stay awaitable on a single turn boundary.
     var codexTurnContinuation: CheckedContinuation<Void, Error>?
+    /// True once the active Codex turn emits a context-compaction marker.
+    /// Used to issue one hidden continuation turn when Codex completes
+    /// immediately after compacting instead of resuming the interrupted work.
+    var codexTurnDidCompact = false
+    /// Set when agent text arrives after the compaction marker in the active
+    /// Codex turn. If this stays false at turn completion, the user saw
+    /// "context compacted" but no continuation.
+    var codexPostCompactAgentTextSeen = false
     /// Maps codex-side `item.id` strings to the ThreadItem UUID we minted
     /// for that item. Lets `item/agentMessage/delta` + `item/completed`
     /// notifications find the right canvas row to update.
