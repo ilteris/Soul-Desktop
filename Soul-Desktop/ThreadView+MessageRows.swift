@@ -444,12 +444,12 @@ struct CollapsibleBubbleBody: View {
         return VStack(alignment: .leading, spacing: 6) {
             MarkdownView(
                 text: visibleText,
-                codeFont: compactMarkdown ? SoulFont.code(13, weight: .regular) : SoulType.code,
-                bodyFont: compactMarkdown ? SoulFont.ui(14, weight: .regular) : SoulType.body,
+                codeFont: compactMarkdown ? SoulFont.code(14, weight: .regular) : SoulType.code,
+                bodyFont: compactMarkdown ? SoulFont.ui(15, weight: .regular) : SoulType.body,
                 h1Font: compactMarkdown ? SoulFont.ui(16, weight: .semibold) : SoulType.h1,
-                h2Font: compactMarkdown ? SoulFont.ui(15, weight: .semibold) : SoulType.h2,
-                h3Font: compactMarkdown ? SoulFont.ui(14, weight: .semibold) : SoulType.h3,
-                h4Font: compactMarkdown ? SoulFont.ui(14, weight: .semibold) : SoulType.h4,
+                h2Font: compactMarkdown ? SoulFont.ui(16, weight: .semibold) : SoulType.h2,
+                h3Font: compactMarkdown ? SoulFont.ui(15, weight: .semibold) : SoulType.h3,
+                h4Font: compactMarkdown ? SoulFont.ui(15, weight: .semibold) : SoulType.h4,
                 headerColor: isHistorical ? mutedFg : SoulColor.fg,
                 bodyColor: isHistorical ? mutedFg : SoulColor.fg,
                 codeColor: isHistorical ? mutedFg : SoulColor.fg

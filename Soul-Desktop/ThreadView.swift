@@ -6,6 +6,7 @@ import Combine
 struct ThreadView: View {
     private static let maxIdleTranscriptRows = 80
     private static let maxWorkingTranscriptRows = 40
+    private static let workingTranscriptRowStep = 80
 
     @Bindable var controller: ThreadController
     @Binding var prompt: String
@@ -55,6 +56,7 @@ struct ThreadView: View {
     @State private var shouldFollowLiveTurn: Bool = true
     @State private var frozenTranscriptRows: [TranscriptRowSnapshot]? = nil
     @State private var frozenHiddenMainCount: Int = 0
+    @State private var workingTranscriptRowLimit: Int = Self.maxWorkingTranscriptRows
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
@@ -84,14 +86,15 @@ struct ThreadView: View {
     // surrounding ScrollViewReader / ZStack expression back under budget.
     @ViewBuilder
     private var transcriptList: some View {
-        if let frozenTranscriptRows {
+        if let frozenTranscriptRows, controller.steeredVisiblePromptId == nil {
             transcriptStack(
                 projectPath: controller.project.path,
                 projectKey: controller.project.id,
                 rows: frozenTranscriptRows,
                 hiddenMainCount: frozenHiddenMainCount,
                 queuedItems: [],
-                showWorkingIndicator: controller.isWorking
+                showWorkingIndicator: controller.isWorking,
+                onRevealEarlier: { revealEarlierLiveRows() }
             )
         } else {
             liveTranscriptList
@@ -109,7 +112,7 @@ struct ThreadView: View {
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
         let renderLimit = controller.isWorking
-            ? Self.maxWorkingTranscriptRows
+            ? workingTranscriptRowLimit
             : Self.maxIdleTranscriptRows
         let hiddenMainCount = max(0, allMainItems.count - renderLimit)
         let mainItems = hiddenMainCount > 0
@@ -125,7 +128,8 @@ struct ThreadView: View {
             rows: rows,
             hiddenMainCount: hiddenMainCount,
             queuedItems: queuedItems,
-            showWorkingIndicator: isWorking
+            showWorkingIndicator: isWorking,
+            onRevealEarlier: { revealEarlierLiveRows() }
         )
     }
 
@@ -136,16 +140,32 @@ struct ThreadView: View {
         rows: [TranscriptRowSnapshot],
         hiddenMainCount: Int,
         queuedItems: [ThreadItem],
-        showWorkingIndicator: Bool
+        showWorkingIndicator: Bool,
+        onRevealEarlier: (() -> Void)? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 8)
             if hiddenMainCount > 0 {
-                Text("\(hiddenMainCount) earlier items hidden while this session is live")
+                Button {
+                    onRevealEarlier?()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Show earlier items")
+                        Text("\(hiddenMainCount) hidden")
+                            .foregroundStyle(SoulColor.fgSubtle)
+                    }
                     .font(SoulFont.ui(11, weight: .medium))
-                    .foregroundStyle(SoulColor.fgSubtle)
-                    .padding(.vertical, 10)
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(SoulColor.fgSubtle.opacity(0.08), in: Capsule())
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .disabled(onRevealEarlier == nil)
             }
             ForEach(rows) { row in
                 ThreadItemRow(
@@ -261,6 +281,7 @@ struct ThreadView: View {
                     let accepted = controller.items.count > itemCountBefore
                     if accepted {
                         userInteracting = false
+                        shouldFollowLiveTurn = true
                     }
                     return accepted
                 },
@@ -369,12 +390,12 @@ struct ThreadView: View {
                         if controller.isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
                         userInteracting = true
-                        shouldFollowLiveTurn = isTranscriptNearBottom()
+                        shouldFollowLiveTurn = false
                     case .idle, .animating:
-                        controller.streamPreviewPublishingSuspended = false
-                        controller.publishBufferedStreamPreviewSoon()
                         userInteracting = false
                         shouldFollowLiveTurn = isTranscriptNearBottom()
+                        controller.streamPreviewPublishingSuspended = false
+                        controller.publishBufferedStreamPreviewSoon()
                         DispatchQueue.main.async {
                             shouldFollowLiveTurn = isTranscriptNearBottom()
                         }
@@ -438,11 +459,20 @@ struct ThreadView: View {
                 .onChange(of: controller.liveStreamPreview) { _, _ in
                     followLiveTurn(proxy: proxy)
                 }
+                .onChange(of: controller.steeredVisiblePromptId) { _, steeredId in
+                    if steeredId != nil {
+                        frozenTranscriptRows = nil
+                        frozenHiddenMainCount = 0
+                        followLiveTurn(proxy: proxy)
+                    }
+                }
                 .onChange(of: controller.isWorking) { _, isWorking in
                     if isWorking {
+                        workingTranscriptRowLimit = Self.maxWorkingTranscriptRows
                         freezeLiveTranscript()
                         return
                     }
+                    workingTranscriptRowLimit = Self.maxWorkingTranscriptRows
                     finishLiveTurn(proxy: proxy)
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
@@ -505,13 +535,24 @@ struct ThreadView: View {
             ? split.main
             : split.main.filter { !suppressedIds.contains($0.id) }
         let renderLimit = controller.isWorking
-            ? Self.maxWorkingTranscriptRows
+            ? workingTranscriptRowLimit
             : Self.maxIdleTranscriptRows
         let hiddenMainCount = max(0, allMainItems.count - renderLimit)
         let mainItems = hiddenMainCount > 0
             ? Array(allMainItems.suffix(renderLimit))
             : allMainItems
         return (transcriptRows(from: mainItems), hiddenMainCount)
+    }
+
+    private func revealEarlierLiveRows() {
+        shouldFollowLiveTurn = false
+        userInteracting = true
+        workingTranscriptRowLimit += Self.workingTranscriptRowStep
+        frozenTranscriptRows = nil
+        frozenHiddenMainCount = 0
+        DispatchQueue.main.async {
+            userInteracting = false
+        }
     }
 
     private func freezeLiveTranscript() {

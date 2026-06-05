@@ -105,14 +105,14 @@ enum SoulMetric {
 /// around the 15pt body to keep vertical rhythm coherent.
 enum SoulType {
     // Body — chat messages, sidebar rows, paragraph text.
-    static let body          = SoulFont.ui(15, weight: .regular)
-    static let bodyBold      = SoulFont.ui(15, weight: .bold)
-    static let bodyItalic    = SoulFont.ui(15, weight: .regular).italic()
-    static let bodyBoldItalic = SoulFont.ui(15, weight: .bold).italic()
+    static let body          = SoulFont.ui(16, weight: .regular)
+    static let bodyBold      = SoulFont.ui(16, weight: .bold)
+    static let bodyItalic    = SoulFont.ui(16, weight: .regular).italic()
+    static let bodyBoldItalic = SoulFont.ui(16, weight: .bold).italic()
 
     // Inline code spans — slightly smaller than body so the mono face
     // doesn't overpower; same face though (composer/sidebar are all mono).
-    static let code          = SoulFont.code(14, weight: .regular)
+    static let code          = SoulFont.code(15, weight: .regular)
 
     // Headings — semibold, descending. SOUL-SOUL_DESKTOP-168: every
     // heading sits above body (15pt). Pre-fix h3/h4 were 14/13pt and
@@ -121,16 +121,16 @@ enum SoulType {
     // below their own content. New ladder: 22 / 19 / 17 / 16 keeps a
     // clear step between each level and never drops below body.
     static let h1            = SoulFont.ui(22, weight: .semibold)
-    static let h2            = SoulFont.ui(19, weight: .semibold)
-    static let h3            = SoulFont.ui(17, weight: .semibold)
-    static let h4            = SoulFont.ui(16, weight: .semibold)
+    static let h2            = SoulFont.ui(20, weight: .semibold)
+    static let h3            = SoulFont.ui(18, weight: .semibold)
+    static let h4            = SoulFont.ui(17, weight: .semibold)
 
     // Meta — timestamps, footers, badges, sub-headers.
-    static let caption       = SoulFont.ui(12, weight: .regular)
-    static let micro         = SoulFont.ui(10, weight: .regular)
+    static let caption       = SoulFont.ui(13, weight: .regular)
+    static let micro         = SoulFont.ui(11, weight: .regular)
 
     // Composer text field. AppKit-side so we expose NSFont too.
-    static let composerSize: CGFloat = 14
+    static let composerSize: CGFloat = 15
     static let composer      = SoulFont.ui(composerSize, weight: .regular)
     static var composerNS: NSFont { SoulFont.nsFont(composerSize, weight: .regular) }
 }
