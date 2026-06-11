@@ -456,12 +456,6 @@ struct SidebarView: View {
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(isDev ? Color.orange : Color.blue, in: RoundedRectangle(cornerRadius: 4))
-            
-            if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
-                Text("v\(version)")
-                    .font(SoulFont.ui(10))
-                    .foregroundStyle(SoulColor.fgSubtle)
-            }
         }
     }
 
