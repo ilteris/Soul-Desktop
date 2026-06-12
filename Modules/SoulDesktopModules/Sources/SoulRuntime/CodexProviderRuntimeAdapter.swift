@@ -7,12 +7,18 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
 
     private let projectKey: String
     private let spawnResolver: RuntimeSpawnResolver
+    private let hydrationPreparer: RuntimeHydrationPreparer
     private var client: CodexClient?
     private var currentTurnID: String?
 
-    public init(projectKey: String, spawnResolver: @escaping RuntimeSpawnResolver) {
+    public init(
+        projectKey: String,
+        spawnResolver: @escaping RuntimeSpawnResolver,
+        hydrationPreparer: @escaping RuntimeHydrationPreparer
+    ) {
         self.projectKey = projectKey
         self.spawnResolver = spawnResolver
+        self.hydrationPreparer = hydrationPreparer
     }
 
     public var isStarted: Bool {
@@ -37,7 +43,20 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
                           userInfo: [NSLocalizedDescriptionKey: "codex binary not found on PATH"])
         }
 
+        let hydrationSessionID = request.session.kernelSessionID
+            ?? request.session.nativeSessionID
+            ?? UUID().uuidString.lowercased()
+        let hydration = await hydrationPreparer(
+            .codex,
+            projectKey,
+            request.session.projectPath,
+            hydrationSessionID
+        )
+
         var env = spawn.environment ?? [:]
+        for (key, value) in hydration.env {
+            env[key] = value
+        }
         env["SOUL_PROJECT"] = projectKey
         if let sid = request.session.kernelSessionID {
             env["SOUL_SESSION_ID"] = sid

@@ -20,7 +20,8 @@ extension ThreadController {
         if await runtimes.codex?.isStarted == true { return }
         let runtime = runtimes.codex ?? CodexProviderRuntimeAdapter(
             projectKey: project.id,
-            spawnResolver: runtimeSpawnResolver()
+            spawnResolver: runtimeSpawnResolver(),
+            hydrationPreparer: runtimeHydrationPreparer()
         )
         runtimes.codex = runtime
         let startResult = try await runtime.start(startRequest)

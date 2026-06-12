@@ -68,18 +68,18 @@ enum Provider: String, CaseIterable, Identifiable {
     var icon: String { ProviderIcon.symbol(for: rawValue) }
 
     /// Hydration status as of the unified-generator cutover (2026-05-11).
-    /// All three harnesses now boot into a Soul-aware session; only the
+    /// All providers now boot into a Soul-aware session; only the
     /// delivery shape differs (native markdown file vs. mid-session XML).
     var soulContextStatus: String {
         switch self {
         case .geminiCLI: return "hydrated via GEMINI.md (soul_gemini_harness.py)"
         case .claude:    return "hydrated via CLAUDE.md (soul_claude_harness.py)"
         case .pi:        return "hydrated via soul-orchestrator extension"
-        case .codex:     return "phase 1 stub — no harness yet"
+        case .codex:     return "hydrated via AGENTS.md (soul_hydrate.py --target codex)"
         }
     }
 
-    var isHydratedToday: Bool { self != .codex }
+    var isHydratedToday: Bool { true }
 
     /// User-tunable stall threshold (seconds) after which the WorkingIndicator
     /// surfaces a Recover capsule and ThreadController emits a `StallDetected`

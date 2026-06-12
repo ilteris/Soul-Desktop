@@ -33,9 +33,10 @@ enum SoulHydration {
                 log: ["✓ Pi: hydration handled by soul-orchestrator extension at runtime"]
             )
         case .codex:
-            return HydrationResult(
-                env: [:],
-                log: ["ℹ Codex: phase 1 stub — no AGENTS.md harness yet"]
+            return await hydrateCodex(
+                projectKey: projectKey,
+                projectPath: projectPath,
+                soulPath: soulPath
             )
         }
     }
@@ -89,6 +90,29 @@ enum SoulHydration {
         }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outPath))?[.size] as? Int ?? 0
         return HydrationResult(log: ["✓ Claude: regenerated \(outPath) (\(bytes)B)"])
+    }
+
+    private static func hydrateCodex(projectKey: String,
+                                     projectPath: String,
+                                     soulPath: String) async -> HydrationResult {
+        let outPath = "\(projectPath)/AGENTS.md"
+        let script = "\(soulPath)/kernel/soul_hydrate.py"
+        guard FileManager.default.isReadableFile(atPath: script) else {
+            return HydrationResult(log: ["✗ soul_hydrate.py not found at \(script)"])
+        }
+        let result = await runPythonAsync(
+            script: script,
+            args: [projectKey, "--target", "codex", "--output", outPath],
+            extraEnv: [:]
+        )
+        if result.status != 0 {
+            return HydrationResult(log: [
+                "✗ soul_hydrate.py --target codex exit=\(result.status)",
+                "  stderr: \(result.stderr.prefix(400))"
+            ])
+        }
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: outPath))?[.size] as? Int ?? 0
+        return HydrationResult(log: ["✓ Codex: regenerated \(outPath) (\(bytes)B)"])
     }
 
     /// Async wrapper that pushes the synchronous subprocess call off whatever
