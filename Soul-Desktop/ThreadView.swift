@@ -185,6 +185,7 @@ struct ThreadView: View {
                     isHistorical: row.isHistorical,
                     isQueued: false,
                     showAgentFooter: row.showAgentFooter,
+                    agentCopyText: row.agentCopyText,
                     nestedChildren: row.nestedChildren
                 )
                 .padding(.top, row.leadingGap)
@@ -738,6 +739,7 @@ struct ThreadView: View {
                 item: item,
                 isHistorical: controller.historicalIDs.contains(item.id),
                 showAgentFooter: isLastInAgentRun(at: i, items: items),
+                agentCopyText: AgentMessageRunCopyText.text(at: i, items: items),
                 leadingGap: leadingGap(at: i, items: items),
                 isTurnStart: isTurnStart(item: item, index: i, items: items),
                 nestedChildren: nestedChildren(for: item)
@@ -763,11 +765,38 @@ private struct TranscriptRowSnapshot: Identifiable {
     let item: ThreadItem
     let isHistorical: Bool
     let showAgentFooter: Bool
+    let agentCopyText: String?
     let leadingGap: CGFloat
     let isTurnStart: Bool
     let nestedChildren: [ThreadItem]
 
     var id: UUID { item.id }
+}
+
+enum AgentMessageRunCopyText {
+    static func text(at index: Int, items: [ThreadItem]) -> String? {
+        guard items.indices.contains(index),
+              case .agentMessage = items[index] else {
+            return nil
+        }
+
+        let nextIndex = index + 1
+        if nextIndex < items.count, case .agentMessage = items[nextIndex] {
+            return nil
+        }
+
+        var startIndex = index
+        while startIndex > 0, case .agentMessage = items[startIndex - 1] {
+            startIndex -= 1
+        }
+
+        let parts = items[startIndex...index].compactMap { item -> String? in
+            guard case .agentMessage(_, let text, _, _) = item else { return nil }
+            return text.isEmpty ? nil : text
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n\n")
+    }
 }
 
 private struct LiveStreamPreview: View {
@@ -861,6 +890,10 @@ struct ThreadItemRow: View {
     /// copy/feedback/fork/timestamp footer to cut the noisy action-button
     /// strip between every short narration line in multi-step turns.
     var showAgentFooter: Bool = true
+    /// Copy-only markdown payload for the final row in a consecutive agent
+    /// run. Rendering still uses this row's own text; the footer acts on the
+    /// logical assistant block the user sees as one response.
+    var agentCopyText: String? = nil
     /// Nested subagent inner-tool rows (resolved via the controller's
     /// `nestedSubagentChildren(parentToolCallId:)` helper). Only populated
     /// when this row is itself a `.toolCall(.subagent)`; rendered indented
@@ -889,7 +922,14 @@ struct ThreadItemRow: View {
         case .agentMessage(_, let text, let complete, let ts):
             // SOUL-SOUL_DESKTOP-096: `.equatable()` so SwiftUI skips the
             // MarkdownView rebuild when the row's inputs haven't changed.
-            AgentMessageRow(text: LedgerPreamble.scrubEchoed(text), timestamp: ts, isHistorical: isHistorical, isStreaming: !complete, showFooter: showAgentFooter)
+            AgentMessageRow(
+                text: LedgerPreamble.scrubEchoed(text),
+                timestamp: ts,
+                isHistorical: isHistorical,
+                isStreaming: !complete,
+                showFooter: showAgentFooter,
+                copyText: agentCopyText.map(LedgerPreamble.scrubEchoed)
+            )
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)

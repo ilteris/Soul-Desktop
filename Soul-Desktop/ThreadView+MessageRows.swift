@@ -101,6 +101,9 @@ struct AgentMessageRow: View, Equatable {
     /// where the agent narrates 5-10 short paragraphs render a noisy
     /// action-row strip between every line.
     var showFooter: Bool = true
+    /// Optional footer copy source for grouped assistant runs. The row renders
+    /// `text`, while the footer can copy the full visual assistant block.
+    var copyText: String? = nil
     @State private var isHovering = false
     @State private var feedback: Feedback = .none
 
@@ -115,9 +118,13 @@ struct AgentMessageRow: View, Equatable {
             && lhs.isHistorical == rhs.isHistorical
             && lhs.isStreaming == rhs.isStreaming
             && lhs.showFooter == rhs.showFooter
+            && lhs.copyText == rhs.copyText
     }
 
     private var split: (visible: String, trace: SoulTrace?) { SoulTrace.extract(from: text) }
+    private var copySplit: (visible: String, trace: SoulTrace?) {
+        SoulTrace.extract(from: copyText ?? text)
+    }
 
     var body: some View {
         let mutedFg = SoulColor.fg.opacity(0.62)
@@ -153,7 +160,7 @@ struct AgentMessageRow: View, Equatable {
                     NSPasteboard.general.clearContents()
                     // Drop the <soul_trace> envelope so the clipboard contains
                     // just the rendered markdown the user actually saw.
-                    NSPasteboard.general.setString(split.visible, forType: .string)
+                    NSPasteboard.general.setString(copySplit.visible, forType: .string)
                 }
                 FooterButton(
                     systemName: feedback == .up ? "hand.thumbsup.fill" : "hand.thumbsup",

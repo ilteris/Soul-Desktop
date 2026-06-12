@@ -66,6 +66,27 @@ struct ThreadItemGrouperTests {
         #expect(grouped == [read])
     }
 
+    @Test func finalAgentRunRowCopiesAllConsecutiveAgentBlocks() {
+        let first = agent("First paragraph.")
+        let second = agent("Second paragraph.")
+        let items = [first, second]
+
+        #expect(AgentMessageRunCopyText.text(at: 0, items: items) == nil)
+        #expect(AgentMessageRunCopyText.text(at: 1, items: items) == "First paragraph.\n\nSecond paragraph.")
+    }
+
+    @Test func singleAgentRowCopyTextIsUnchanged() {
+        let item = agent("Only paragraph.")
+
+        #expect(AgentMessageRunCopyText.text(at: 0, items: [item]) == "Only paragraph.")
+    }
+
+    @Test func nonAgentRowsHaveNoAgentRunCopyText() {
+        let user = ThreadItem.userMessage(id: UUID(), text: "hello", timestamp: Date())
+
+        #expect(AgentMessageRunCopyText.text(at: 0, items: [user]) == nil)
+    }
+
     private func tool(kind: String, title: String, location: String?) -> ThreadItem {
         ThreadItem.toolCall(
             id: UUID(),
@@ -75,5 +96,9 @@ struct ThreadItemGrouperTests {
             locationHint: location,
             details: nil
         )
+    }
+
+    private func agent(_ text: String) -> ThreadItem {
+        ThreadItem.agentMessage(id: UUID(), text: text, complete: true, timestamp: Date())
     }
 }

@@ -151,7 +151,8 @@ struct ReplayView: View {
                     ThreadItemRow(
                         projectPath: controller.project.path,
                         item: item,
-                        isHistorical: readingMode
+                        isHistorical: readingMode,
+                        agentCopyText: agentCopyText(for: item, in: chapter.body)
                     )
                     .id(item.id)
                 }
@@ -171,6 +172,13 @@ struct ReplayView: View {
     private func toggle(_ chapterId: Int) {
         let current = explicitExpansion[chapterId] ?? (chapterId == chapters.count - 1)
         explicitExpansion[chapterId] = !current
+    }
+
+    private func agentCopyText(for item: ThreadItem, in items: [ThreadItem]) -> String? {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else {
+            return nil
+        }
+        return AgentMessageRunCopyText.text(at: index, items: items)
     }
 
     static func chapters(from items: [ThreadItem], readingMode: Bool = false) -> [ReplayChapter] {
