@@ -195,8 +195,10 @@ extension ThreadController {
             case .updatePlan(let itemId, let item):
                 updateCodexPlan(itemId: itemId, item: item)
             case .updateTokenUsage(let lastTotalTokens, let modelContextWindow):
-                if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
-                if let modelContextWindow { codexContextWindow = modelContextWindow }
+                applyCodexTokenUsage(
+                    lastTotalTokens: lastTotalTokens,
+                    modelContextWindow: modelContextWindow
+                )
             case .connectionRetrying(let message, let willRetry):
                 // SOUL-SOUL_DESKTOP-369. willRetry=true → the runtime is auto-
                 // reconnecting; surface a non-fatal affordance on the working
@@ -940,6 +942,28 @@ extension ThreadController {
             .filter { !$0.content.isEmpty }
     }
 
+    func applyCodexTokenUsage(lastTotalTokens: Int?,
+                              modelContextWindow: Int?,
+                              providerContextWindow: Int? = nil) {
+        if let lastTotalTokens { codexTokensUsed = lastTotalTokens }
+        // SOUL-SOUL_DESKTOP-396: app-server's live modelContextWindow can be
+        // the current/effective window (~272k), not the model's maximum
+        // advertised budget. Prefer Codex's provider model cache when it can
+        // resolve the configured model, then fall back to the live payload.
+        if let contextWindow = providerContextWindow ?? resolveCodexProviderContextWindow() ?? modelContextWindow {
+            codexContextWindow = contextWindow
+        }
+    }
+
+    func resolveCodexProviderContextWindow() -> Int? {
+        if didResolveCodexProviderContextWindow {
+            return codexProviderContextWindow
+        }
+        didResolveCodexProviderContextWindow = true
+        codexProviderContextWindow = CodexContextWindowResolver.resolve()
+        return codexProviderContextWindow
+    }
+
     func nativeCompact(method: String) async {
         guard method == "thread/compact/start" else {
             NSLog("[ThreadController] unknown native compact method: \(method)")
@@ -974,4 +998,71 @@ extension ThreadController {
         }
     }
 
+}
+
+enum CodexContextWindowResolver {
+    private struct ModelsCache: Decodable {
+        var models: [Model]
+    }
+
+    private struct Model: Decodable {
+        var slug: String?
+        var id: String?
+        var name: String?
+        var context_window: Int?
+        var max_context_window: Int?
+    }
+
+    static func resolve(configPath: String = defaultConfigPath(),
+                        modelsCachePath: String = defaultModelsCachePath()) -> Int? {
+        guard let configuredModel = configuredModel(in: configPath),
+              let cache = modelsCache(at: modelsCachePath)
+        else { return nil }
+
+        let normalizedModel = normalize(configuredModel)
+        guard let match = cache.models.first(where: { model in
+            [model.slug, model.id, model.name]
+                .compactMap { $0.map(normalize) }
+                .contains(normalizedModel)
+        }) else {
+            return nil
+        }
+        return match.max_context_window ?? match.context_window
+    }
+
+    static func configuredModel(in configPath: String = defaultConfigPath()) -> String? {
+        guard let text = try? String(contentsOfFile: configPath, encoding: .utf8) else {
+            return nil
+        }
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { break }
+            guard line.hasPrefix("model") else { continue }
+            let parts = line.split(separator: "=", maxSplits: 1).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            guard parts.count == 2, parts[0] == "model" else { continue }
+            return parts[1].trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        return nil
+    }
+
+    private static func modelsCache(at path: String) -> ModelsCache? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ModelsCache.self, from: data)
+    }
+
+    private static func normalize(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func defaultConfigPath() -> String {
+        "\(FileManager.default.homeDirectoryForCurrentUser.path)/.codex/config.toml"
+    }
+
+    private static func defaultModelsCachePath() -> String {
+        "\(FileManager.default.homeDirectoryForCurrentUser.path)/.codex/models_cache.json"
+    }
 }

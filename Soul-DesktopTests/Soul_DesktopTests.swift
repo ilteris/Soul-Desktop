@@ -236,4 +236,85 @@ struct Soul_DesktopTests {
         #expect(complete == true) // bubble stays finalized
     }
 
+    @Test func codexContextWindowResolvesConfiguredModelMaxFromProviderCache() throws {
+        let dir = try Self.makeTemporaryDirectory()
+        let config = dir.appendingPathComponent("config.toml")
+        let cache = dir.appendingPathComponent("models_cache.json")
+
+        try """
+        model = "gpt-5.4"
+        model_reasoning_effort = "low"
+
+        [projects."/tmp/project"]
+        trust_level = "trusted"
+        """.write(to: config, atomically: true, encoding: .utf8)
+        try """
+        {
+          "models": [
+            {
+              "slug": "gpt-5.4",
+              "context_window": 272000,
+              "max_context_window": 1000000
+            }
+          ]
+        }
+        """.write(to: cache, atomically: true, encoding: .utf8)
+
+        #expect(CodexContextWindowResolver.resolve(
+            configPath: config.path,
+            modelsCachePath: cache.path
+        ) == 1_000_000)
+    }
+
+    @Test func codexConfiguredModelIgnoresProjectSections() throws {
+        let dir = try Self.makeTemporaryDirectory()
+        let config = dir.appendingPathComponent("config.toml")
+
+        try """
+        model = "gpt-5.4"
+
+        [projects."/tmp/project"]
+        model = "gpt-5.4-mini"
+        """.write(to: config, atomically: true, encoding: .utf8)
+
+        #expect(CodexContextWindowResolver.configuredModel(in: config.path) == "gpt-5.4")
+    }
+
+    @MainActor
+    @Test func codexTokenUsagePrefersProviderContextWindow() throws {
+        let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
+
+        controller.applyCodexTokenUsage(
+            lastTotalTokens: 123_456,
+            modelContextWindow: 258_000,
+            providerContextWindow: 1_000_000
+        )
+
+        #expect(controller.codexTokensUsed == 123_456)
+        #expect(controller.codexContextWindow == 1_000_000)
+    }
+
+    @MainActor
+    @Test func codexTokenUsageFallsBackToLiveEventWindow() throws {
+        let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
+        controller.didResolveCodexProviderContextWindow = true
+        controller.codexProviderContextWindow = nil
+
+        controller.applyCodexTokenUsage(
+            lastTotalTokens: 1_200_000,
+            modelContextWindow: 272_000,
+            providerContextWindow: nil
+        )
+
+        #expect(controller.codexTokensUsed == 1_200_000)
+        #expect(controller.codexContextWindow == 272_000)
+    }
+
+    private static func makeTemporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SoulDesktopTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
 }

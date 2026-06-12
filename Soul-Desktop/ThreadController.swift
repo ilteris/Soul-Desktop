@@ -684,8 +684,11 @@ final class ThreadController {
     /// Latest token count reported by codex's `thread/tokenUsage/updated`
     /// notification. nil until the first usage event lands.
     var codexTokensUsed: Int?
-    /// Model context-window budget reported by the same notification.
+    /// Model context-window budget resolved from Codex's configured provider
+    /// metadata, falling back to the live notification payload.
     var codexContextWindow: Int?
+    @ObservationIgnored var codexProviderContextWindow: Int?
+    @ObservationIgnored var didResolveCodexProviderContextWindow = false
 
     /// SOUL-IDENTITY-SPLIT: live transcript filename used by the provider
     /// on disk. Tracks Claude's `/compact` rotations — different from
