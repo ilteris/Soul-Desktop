@@ -84,9 +84,10 @@ struct AppShell: View {
     /// 320pt sidebar column. SidebarView writes here via Binding.
     @State var repairToast: String? = nil
     /// Provider-side context-compaction watcher. Shells out to
-    /// `soul autocompact` when the usage fraction crosses 85%, dispatches
-    /// the returned directive (slash command for Claude/Gemini, toast
-    /// for Codex/Pi). One instance lives for the AppShell's lifetime;
+    /// `soul autocompact` when the usage fraction crosses the shared
+    /// compact_policy threshold, dispatches the returned directive
+    /// (slash command, native compact, or toast). One instance lives
+    /// for the AppShell's lifetime;
     /// it short-circuits when no thread is active.
     @State var autoCompact = AutoCompactController()
     @State var emptyStateDroppedAttachments: [String] = []

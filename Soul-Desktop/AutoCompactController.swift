@@ -29,9 +29,8 @@ extension EnvironmentValues {
 @MainActor
 @Observable
 final class AutoCompactController {
-    /// Soft toast surfaced when a provider has no native compact
-    /// (Codex, Pi) but its context window is filling. The user picks
-    /// a branch target or dismisses.
+    /// Soft toast surfaced when a provider has no native compact but its
+    /// context window is filling. The user picks a branch target or dismisses.
     struct Toast: Identifiable, Equatable {
         let id: UUID = UUID()
         let provider: Provider
@@ -48,9 +47,8 @@ final class AutoCompactController {
     /// to show.
     var pendingToast: Toast? = nil
 
-    /// Brief banner string shown above the composer while a `/compact`
-    /// dispatch is in flight. Cleared once the next agent message lands
-    /// (handled by ComposerView observing this).
+    /// Brief banner string shown above the composer while auto-compact is
+    /// deferred or in flight.
     var banner: String? = nil
 
     /// Local debounce — defense in depth alongside the kernel's 60s
@@ -67,26 +65,35 @@ final class AutoCompactController {
     /// (SPEC-126). Falls back to defaults if file is missing/malformed
     /// so the controller stays usable on a bare checkout.
     @ObservationIgnored private let policy: CompactPolicy
+    @ObservationIgnored private static let deferredBanner = "Compaction queued until current turn completes..."
 
-    init() {
+    init(enabled: Bool? = nil, policy: CompactPolicy? = nil) {
         let key = "soul.autocompact.enabled"
         // CFPreferences returns nil if never set — default ON.
-        if let raw = CFPreferencesCopyAppValue(key as CFString, kCFPreferencesCurrentApplication) as? Bool {
+        if let enabled {
+            self.enabled = enabled
+        } else if let raw = CFPreferencesCopyAppValue(key as CFString, kCFPreferencesCurrentApplication) as? Bool {
             self.enabled = raw
         } else {
             self.enabled = true
         }
-        self.policy = CompactPolicy.load()
+        self.policy = policy ?? CompactPolicy.load()
     }
 
     /// Called by AppShell on every contextUsage fraction change.
     /// Cheap fast-path: no shell-out unless threshold + interval gates
     /// pass.
     func evaluate(thread: ThreadController, usage: ContextUsage) {
-        guard enabled else { return }
+        guard enabled else {
+            clearDeferredBannerIfNeeded()
+            return
+        }
         // Refuse to auto-fire on estimated signals — Pi byte-counts and
         // Gemini fallback would both trip a wrong threshold.
-        guard !usage.isEstimate else { return }
+        guard !usage.isEstimate else {
+            clearDeferredBannerIfNeeded()
+            return
+        }
         let frac = usage.fraction
         // Local short-window debounce. The kernel enforces 60s globally;
         // this trims redundant shell-outs while usage hovers around the
@@ -102,6 +109,17 @@ final class AutoCompactController {
         let rearm = providerPolicy.rearm
         guard frac >= threshold, lastEvaluatedFraction < threshold || frac >= rearm else {
             lastEvaluatedFraction = frac
+            clearDeferredBannerIfNeeded()
+            return
+        }
+        // SOUL-SOUL_DESKTOP-386: native Codex compaction during an active
+        // turn can terminate that turn at the compaction boundary. Auto
+        // compaction is maintenance work, so show the deferred state and wait
+        // until the provider is idle. AutoCompactBridge re-evaluates on the
+        // working -> idle transition without advancing lastEvaluatedFraction,
+        // preserving the crossing.
+        guard !thread.isWorking else {
+            banner = Self.deferredBanner
             return
         }
         lastEvaluation = now
@@ -124,7 +142,10 @@ final class AutoCompactController {
 
     private func dispatch(thread: ThreadController, usagePct: Double, force: Bool) {
         guard !inFlight else { return }
-        guard let sid = thread.sessionId else { return }
+        guard let sid = thread.sessionId else {
+            clearDeferredBannerIfNeeded()
+            return
+        }
         let project = thread.project.id
         let provider = thread.provider.rawValue
         inFlight = true
@@ -139,7 +160,10 @@ final class AutoCompactController {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.inFlight = false
-                guard let directive else { return }
+                guard let directive else {
+                    self.clearDeferredBannerIfNeeded()
+                    return
+                }
                 self.executeDirective(directive, on: thread)
             }
         }
@@ -214,9 +238,16 @@ final class AutoCompactController {
                 await thread.nativeCompact(method: method)
             }
         case .showToast(let toast):
+            clearDeferredBannerIfNeeded()
             pendingToast = toast
         case .skip:
-            break
+            clearDeferredBannerIfNeeded()
+        }
+    }
+
+    private func clearDeferredBannerIfNeeded() {
+        if banner == Self.deferredBanner {
+            banner = nil
         }
     }
 

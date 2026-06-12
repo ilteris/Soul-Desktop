@@ -19,6 +19,13 @@ private struct AutoCompactBridge: ViewModifier {
                 guard let thread = activeThread, let usage = contextUsage else { return }
                 controller.evaluate(thread: thread, usage: usage)
             }
+            .onChange(of: activeThread?.isWorking) { _, isWorking in
+                guard isWorking == false,
+                      let thread = activeThread,
+                      let usage = contextUsage
+                else { return }
+                controller.evaluate(thread: thread, usage: usage)
+            }
             // ⌘⇧K — manual force-compact. Routed through the menu-bar
             // CommandMenu (Soul_DesktopApp.commands) → notification, NOT
             // a hidden Button in `.background` (background views aren't

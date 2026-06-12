@@ -124,6 +124,33 @@ struct Soul_DesktopTests {
         }
     }
 
+    @MainActor
+    @Test func autoCompactDeferredBannerClearsWhenUsageDropsBelowThreshold() throws {
+        let policy = CompactPolicy(
+            defaultThreshold: 0.50,
+            debounceSeconds: 60,
+            perProvider: [
+                "codex": .init(threshold: 0.50, rearm: 0.95)
+            ]
+        )
+        let autoCompact = AutoCompactController(enabled: true, policy: policy)
+        let thread = ThreadController(provider: .codex, project: Self.codexTestProject())
+
+        thread.isWorking = true
+        autoCompact.evaluate(
+            thread: thread,
+            usage: ContextUsage(tokens: 60, max: 100, isEstimate: false, breakdown: nil)
+        )
+        #expect(autoCompact.banner == "Compaction queued until current turn completes...")
+
+        thread.isWorking = false
+        autoCompact.evaluate(
+            thread: thread,
+            usage: ContextUsage(tokens: 10, max: 100, isEstimate: false, breakdown: nil)
+        )
+        #expect(autoCompact.banner == nil)
+    }
+
     @Test func testContextUsageFractionIsLinear() throws {
         // The donut ring draws straight off `fraction` — spent/budget, no
         // nonlinear curve. 79k / 1M must read as ~8% of the ring, not the

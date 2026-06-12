@@ -988,8 +988,15 @@ extension ThreadController {
             return
         }
 
-        isWorking = true
-        defer { isWorking = false }
+        let ownsWorkingState = !isWorking
+        if ownsWorkingState {
+            isWorking = true
+        }
+        defer {
+            if ownsWorkingState {
+                isWorking = false
+            }
+        }
 
         do {
             try await runtime.compact(threadID: threadID)
