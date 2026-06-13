@@ -10,6 +10,13 @@ struct LiveSessionRecord: Identifiable, Equatable {
     var isWorking: Bool
 }
 
+struct PendingThreadOpen: Equatable {
+    var sessionId: String
+    var projectId: String
+    var title: String?
+    var provider: Provider
+}
+
 /// Owns the mounted chat controllers for AppShell.
 ///
 /// AppShell remains the composition root, but thread storage, active-thread
@@ -23,6 +30,8 @@ final class AppSessionCoordinator {
     var threads: [String: ThreadController] = [:]
     var activeThreadKey: String?
     var pendingActiveId: String?
+    var pendingActiveProjectId: String?
+    var loadingThread: PendingThreadOpen?
     var draftSession: SoulSession?
     var liveRecords: [String: LiveSessionRecord] = [:]
 
@@ -77,6 +86,9 @@ final class AppSessionCoordinator {
         let switchingThreads = activeThreadKey != key
         activeThreadKey = key
         if let key {
+            pendingActiveId = nil
+            pendingActiveProjectId = nil
+            loadingThread = nil
             if switchingThreads {
                 threads[key]?.composerDraft = ""
             }
@@ -127,6 +139,8 @@ final class AppSessionCoordinator {
         self.draftSession = nil
         if pendingActiveId == draftSession.id {
             pendingActiveId = nil
+            pendingActiveProjectId = nil
+            loadingThread = nil
         }
     }
 
@@ -134,9 +148,33 @@ final class AppSessionCoordinator {
         activeThreadKey = nil
         if let draftSession, draftSession.project == projectId {
             pendingActiveId = draftSession.id
+            pendingActiveProjectId = draftSession.project
         } else {
             pendingActiveId = nil
+            pendingActiveProjectId = nil
         }
+        loadingThread = nil
+    }
+
+    func beginLoading(_ pending: PendingThreadOpen) {
+        pendingActiveId = pending.sessionId
+        pendingActiveProjectId = pending.projectId
+        loadingThread = pending
+    }
+
+    func clearPendingSelection(sessionId: String? = nil) {
+        if let sessionId, pendingActiveId != sessionId {
+            return
+        }
+        pendingActiveId = nil
+        pendingActiveProjectId = nil
+        loadingThread = nil
+    }
+
+    func activateLoadedThread(_ key: String, sessionId: String) -> Bool {
+        guard pendingActiveId == sessionId else { return false }
+        setActiveThread(key)
+        return true
     }
 
     private func bumpThreadRecency(_ key: String) {

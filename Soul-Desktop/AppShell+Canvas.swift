@@ -172,7 +172,10 @@ extension AppShell {
                 .environment(\.autoCompactController, autoCompact)
                 .id(ctrl.id)
             }
-            if sessions.activeThreadKey == nil {
+            if let loading = sessions.loadingThread {
+                ThreadOpenLoadingView(pending: loading)
+                    .zIndex(120)
+            } else if sessions.activeThreadKey == nil {
                 let project = currentProject()
                 let selectedProjectId = workspace.selectedProjectId ?? ""
                 let phase = workspace.snapshot.phase
@@ -229,8 +232,8 @@ extension AppShell {
                 replayTotal: replay.controller?.total ?? 0,
                 replayPrompts: replay.controller?.promptCount ?? 0,
                 replayReplies: replay.controller?.replyCount ?? 0,
-                activeSessionId: thread?.sessionId ?? sessions.pendingActiveId,
-                activeProjectId: thread?.project.id ?? replay.controller?.project.id ?? sessions.draftSession?.project,
+                activeSessionId: sessions.pendingActiveId ?? thread?.sessionId,
+                activeProjectId: sessions.pendingActiveProjectId ?? thread?.project.id ?? replay.controller?.project.id ?? sessions.draftSession?.project,
                 currentProvider: harness,
                 draftSession: sessions.draftSession,
                 activeThreads: sessions.mountedThreads,
@@ -240,6 +243,39 @@ extension AppShell {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct ThreadOpenLoadingView: View {
+    let pending: PendingThreadOpen
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Loading transcript")
+                .font(SoulFont.ui(13, weight: .semibold))
+                .foregroundStyle(SoulColor.fg)
+            if let title = pending.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                Text(title)
+                    .font(SoulFont.ui(12))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 420)
+            }
+            Text(pending.provider.label)
+                .font(SoulFont.ui(11, weight: .medium))
+                .foregroundStyle(SoulColor.fgSubtle)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SoulColor.border.opacity(0.6), lineWidth: 0.5)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(SoulColor.bg.opacity(0.92))
+        .allowsHitTesting(true)
     }
 }
 

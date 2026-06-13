@@ -420,6 +420,9 @@ struct AppShell: View {
             // different project's thread must not keep owning the canvas or
             // the next send will append to the wrong session.
             devServerRunning = false
+            if sessions.loadingThread?.projectId == newKey {
+                return
+            }
             if let active = sessions.activeThread, active.project.id != newKey {
                 sessions.showProjectDraftOrEmpty(projectId: newKey)
             }

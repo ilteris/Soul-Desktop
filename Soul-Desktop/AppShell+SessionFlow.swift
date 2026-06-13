@@ -58,6 +58,8 @@ extension AppShell {
             replay.stop()
             sessions.activeThreadKey = nil
             sessions.pendingActiveId = draft.id
+            sessions.pendingActiveProjectId = draft.project
+            sessions.loadingThread = nil
             return
         }
         sessions.draftSession = nil
@@ -73,6 +75,7 @@ extension AppShell {
             return
         }
         sessions.pendingActiveId = session.id
+        sessions.pendingActiveProjectId = session.project
 
         if let existing = sessions.existingThread(sessionId: session.id) {
             harness = existing.provider
@@ -83,7 +86,7 @@ extension AppShell {
             if let existing = sessions.existingThread(syntheticSessionId: session.id) {
                 harness = existing.provider
                 sessions.setActiveThread(existing.id)
-                sessions.pendingActiveId = nil
+                sessions.clearPendingSelection(sessionId: session.id)
                 return
             }
         }
@@ -98,7 +101,7 @@ extension AppShell {
         // .unknown we have no real evidence of another writer; trust the
         // click.
         if !session.canSafelyResume, session.writer == .external {
-            sessions.pendingActiveId = nil
+            sessions.clearPendingSelection(sessionId: session.id)
             externalLiveSession = session
             return
         }
@@ -154,10 +157,22 @@ extension AppShell {
             : max(session.promptCount, session.transcriptTurns)
         controller.sessionTurnCountHint = sessionTurnCount > 0 ? sessionTurnCount : nil
         controller.assignSessionId(session.id)
+        let loadedFromSnapshot: Bool
         if let snapshot = hydrationCache.snapshot(project: routedProject, sessionId: session.id, provider: provider) {
             controller.applyHydratedSnapshot(snapshot)
+            sessions.mount(controller)
+            loadedFromSnapshot = true
+        } else {
+            let pending = PendingThreadOpen(
+                sessionId: session.id,
+                projectId: session.project,
+                title: session.title ?? session.intent ?? session.summary,
+                provider: provider
+            )
+            sessions.beginLoading(pending)
+            sessions.mount(controller, activate: false)
+            loadedFromSnapshot = false
         }
-        sessions.mount(controller)
         let useReadFirst = provider == .claude || provider == .geminiCLI || provider == .codex || provider == .pi
         if useReadFirst {
             // SOUL-SOUL_DESKTOP-243 (phase 1): chain background spawn-and-resume
@@ -172,10 +187,20 @@ extension AppShell {
             // ensureSession and will surface a real error then.
             Task {
                 await controller.hydrateFromDisk(id: session.id)
+                if !loadedFromSnapshot {
+                    guard sessions.activateLoadedThread(controller.id, sessionId: session.id) else { return }
+                } else {
+                    guard sessions.activeThreadKey == controller.id else { return }
+                }
                 try? await controller.ensureSession()
             }
         } else {
-            Task { await controller.loadSession(id: session.id) }
+            Task {
+                await controller.loadSession(id: session.id)
+                if !loadedFromSnapshot {
+                    _ = sessions.activateLoadedThread(controller.id, sessionId: session.id)
+                }
+            }
         }
     }
 
@@ -293,6 +318,7 @@ extension AppShell {
     func newChat(targetProjectID: String? = nil) {
         replay.stop()
         sessions.activeThreadKey = nil
+        sessions.loadingThread = nil
         prompt = ""
         if let targetProjectID, targetProjectID != workspace.selectedProjectId {
             workspace.selectProject(targetProjectID)
@@ -317,10 +343,12 @@ extension AppShell {
             )
             sessions.draftSession = draft
             sessions.pendingActiveId = draft.id
+            sessions.pendingActiveProjectId = draft.project
             newChatNonce &+= 1
         } else {
             sessions.draftSession = nil
             sessions.pendingActiveId = nil
+            sessions.pendingActiveProjectId = nil
         }
     }
 
@@ -343,7 +371,7 @@ extension AppShell {
         }
         if sessions.draftSession?.id == session.id {
             sessions.draftSession = nil
-            sessions.pendingActiveId = nil
+            sessions.clearPendingSelection(sessionId: session.id)
         }
     }
 
