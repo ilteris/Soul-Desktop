@@ -6,7 +6,10 @@ import Combine
 struct ThreadView: View {
     private static let maxIdleTranscriptRows = 80
     private static let maxWorkingTranscriptRows = 40
-    private static let workingTranscriptRowStep = 80
+    private static let transcriptRowStep = 80
+    private static let autoRevealTopThreshold: CGFloat = 180
+    private static let transcriptScrollSpaceName = "ThreadTranscriptScrollSpace"
+    private static let bottomVisibilityThreshold: CGFloat = 8
 
     @Bindable var controller: ThreadController
     @Binding var prompt: String
@@ -53,11 +56,11 @@ struct ThreadView: View {
     /// scroll (any phase other than .idle). Sticky-follow consults this
     /// so streaming-content-grew snaps can't fight a manual scroll —
     /// the user's gesture always wins.
-    @State private var userInteracting: Bool = false
-    @State private var shouldFollowLiveTurn: Bool = true
+    @State private var viewportPolicy = ThreadViewportPolicy()
     @State private var frozenTranscriptRows: [TranscriptRowSnapshot]? = nil
     @State private var frozenHiddenMainCount: Int = 0
-    @State private var workingTranscriptRowLimit: Int = Self.maxWorkingTranscriptRows
+    @State private var frozenQueuedItems: [ThreadItem] = []
+    @State private var transcriptRowLimit: Int = Self.maxIdleTranscriptRows
 
     /// SOUL-SOUL_DESKTOP-081: observe canvas width via GeometryReader so the
     /// scroll-anchor system can re-pin its anchor row when the right side
@@ -67,6 +70,12 @@ struct ThreadView: View {
     @State private var pendingCanvasWidth: CGFloat = 0
     @State private var canvasWidthRepinTask: Task<Void, Never>?
     @State private var transcriptScrollView: NSScrollView?
+    @State private var transcriptBoundsObserver: NSObjectProtocol?
+    @State private var transcriptDocumentObserver: NSObjectProtocol?
+    @State private var transcriptObservedDocumentView: NSView?
+    @State private var transcriptViewportHeight: CGFloat = 0
+    @State private var transcriptBottomSentinelMaxY: CGFloat?
+    @State private var autoRevealTask: Task<Void, Never>?
 
     /// AppShell-owned auto-compact watcher. Threaded in via environment
     /// (see AutoCompactController.swift) so we don't widen ThreadView's
@@ -93,7 +102,7 @@ struct ThreadView: View {
                 projectKey: controller.project.id,
                 rows: frozenTranscriptRows,
                 hiddenMainCount: frozenHiddenMainCount,
-                queuedItems: [],
+                queuedItems: frozenQueuedItems.filter { controller.queuedItemIDs.contains($0.id) },
                 showWorkingIndicator: controller.isWorking,
                 onRevealEarlier: { revealEarlierLiveRows() }
             )
@@ -121,9 +130,10 @@ struct ThreadView: View {
             }
             return base
         }()
-        let renderLimit = controller.isWorking
-            ? workingTranscriptRowLimit
-            : Self.maxIdleTranscriptRows
+        let renderLimit = max(
+            controller.isWorking ? Self.maxWorkingTranscriptRows : Self.maxIdleTranscriptRows,
+            transcriptRowLimit
+        )
         let hiddenMainCount = max(0, allMainItems.count - renderLimit)
         let mainItems = hiddenMainCount > 0
             ? Array(allMainItems.suffix(renderLimit))
@@ -192,6 +202,14 @@ struct ThreadView: View {
                 .id(row.id)
                 .padding(.top, row.isTurnStart ? 10 : 0)
                 .frame(minHeight: 24, alignment: .topLeading)
+                .onAppear {
+                    anchor.visibleIds.insert(row.id)
+                    updateAnchor(in: rows.map(\.item))
+                }
+                .onDisappear {
+                    anchor.visibleIds.remove(row.id)
+                    updateAnchor(in: rows.map(\.item))
+                }
             }
             if branchSeedLoading {
                 BranchSeedIndicator().padding(.top, 18)
@@ -217,6 +235,14 @@ struct ThreadView: View {
             Color.clear
                 .frame(height: 44)
                 .id("__bottom__")
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ThreadBottomSentinelPreferenceKey.self,
+                            value: geo.frame(in: .named(Self.transcriptScrollSpaceName)).maxY
+                        )
+                    }
+                )
         }
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity)
@@ -291,8 +317,8 @@ struct ThreadView: View {
                     }
                     let accepted = controller.items.count > itemCountBefore
                     if accepted {
-                        userInteracting = false
-                        shouldFollowLiveTurn = true
+                        frozenQueuedItems = controller.groupedItemsSplit.queued
+                        viewportPolicy.promptAccepted()
                     }
                     return accepted
                 },
@@ -332,27 +358,24 @@ struct ThreadView: View {
 
     @ViewBuilder
     private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
-        Button {
-            shouldFollowLiveTurn = true
-            withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo("__bottom__", anchor: .bottom)
+        if viewportPolicy.shouldShowJumpButton {
+            Button {
+                viewportPolicy.jumpToBottomRequested()
+                jumpToBottomFromButton(proxy: proxy)
+            } label: {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SoulColor.fg)
+                    .frame(width: 30, height: 30)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(
+                        Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
             }
-            DispatchQueue.main.async {
-                clampTranscriptToBottom()
-            }
-        } label: {
-            Image(systemName: "arrow.down")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(SoulColor.fg)
-                .frame(width: 30, height: 30)
-                .background(.regularMaterial, in: Circle())
-                .overlay(
-                    Circle().strokeBorder(SoulColor.border.opacity(0.7), lineWidth: 0.5)
-                )
-                .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
+            .buttonStyle(.plain)
+            .help("Jump to bottom")
         }
-        .buttonStyle(.plain)
-        .help("Jump to bottom")
     }
 
     private var controllerDroppedAttachments: Binding<[String]> {
@@ -374,45 +397,64 @@ struct ThreadView: View {
                     // full 18pt for visual breathing room.
                     transcriptList
                 }
-                .overlay(alignment: .bottomTrailing) {
+                .overlay(alignment: .bottom) {
                     jumpToBottomButton(proxy: proxy)
-                        .padding(.trailing, 22)
                         .padding(.bottom, 14)
                 }
                 .scrollBounceBehavior(.always, axes: .vertical)
-                .scrollIndicators(.hidden)
+                .scrollIndicators(.visible, axes: .vertical)
+                .coordinateSpace(name: Self.transcriptScrollSpaceName)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    Self.isScrollGeometryAtBottom(geometry)
+                } action: { _, atBottom in
+                    viewportPolicy.contentGeometryChanged(atBottom: atBottom)
+                }
                 .background(NSScrollViewConfigurator { sv in
-                    transcriptScrollView = sv
+                    configureTranscriptScrollView(sv)
                 })
                 .background(
                     GeometryReader { geo in
-                        Color.clear.preference(
-                            key: ThreadCanvasWidthPreferenceKey.self,
-                            value: geo.size.width
-                        )
+                        Color.clear
+                            .preference(
+                                key: ThreadCanvasWidthPreferenceKey.self,
+                                value: geo.size.width
+                            )
+                            .preference(
+                                key: ThreadTranscriptViewportHeightPreferenceKey.self,
+                                value: geo.size.height
+                            )
                     }
                 )
                 .onPreferenceChange(ThreadCanvasWidthPreferenceKey.self) { width in
                     handleCanvasWidthChange(width, proxy: proxy)
+                }
+                .onPreferenceChange(ThreadTranscriptViewportHeightPreferenceKey.self) { height in
+                    transcriptViewportHeight = height
+                }
+                .onPreferenceChange(ThreadBottomSentinelPreferenceKey.self) { maxY in
+                    transcriptBottomSentinelMaxY = maxY
                 }
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
                         if controller.isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
-                        userInteracting = true
-                        shouldFollowLiveTurn = false
-                    case .idle, .animating:
-                        userInteracting = false
-                        shouldFollowLiveTurn = isTranscriptNearBottom()
+                        viewportPolicy.userBeganScrolling()
+                        startAutoRevealLoop(proxy: proxy)
+                    case .animating:
+                        viewportPolicy.programmaticAnimationStarted()
                         controller.streamPreviewPublishingSuspended = false
+                        stopAutoRevealLoop()
                         controller.publishBufferedStreamPreviewSoon()
-                        DispatchQueue.main.async {
-                            shouldFollowLiveTurn = isTranscriptNearBottom()
-                        }
+                    case .idle:
+                        viewportPolicy.userScrollEnded()
+                        controller.streamPreviewPublishingSuspended = false
+                        stopAutoRevealLoop()
+                        controller.publishBufferedStreamPreviewSoon()
                         if !controller.isWorking {
                             frozenTranscriptRows = nil
                             frozenHiddenMainCount = 0
+                            viewportPolicy.turnEnded()
                         }
                     }
                 }
@@ -429,15 +471,19 @@ struct ThreadView: View {
                     anchor.itemId = controller.scrollAnchorItemId
                     if !controller.isHydrating {
                         performScrollRestore(proxy: proxy)
+                        scrollToBottomAfterLoad(proxy: proxy)
                     }
                     repairTranscriptScrollView(reason: "appear")
+                    refreshTranscriptBottomState()
                 }
                 .onChange(of: controller.activationNonce) { _, _ in
                     guard !controller.isHydrating else { return }
                     suppressAnchorWrites = true
                     anchor.itemId = controller.scrollAnchorItemId
                     performScrollRestore(proxy: proxy)
+                    scrollToBottomAfterLoad(proxy: proxy)
                     repairTranscriptScrollView(reason: "activation")
+                    refreshTranscriptBottomState()
                 }
                 .onChange(of: controller.isHydrating) { _, hydrating in
                     // SOUL-SOUL_DESKTOP-363: a cold session open is still
@@ -455,10 +501,13 @@ struct ThreadView: View {
                     suppressAnchorWrites = true
                     anchor.itemId = controller.scrollAnchorItemId
                     performScrollRestore(proxy: proxy)
+                    scrollToBottomAfterLoad(proxy: proxy)
                     repairTranscriptScrollView(reason: "hydrated")
+                    refreshTranscriptBottomState()
                 }
                 .onChange(of: controller.transcriptLayoutNonce) { _, _ in
                     followLiveTurn(proxy: proxy)
+                    refreshTranscriptBottomState(layoutPasses: 3)
                     // SOUL-SOUL_DESKTOP-189: only repair layout when not actively running a turn.
                     // During an active turn (isWorking == true), the document grows rather than shrinks,
                     // so the scroll origin is never out-of-bounds. Forcing AppKit layout subtree updates
@@ -469,21 +518,23 @@ struct ThreadView: View {
                 }
                 .onChange(of: controller.liveStreamPreview) { _, _ in
                     followLiveTurn(proxy: proxy)
+                    refreshTranscriptBottomState(layoutPasses: 3)
                 }
                 .onChange(of: controller.steeredVisiblePromptId) { _, steeredId in
                     if steeredId != nil {
                         frozenTranscriptRows = nil
                         frozenHiddenMainCount = 0
+                        frozenQueuedItems = []
                         followLiveTurn(proxy: proxy)
                     }
                 }
                 .onChange(of: controller.isWorking) { _, isWorking in
                     if isWorking {
-                        workingTranscriptRowLimit = Self.maxWorkingTranscriptRows
+                        transcriptRowLimit = Self.maxWorkingTranscriptRows
                         freezeLiveTranscript()
                         return
                     }
-                    workingTranscriptRowLimit = Self.maxWorkingTranscriptRows
+                    transcriptRowLimit = max(transcriptRowLimit, Self.maxIdleTranscriptRows)
                     finishLiveTurn(proxy: proxy)
                 }
                 // SOUL-SOUL_DESKTOP-094 + -096: flush local anchor state to
@@ -491,6 +542,9 @@ struct ThreadView: View {
                 // the right position.
                 .onDisappear {
                     canvasWidthRepinTask?.cancel()
+                    stopAutoRevealLoop()
+                    removeTranscriptBoundsObserver()
+                    removeTranscriptDocumentObserver()
                     controller.scrollAnchorItemId = anchor.itemId
                 }
                 composerSection(proxy: proxy)
@@ -554,9 +608,10 @@ struct ThreadView: View {
             }
             return base
         }()
-        let renderLimit = controller.isWorking
-            ? workingTranscriptRowLimit
-            : Self.maxIdleTranscriptRows
+        let renderLimit = max(
+            controller.isWorking ? Self.maxWorkingTranscriptRows : Self.maxIdleTranscriptRows,
+            transcriptRowLimit
+        )
         let hiddenMainCount = max(0, allMainItems.count - renderLimit)
         let mainItems = hiddenMainCount > 0
             ? Array(allMainItems.suffix(renderLimit))
@@ -565,14 +620,46 @@ struct ThreadView: View {
     }
 
     private func revealEarlierLiveRows() {
-        shouldFollowLiveTurn = false
-        userInteracting = true
-        workingTranscriptRowLimit += Self.workingTranscriptRowStep
+        viewportPolicy.revealEarlierRequested()
+        let baseLimit = controller.isWorking
+            ? Self.maxWorkingTranscriptRows
+            : Self.maxIdleTranscriptRows
+        transcriptRowLimit = max(transcriptRowLimit, baseLimit) + Self.transcriptRowStep
         frozenTranscriptRows = nil
         frozenHiddenMainCount = 0
+        frozenQueuedItems = []
         DispatchQueue.main.async {
-            userInteracting = false
+            viewportPolicy.programmaticAnimationStarted()
         }
+    }
+
+    private func revealEarlierIfNearTop(proxy: ScrollViewProxy) {
+        guard let scrollView = transcriptScrollView else { return }
+        let hiddenCount = currentTranscriptSnapshot().hiddenMainCount
+        guard hiddenCount > 0 else { return }
+        let y = scrollView.contentView.bounds.origin.y
+        guard y <= Self.autoRevealTopThreshold else { return }
+        let anchorId = anchor.itemId
+        revealEarlierLiveRows()
+        guard let anchorId else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(anchorId, anchor: .top)
+        }
+    }
+
+    private func startAutoRevealLoop(proxy: ScrollViewProxy) {
+        guard autoRevealTask == nil else { return }
+        autoRevealTask = Task { @MainActor in
+            while !Task.isCancelled {
+                revealEarlierIfNearTop(proxy: proxy)
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+        }
+    }
+
+    private func stopAutoRevealLoop() {
+        autoRevealTask?.cancel()
+        autoRevealTask = nil
     }
 
     private func freezeLiveTranscript() {
@@ -580,6 +667,7 @@ struct ThreadView: View {
         let snapshot = currentTranscriptSnapshot()
         frozenTranscriptRows = snapshot.rows
         frozenHiddenMainCount = snapshot.hiddenMainCount
+        frozenQueuedItems = controller.groupedItemsSplit.queued
     }
 
     private func handleCanvasWidthChange(_ width: CGFloat, proxy: ScrollViewProxy) {
@@ -595,7 +683,10 @@ struct ThreadView: View {
                 let snapshot = currentTranscriptSnapshot()
                 frozenTranscriptRows = snapshot.rows
                 frozenHiddenMainCount = snapshot.hiddenMainCount
-                followLiveTurn(proxy: proxy)
+                frozenQueuedItems = controller.groupedItemsSplit.queued
+                if viewportPolicy.mayFollowLiveTurn {
+                    followLiveTurn(proxy: proxy)
+                }
             } else {
                 repairTranscriptScrollView(reason: "width")
             }
@@ -633,10 +724,14 @@ struct ThreadView: View {
     private func finishLiveTurn(proxy: ScrollViewProxy) {
         frozenTranscriptRows = nil
         frozenHiddenMainCount = 0
-        guard !controller.isHydrating, shouldFollowLiveTurn else { return }
+        frozenQueuedItems = []
+        guard !controller.isHydrating, viewportPolicy.mayFollowLiveTurn else { return }
         DispatchQueue.main.async {
+            guard viewportPolicy.mayFollowLiveTurn else { return }
             proxy.scrollTo("__bottom__", anchor: .bottom)
             clampTranscriptToBottom()
+            viewportPolicy.didProgrammaticallyReachBottom()
+            refreshTranscriptBottomState()
         }
     }
 
@@ -646,33 +741,147 @@ struct ThreadView: View {
     private func followLiveTurn(proxy: ScrollViewProxy) {
         guard controller.isWorking,
               !controller.isHydrating,
-              !userInteracting,
-              shouldFollowLiveTurn
+              viewportPolicy.mayFollowLiveTurn
         else { return }
         DispatchQueue.main.async {
             guard controller.isWorking,
                   !controller.isHydrating,
-                  !userInteracting,
-                  shouldFollowLiveTurn
+                  viewportPolicy.mayFollowLiveTurn
             else { return }
             proxy.scrollTo("__bottom__", anchor: .bottom)
             clampTranscriptToBottom()
+            viewportPolicy.didProgrammaticallyReachBottom()
+            refreshTranscriptBottomState()
         }
     }
 
-    private func isTranscriptNearBottom(threshold: CGFloat = 28) -> Bool {
+    private func scrollToBottomAfterLoad(proxy: ScrollViewProxy, passes: Int = 4) {
+        viewportPolicy.jumpToBottomRequested()
+        DispatchQueue.main.async {
+            proxy.scrollTo("__bottom__", anchor: .bottom)
+            clampTranscriptToBottom()
+            viewportPolicy.didProgrammaticallyReachBottom()
+            refreshTranscriptBottomState()
+            if passes > 1 {
+                scrollToBottomAfterLoad(proxy: proxy, passes: passes - 1)
+            }
+        }
+    }
+
+    private func jumpToBottomFromButton(proxy: ScrollViewProxy, passes: Int = 5) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo("__bottom__", anchor: .bottom)
+            }
+            clampTranscriptToBottom()
+            refreshTranscriptBottomState()
+            if passes > 1 && !viewportPolicy.isAtBottom {
+                jumpToBottomFromButton(proxy: proxy, passes: passes - 1)
+            }
+        }
+    }
+
+    private func currentTranscriptBottomState() -> Bool {
+        viewportPolicy.isAtBottom
+    }
+
+    private static func isScrollGeometryAtBottom(_ geometry: ScrollGeometry) -> Bool {
+        let contentHeight = geometry.contentSize.height
+        let visibleMaxY = geometry.visibleRect.maxY
+        guard contentHeight > geometry.containerSize.height + bottomVisibilityThreshold else {
+            return true
+        }
+        return contentHeight - visibleMaxY <= bottomVisibilityThreshold
+    }
+
+    private func refreshTranscriptBottomState(layoutPasses: Int = 1) {
+        DispatchQueue.main.async {
+            if layoutPasses > 1 {
+                refreshTranscriptBottomState(layoutPasses: layoutPasses - 1)
+            }
+        }
+    }
+
+    @discardableResult
+    private func refreshTranscriptBottomStateFromSentinel() -> Bool {
+        false
+    }
+
+    private func configureTranscriptScrollView(_ scrollView: NSScrollView) {
+        guard transcriptScrollView !== scrollView || transcriptBoundsObserver == nil else {
+            configureTranscriptDocumentObserver(scrollView)
+            refreshTranscriptBottomState(layoutPasses: 2)
+            return
+        }
+
+        removeTranscriptBoundsObserver()
+        removeTranscriptDocumentObserver()
+        transcriptScrollView = scrollView
+
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        transcriptBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            refreshTranscriptBottomState()
+        }
+        configureTranscriptDocumentObserver(scrollView)
+        refreshTranscriptBottomState(layoutPasses: 2)
+    }
+
+    private func configureTranscriptDocumentObserver(_ scrollView: NSScrollView) {
+        guard let documentView = scrollView.documentView else { return }
+        guard transcriptObservedDocumentView !== documentView || transcriptDocumentObserver == nil else { return }
+
+        removeTranscriptDocumentObserver()
+        transcriptObservedDocumentView = documentView
+        documentView.postsFrameChangedNotifications = true
+        transcriptDocumentObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: documentView,
+            queue: .main
+        ) { _ in
+            refreshTranscriptBottomState(layoutPasses: 2)
+        }
+    }
+
+    private func removeTranscriptBoundsObserver() {
+        if let transcriptBoundsObserver {
+            NotificationCenter.default.removeObserver(transcriptBoundsObserver)
+            self.transcriptBoundsObserver = nil
+        }
+    }
+
+    private func removeTranscriptDocumentObserver() {
+        if let transcriptDocumentObserver {
+            NotificationCenter.default.removeObserver(transcriptDocumentObserver)
+            self.transcriptDocumentObserver = nil
+        }
+        transcriptObservedDocumentView = nil
+    }
+
+    private func isTranscriptAtBottom(threshold: CGFloat = 6) -> Bool {
         guard let scrollView = transcriptScrollView,
               let documentView = scrollView.documentView
         else { return true }
         scrollView.layoutSubtreeIfNeeded()
         documentView.layoutSubtreeIfNeeded()
 
-        let visibleHeight = scrollView.contentView.bounds.height
-        let documentHeight = documentView.bounds.height
-        let maxY = max(0, documentHeight - visibleHeight)
-        let currentY = scrollView.contentView.bounds.origin.y
-        let bottomY = documentView.isFlipped ? maxY : 0
-        return abs(currentY - bottomY) <= threshold
+        let documentHeight = max(
+            documentView.frame.height,
+            documentView.bounds.height,
+            documentView.fittingSize.height
+        )
+        let visibleRect = scrollView.documentVisibleRect
+        guard documentHeight > visibleRect.height + threshold else { return true }
+
+        if documentView.isFlipped {
+            return visibleRect.maxY >= documentHeight - threshold
+        } else {
+            return visibleRect.minY <= threshold
+        }
     }
 
     private func clampTranscriptToBottom() {
@@ -683,7 +892,11 @@ struct ThreadView: View {
         documentView.layoutSubtreeIfNeeded()
 
         let visibleHeight = scrollView.contentView.bounds.height
-        let documentHeight = documentView.bounds.height
+        let documentHeight = max(
+            documentView.frame.height,
+            documentView.bounds.height,
+            documentView.fittingSize.height
+        )
         let maxY = max(0, documentHeight - visibleHeight)
         let targetY = documentView.isFlipped ? maxY : 0
         let point = NSPoint(x: scrollView.contentView.bounds.origin.x, y: targetY)
@@ -866,8 +1079,94 @@ final class ScrollAnchor {
     var itemId: UUID? = nil
 }
 
+private struct ThreadViewportPolicy {
+    private enum FollowMode {
+        case followingBottom
+        case detached
+    }
+
+    private var followMode: FollowMode = .followingBottom
+    private var userIsScrolling: Bool = false
+    private(set) var isAtBottom: Bool = true
+
+    var mayFollowLiveTurn: Bool {
+        followMode == .followingBottom && !userIsScrolling
+    }
+
+    var shouldShowJumpButton: Bool {
+        !isAtBottom
+    }
+
+    mutating func promptAccepted() {
+        followMode = .followingBottom
+        userIsScrolling = false
+    }
+
+    mutating func jumpToBottomRequested() {
+        followMode = .followingBottom
+        userIsScrolling = false
+    }
+
+    mutating func userBeganScrolling() {
+        userIsScrolling = true
+        if !isAtBottom {
+            followMode = .detached
+        }
+    }
+
+    mutating func programmaticAnimationStarted() {
+        userIsScrolling = false
+    }
+
+    mutating func userScrollEnded() {
+        userIsScrolling = false
+        followMode = isAtBottom ? .followingBottom : .detached
+    }
+
+    mutating func revealEarlierRequested() {
+        followMode = .detached
+        userIsScrolling = true
+        isAtBottom = false
+    }
+
+    mutating func contentGeometryChanged(atBottom: Bool) {
+        isAtBottom = atBottom
+        if atBottom {
+            followMode = .followingBottom
+        } else if userIsScrolling {
+            followMode = .detached
+        }
+    }
+
+    mutating func didProgrammaticallyReachBottom() {
+        followMode = .followingBottom
+        userIsScrolling = false
+    }
+
+    mutating func turnEnded() {
+        userIsScrolling = false
+        followMode = isAtBottom ? .followingBottom : .detached
+    }
+}
+
 private struct ThreadCanvasWidthPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ThreadTranscriptViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ThreadBottomSentinelPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
