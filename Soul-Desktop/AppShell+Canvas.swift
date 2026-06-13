@@ -91,16 +91,6 @@ extension AppShell {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if !rightPane.isOpen, !replay.isActive {
-                    CanvasInfoOverlay(
-                        projectPath: thread?.project.path ?? currentProject()?.path,
-                        projectName: thread?.project.name ?? currentProject()?.name,
-                        projectKey: thread?.project.id ?? currentProject()?.id
-                    )
-                    .allowsHitTesting(true)
-                }
-            }
 
             // One unified drop affordance: the overlay lights up whether the
             // drag is over the transcript (SwiftUI .onDrop → isImageDropTargeted)
