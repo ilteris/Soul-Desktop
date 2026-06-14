@@ -185,7 +185,7 @@ enum SessionTitleResolver {
         // not change these signals.
         let boldMarkerCount = trimmed.components(separatedBy: "**").count - 1
         let numberedItemCount: Int = {
-            guard let regex = try? NSRegularExpression(pattern: #"(^|\n)\s*\d+\.\s"#) else { return 0 }
+            guard let regex = numberedItemRegex else { return 0 }
             let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
             return regex.numberOfMatches(in: trimmed, range: range)
         }()
@@ -203,6 +203,11 @@ enum SessionTitleResolver {
     // MARK: - Helpers
 
     private static let titleMaxChars = 60
+
+    /// `classify` is on the sidebar/title hot path; keep regex compilation out
+    /// of per-row body evaluation.
+    private static let numberedItemRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"(^|\n)\s*\d+\.\s"#)
 
     private static func truncate(_ text: String) -> String {
         let oneLine = oneLineTitleText(text)
@@ -322,12 +327,36 @@ enum SessionTitleResolver {
     /// list. (SOUL-SOUL_DESKTOP-346)
     static func isCodexProactiveScaffold(_ text: String?) -> Bool {
         guard let text else { return false }
-        let normalized = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: #" +"#, with: " ", options: .regularExpression)
-            .lowercased()
-        return normalized.hasPrefix("# overview generate 0 to 3 hyperpersonalized suggestions")
+        return normalizedPrefix(
+            of: text,
+            maxLength: codexProactiveScaffoldPrefix.count
+        ) == codexProactiveScaffoldPrefix
+    }
+
+    private static let codexProactiveScaffoldPrefix = "# overview generate 0 to 3 hyperpersonalized suggestions"
+
+    private static func normalizedPrefix(of text: String, maxLength: Int) -> String {
+        guard let start = text.firstIndex(where: { !$0.isWhitespace }) else { return "" }
+        var normalized = ""
+        normalized.reserveCapacity(maxLength)
+        var previousWasWhitespace = false
+        var index = start
+
+        while index < text.endIndex, normalized.count < maxLength {
+            let character = text[index]
+            if character.isWhitespace {
+                if !normalized.isEmpty, !previousWasWhitespace {
+                    normalized.append(" ")
+                    previousWasWhitespace = true
+                }
+            } else {
+                normalized.append(contentsOf: character.lowercased())
+                previousWasWhitespace = false
+            }
+            index = text.index(after: index)
+        }
+
+        return normalized
     }
 
     private static func isStructuredSkillScaffold(_ text: String) -> Bool {

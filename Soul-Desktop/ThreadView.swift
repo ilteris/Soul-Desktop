@@ -946,18 +946,58 @@ struct ThreadView: View {
     /// while each row is still deriving index/history/nesting from mutable
     /// controller state.
     private func transcriptRows(from items: [ThreadItem]) -> [TranscriptRowSnapshot] {
-        items.indices.map { i in
+        let agentCopyTextById = agentRunCopyTexts(from: items)
+        return items.indices.map { i in
             let item = items[i]
             return TranscriptRowSnapshot(
                 item: item,
                 isHistorical: controller.historicalIDs.contains(item.id),
                 showAgentFooter: isLastInAgentRun(at: i, items: items),
-                agentCopyText: AgentMessageRunCopyText.text(at: i, items: items),
+                agentCopyText: agentCopyTextById[item.id],
                 leadingGap: leadingGap(at: i, items: items),
                 isTurnStart: isTurnStart(item: item, index: i, items: items),
                 nestedChildren: nestedChildren(for: item)
             )
         }
+    }
+
+    /// Build footer copy text for each completed consecutive assistant run in
+    /// one pass. The old row-by-row helper walked backward and joined strings
+    /// from inside `transcriptRows`, which showed up directly in click/scroll
+    /// profiles when the canvas rebuilt.
+    private func agentRunCopyTexts(from items: [ThreadItem]) -> [UUID: String] {
+        var copyTextById: [UUID: String] = [:]
+        copyTextById.reserveCapacity(items.count / 4)
+
+        var runLastId: UUID?
+        var runTexts: [String] = []
+        runTexts.reserveCapacity(4)
+
+        func flushRun() {
+            guard let lastId = runLastId, !runTexts.isEmpty else {
+                runLastId = nil
+                runTexts.removeAll(keepingCapacity: true)
+                return
+            }
+            copyTextById[lastId] = runTexts.reversed().joined(separator: "\n\n")
+            runLastId = nil
+            runTexts.removeAll(keepingCapacity: true)
+        }
+
+        for item in items.reversed() {
+            guard case .agentMessage(let id, let text, _, _) = item else {
+                flushRun()
+                continue
+            }
+            if runLastId == nil {
+                runLastId = id
+            }
+            if !text.isEmpty {
+                runTexts.append(text)
+            }
+        }
+        flushRun()
+        return copyTextById
     }
 
     /// Children-to-inline-render for a parent row. Empty unless the row is a

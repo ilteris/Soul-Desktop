@@ -266,6 +266,9 @@ struct MarkdownView: View, Equatable {
     }
 
     fileprivate static func mergedAttributed(for blocks: [Block]) -> AttributedString {
+        let key = mergedAttributedCacheKey(for: blocks)
+        if let hit = mergedAttrCache[key] { return hit }
+
         var out = AttributedString()
         var first = true
         func appendBreak() {
@@ -299,7 +302,40 @@ struct MarkdownView: View, Equatable {
                 continue // grouping invariant — never present in a prose group
             }
         }
+        if mergedAttrCache.count > 512 {
+            mergedAttrCache.removeAll(keepingCapacity: true)
+        }
+        mergedAttrCache[key] = out
         return out
+    }
+
+    private static func mergedAttributedCacheKey(for blocks: [Block]) -> String {
+        var key = ""
+        key.reserveCapacity(blocks.reduce(0) { partial, block in
+            switch block {
+            case .paragraph(let line):
+                return partial + line.count + 4
+            case .bullet(let items):
+                return partial + items.reduce(4) { $0 + $1.count + 1 }
+            case .blank:
+                return partial + 4
+            case .heading, .codeBlock, .table, .blockquote, .horizontalRule:
+                return partial + 4
+            }
+        })
+        for block in blocks {
+            switch block {
+            case .paragraph(let line):
+                key += "p:\(line)\u{1F}"
+            case .bullet(let items):
+                key += "b:\(items.joined(separator: "\u{1E}"))\u{1F}"
+            case .blank:
+                key += "n:\u{1F}"
+            case .heading, .codeBlock, .table, .blockquote, .horizontalRule:
+                continue
+            }
+        }
+        return key
     }
 
     /// Same styling pipeline as `inline(_:)` but returns the raw
@@ -314,7 +350,7 @@ struct MarkdownView: View, Equatable {
     static func attributedInline(_ s: String) -> AttributedString {
         if let hit = inlineAttrCache[s] { return hit }
         let result = computeAttributedInline(s)
-        if inlineAttrCache.count > 512 {
+        if inlineAttrCache.count > 4096 {
             inlineAttrCache.removeAll(keepingCapacity: true)
         }
         inlineAttrCache[s] = result
@@ -325,6 +361,7 @@ struct MarkdownView: View, Equatable {
     /// wholesale at the cap so we never grow unbounded across long
     /// sessions. Mirrors the `parseCache` pattern.
     private static var inlineAttrCache: [String: AttributedString] = [:]
+    private static var mergedAttrCache: [String: AttributedString] = [:]
 
     private static func computeAttributedInline(_ s: String) -> AttributedString {
         guard var attr = try? AttributedString(

@@ -44,10 +44,10 @@ struct SessionHydrationFingerprint: Hashable {
     }
 
     private static func latestFinalizeStamp(projectKey: String, sessionId: String) -> FileStamp? {
-        if let source = SoulRegistry.latestFinalize(projectKey: projectKey, sessionId: sessionId)?.handoffPath,
-           FileManager.default.fileExists(atPath: source) {
-            return stamp(source)
-        }
+        // Ledger-backed finalize events live inside hooks.jsonl, already
+        // covered by the `hooks` stamp in this fingerprint. Only look for
+        // legacy sidecar finalize JSON here so cache validation never scans
+        // hooks on the main actor during a sidebar click.
         let fm = FileManager.default
         var candidates: [String] = []
         for dir in SoulRegistry.projectSessionDirs(projectKey) {
@@ -141,17 +141,17 @@ struct SessionHydrationFingerprint: Hashable {
 
 enum HydratedSessionSnapshotBuilder {
     static func build(sessionId sid: String, project: SoulProject, provider: Provider) -> HydratedSessionSnapshot {
-        let nativeId = SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: provider.rawValue)
+        let metadata = SoulRegistry.hooksMetadata(projectKey: project.id, sessionId: sid, provider: provider.rawValue)
+        let nativeId = metadata.nativeSessionId
         let lookupId = nativeId ?? sid
         let baseItems = history(sessionId: sid, lookupId: lookupId, project: project, provider: provider)
-        let slashPrompts = SoulRegistry.slashCommandPrompts(projectKey: project.id, sessionId: sid)
-        let title = SoulRegistry.findTitle(projectKey: project.id, sessionId: sid)
         let built = buildItems(
             baseItems: baseItems,
-            slashPrompts: slashPrompts,
+            slashPrompts: metadata.slashPrompts,
             sessionId: sid,
             project: project,
             includeFinalize: true,
+            finalizeRecord: metadata.latestFinalize,
             statusTail: statusTail(for: baseItems, project: project, sessionId: sid)
         )
         return HydratedSessionSnapshot(
@@ -160,7 +160,7 @@ enum HydratedSessionSnapshotBuilder {
             provider: provider,
             items: built.items,
             historicalIDs: built.historicalIDs,
-            title: title,
+            title: metadata.title,
             nativeSessionId: nativeId,
             lastFinalizeInjectedAt: built.lastFinalizeInjectedAt,
             fingerprint: .current(
@@ -213,6 +213,7 @@ enum HydratedSessionSnapshotBuilder {
         sessionId sid: String,
         project: SoulProject,
         includeFinalize: Bool,
+        finalizeRecord: SoulRegistry.FinalizeRecord?,
         statusTail: String?
     ) -> (items: [ThreadItem], historicalIDs: Set<UUID>, lastFinalizeInjectedAt: Date?) {
         var hydrated = baseItems
@@ -221,7 +222,7 @@ enum HydratedSessionSnapshotBuilder {
 
         var finalizeTs: Date? = nil
         if includeFinalize {
-            finalizeTs = insertFinalizeSummary(sessionId: sid, project: project, into: &hydrated, historicalIDs: &hydratedIDs)
+            finalizeTs = insertFinalizeSummary(finalizeRecord, sessionId: sid, into: &hydrated, historicalIDs: &hydratedIDs)
         }
 
         if let statusTail {
@@ -234,12 +235,12 @@ enum HydratedSessionSnapshotBuilder {
     }
 
     private static func insertFinalizeSummary(
+        _ rec: SoulRegistry.FinalizeRecord?,
         sessionId sid: String,
-        project: SoulProject,
         into hydrated: inout [ThreadItem],
         historicalIDs hydratedIDs: inout Set<UUID>
     ) -> Date? {
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else { return nil }
+        guard let rec else { return nil }
         let hasContent = (rec.intent?.isEmpty == false)
             || (rec.summary?.isEmpty == false)
             || (rec.rationale?.isEmpty == false)

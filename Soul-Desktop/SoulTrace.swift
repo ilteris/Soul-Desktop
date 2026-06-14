@@ -25,6 +25,12 @@ struct SoulTrace: Hashable {
     /// `visible` with `trace: nil` — the chip silently degrades rather than
     /// the raw envelope leaking through.
     static func extract(from raw: String) -> (visible: String, trace: SoulTrace?) {
+        guard raw.contains("<"),
+              raw.range(of: "soul", options: [.caseInsensitive]) != nil,
+              raw.range(of: "trace", options: [.caseInsensitive]) != nil else {
+            return (raw.trimmingCharacters(in: .whitespacesAndNewlines), nil)
+        }
+
         var working = raw
         var lastParsed: SoulTrace? = nil
 
@@ -36,8 +42,7 @@ struct SoulTrace: Hashable {
         // ``strips `<soul_trace>` ``), and the lazy `[\s\S]*?` then spans from
         // that mention all the way to a real closer further down, deleting the
         // prose in between (drag.png truncation).
-        let pattern = #"(?:`{3,}[a-zA-Z]*\s*\n)?\s*<\s*soul[_-]trace\b[^>]*>\s*(\{[\s\S]*?)<\s*/\s*soul[_-]trace\s*>\s*(?:\n`{3,})?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+        guard let regex = traceBlockRegex else {
             return (raw, nil)
         }
 
@@ -91,10 +96,7 @@ struct SoulTrace: Hashable {
         //     complete, and lets its raw partial JSON flash into the bubble.
         //     `jsonObjectIsComplete` walks the body respecting quotes/escapes so
         //     a brace inside a string never closes the object.
-        if let openerPattern = try? NSRegularExpression(
-            pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
-            options: [.caseInsensitive]
-        ) {
+        if let openerPattern = traceOpenerRegex {
             let range = NSRange(working.startIndex..<working.endIndex, in: working)
             let matches = openerPattern.matches(in: working, options: [], range: range)
             if let match = matches.last, let r = Range(match.range, in: working) {
@@ -108,6 +110,18 @@ struct SoulTrace: Hashable {
 
         return (working.trimmingCharacters(in: .whitespacesAndNewlines), lastParsed)
     }
+
+    private static let traceBlockRegex: NSRegularExpression? = {
+        let pattern = #"(?:`{3,}[a-zA-Z]*\s*\n)?\s*<\s*soul[_-]trace\b[^>]*>\s*(\{[\s\S]*?)<\s*/\s*soul[_-]trace\s*>\s*(?:\n`{3,})?"#
+        return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }()
+
+    private static let traceOpenerRegex: NSRegularExpression? = {
+        try? NSRegularExpression(
+            pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
+            options: [.caseInsensitive]
+        )
+    }()
 
     /// Whether `text` opens with a structurally complete JSON object — i.e. the
     /// `{` started at the head is matched by a `}` at depth zero. String-aware:

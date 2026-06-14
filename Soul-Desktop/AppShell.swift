@@ -92,6 +92,8 @@ struct AppShell: View {
     @State var autoCompact = AutoCompactController()
     @State var emptyStateDroppedAttachments: [String] = []
     @State var isImageDropTargeted: Bool = false
+    @State var cachedContextUsage: ContextUsage? = nil
+    @State var cachedContextUsageRequestID: String? = nil
 
     var contextUsage: ContextUsage? {
         if let replay = replay.controller {
@@ -102,7 +104,7 @@ struct AppShell: View {
             // the timeline scrubber.
             return ContextUsage.estimateFromReplayItems(replay.visible)
         }
-        if let thread, let sid = thread.sessionId {
+        if let thread, thread.sessionId != nil {
             // Codex streams precise token usage through the
             // `thread/tokenUsage/updated` notification, which the controller
             // captures into `codexTokenUsage`. Read it directly here so the
@@ -122,14 +124,23 @@ struct AppShell: View {
                     )
                 )
             }
-            return ContextUsage.compute(
-                provider: thread.provider,
-                sessionId: sid,
-                cwd: thread.project.path,
-                projectKey: thread.project.id
-            )
+            return cachedContextUsage
         }
         return nil
+    }
+
+    var contextUsageRequest: ContextUsageRequest? {
+        guard !replay.isActive,
+              let thread,
+              thread.provider != .codex,
+              let sid = thread.sessionId
+        else { return nil }
+        return ContextUsageRequest(
+            providerRawValue: thread.provider.rawValue,
+            sessionId: sid,
+            cwd: thread.project.path,
+            projectKey: thread.project.id
+        )
     }
 
     var sidePanelAnimation: Animation {
@@ -299,6 +310,9 @@ struct AppShell: View {
         }
         .task {
             await workspace.start()
+        }
+        .task(id: contextUsageRequest) {
+            await refreshContextUsage(for: contextUsageRequest)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             Task { await workspace.refreshProjects() }

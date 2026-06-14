@@ -410,6 +410,83 @@ struct SessionLedgerTruthTests {
         }
     }
 
+    @Test func hooksMetadataReadsHydrateFieldsInOnePass() throws {
+        try SessionLedgerTruthTests.withTempHome { home in
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString
+            let dir = home.appendingPathComponent("soul_registry/sessions/\(project.id)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("""
+            {"timestamp":"2026-05-25T17:00:00Z","intent":"legacy json","summary":"old"}
+            """.utf8).write(to: dir.appendingPathComponent("\(sid).json"))
+
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "ProviderTranscriptID",
+                "provider": "claude",
+                "transcript_id": "claude-transcript-old",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "ProviderTranscriptID",
+                "provider": "geminiCLI",
+                "transcript_id": "gemini-transcript",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "ProviderTranscriptID",
+                "provider": "claude",
+                "transcript_id": "claude-transcript-new",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "NativeSessionID",
+                "provider": "claude",
+                "native_session_id": "claude-native",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "NativeSessionID",
+                "provider": "geminiCLI",
+                "native_session_id": "gemini-native",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "Title",
+                "title": "Hydrated session title",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "UserPrompt",
+                "text": "/pulse",
+                "timestamp": "2026-05-26T17:07:30Z",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "UserPrompt",
+                "text": "ordinary prompt",
+                "timestamp": "2026-05-26T17:07:31Z",
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "Finalize",
+                "session_id": sid,
+                "timestamp": "2026-05-26T17:07:35Z",
+                "intent": "ledger event",
+                "summary": "new",
+            ])
+            SoulRegistry.flushHooks()
+
+            let metadata = SoulRegistry.hooksMetadata(projectKey: project.id, sessionId: sid, provider: "claude")
+            #expect(metadata.providerTranscriptId == "claude-transcript-new")
+            #expect(metadata.nativeSessionId == "claude-native")
+            #expect(metadata.title == "Hydrated session title")
+            #expect(metadata.slashPrompts.map(\.text) == ["/pulse"])
+            #expect(metadata.latestFinalize?.intent == "ledger event")
+            #expect(metadata.latestFinalize?.summary == "new")
+            #expect(metadata.latestFinalize?.handoffPath?.hasSuffix("/\(sid)/hooks.jsonl") == true)
+
+            let identityOnly = SoulRegistry.transcriptIdentity(
+                projectKey: project.id,
+                sessionId: sid,
+                provider: "geminiCLI"
+            )
+            #expect(identityOnly.providerTranscriptId == "gemini-transcript")
+            #expect(identityOnly.nativeSessionId == "gemini-native")
+        }
+    }
+
     @Test func freshAcceptedPromptAssignsSessionIdBeforeDispatch() {
         let controller = ThreadController(provider: .geminiCLI, project: SessionLedgerTruthTests.testProject())
         controller.isHydrating = false

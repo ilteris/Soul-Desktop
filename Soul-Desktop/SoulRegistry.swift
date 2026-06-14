@@ -996,6 +996,112 @@ enum SoulRegistry {
         return nil
     }
 
+    struct HooksMetadata: Sendable {
+        var providerTranscriptId: String?
+        var nativeSessionId: String?
+        var title: String?
+        var slashPrompts: [(text: String, timestamp: Date)] = []
+        var latestFinalize: FinalizeRecord?
+    }
+
+    struct TranscriptIdentity: Sendable {
+        var providerTranscriptId: String?
+        var nativeSessionId: String?
+    }
+
+    /// Narrow reader for call sites that only need the provider/native
+    /// transcript identity. This stays separate from `hooksMetadata(...)`
+    /// so lightweight UI refreshes, like the context usage chip, don't
+    /// parse title/finalize/slash-command metadata on every selected-thread
+    /// change.
+    static func transcriptIdentity(projectKey: String, sessionId: String, provider: String? = nil) -> TranscriptIdentity {
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
+        var identity = TranscriptIdentity()
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return identity }
+
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            guard line.contains("\"ProviderTranscriptID\"") || line.contains("\"NativeSessionID\""),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let event = obj["event"] as? String,
+                  provider == nil || (obj["provider"] as? String) == provider
+            else { continue }
+
+            switch event {
+            case "ProviderTranscriptID" where identity.providerTranscriptId == nil:
+                identity.providerTranscriptId = obj["transcript_id"] as? String
+            case "NativeSessionID" where identity.nativeSessionId == nil:
+                identity.nativeSessionId = (obj["nativeId"] as? String) ?? (obj["native_session_id"] as? String)
+            default:
+                break
+            }
+
+            if identity.providerTranscriptId != nil && identity.nativeSessionId != nil {
+                break
+            }
+        }
+
+        return identity
+    }
+
+    /// One-pass metadata reader for hydrate/cache paths. Those paths need
+    /// several independent facts from the same hooks.jsonl; calling the
+    /// point lookups separately repeatedly reads and parses the full file.
+    static func hooksMetadata(projectKey: String, sessionId: String, provider: String? = nil, includeFinalize: Bool = true) -> HooksMetadata {
+        let path = hooksPath(projectKey: projectKey, sessionId: sessionId)
+        var metadata = HooksMetadata()
+        guard FileManager.default.fileExists(atPath: path),
+              let blob = try? String(contentsOfFile: path, encoding: .utf8)
+        else {
+            if includeFinalize {
+                metadata.latestFinalize = latestLegacyFinalize(projectKey: projectKey, sessionId: sessionId)
+            }
+            return metadata
+        }
+
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard line.contains("\"ProviderTranscriptID\"")
+                    || line.contains("\"NativeSessionID\"")
+                    || line.contains("\"Title\"")
+                    || line.contains("\"UserPrompt\"")
+                    || line.contains("\"UserMessage\"")
+                    || (includeFinalize && line.contains("\"Finalize\"")),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let event = obj["event"] as? String
+            else { continue }
+
+            switch event {
+            case "ProviderTranscriptID":
+                guard provider == nil || (obj["provider"] as? String) == provider else { continue }
+                metadata.providerTranscriptId = obj["transcript_id"] as? String
+            case "NativeSessionID":
+                guard provider == nil || (obj["provider"] as? String) == provider else { continue }
+                metadata.nativeSessionId = (obj["nativeId"] as? String) ?? (obj["native_session_id"] as? String)
+            case "Title":
+                metadata.title = (obj["text"] as? String) ?? (obj["title"] as? String)
+            case "UserPrompt", "UserMessage":
+                let raw = (obj["text"] as? String) ?? (obj["content"] as? String) ?? (obj["prompt"] as? String) ?? ""
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("/"),
+                      let ts = parseTimestamp(obj["timestamp"] as? String)
+                else { continue }
+                metadata.slashPrompts.append((trimmed, ts))
+            case "Finalize" where includeFinalize:
+                metadata.latestFinalize = finalizeRecord(from: obj, sessionId: sessionId, handoffPath: path)
+            default:
+                continue
+            }
+        }
+
+        if includeFinalize && metadata.latestFinalize == nil {
+            metadata.latestFinalize = latestLegacyFinalize(projectKey: projectKey, sessionId: sessionId)
+        }
+        return metadata
+    }
+
     /// SOUL-SOUL_DESKTOP-263: thin wrapper over `soul session show <sid> --json`.
     /// One CLI hop replaces three separate hooks.jsonl walks (findTitle /
     /// findNativeSessionID / latestFinalize). Returns nil on CLI failure
@@ -1034,7 +1140,7 @@ enum SoulRegistry {
         return nil
     }
 
-    struct FinalizeRecord {
+    struct FinalizeRecord: Sendable {
         let sessionId: String
         let summary: String?
         let intent: String?

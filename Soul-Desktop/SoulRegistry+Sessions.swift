@@ -505,9 +505,16 @@ extension SoulRegistry {
                 }
             }
 
-            let providerTranscriptLoadable = projectPath.map {
-                canLoadCached(sessionId: id, projectKey: key, projectPath: $0, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
-            } ?? false
+            let providerTranscriptLoadable: Bool = {
+                // If the kernel already proved loadability, do not spend a
+                // provider-transcript probe just to OR true with true. Keep
+                // the rescue path for legacy/terminal rows where the kernel
+                // could not resolve a load target.
+                if rec.loadable == true { return false }
+                return projectPath.map {
+                    canLoadCached(sessionId: id, projectKey: key, projectPath: $0, cache: dirCache, nativeSessionIDs: nativeSessionIDs)
+                } ?? false
+            }()
             if let loadable = rec.loadable {
                 s.loadable = loadable || providerTranscriptLoadable
             } else {
@@ -657,8 +664,14 @@ extension SoulRegistry {
                 let path = "\(hit.chatsDir)/\(hit.fileName)"
                 let resumable: Bool = {
                     if let cached = cache.resumableCache[path] { return cached }
+                    let key = "gemini-resumable|\(path)"
+                    if let cached = cachedTranscriptProbe(forKey: key, path: path) {
+                        cache.resumableCache[path] = cached
+                        return cached
+                    }
                     let r = isResumableGeminiChatFile(path)
                     cache.resumableCache[path] = r
+                    recordTranscriptProbe(r, forKey: key, path: path)
                     return r
                 }()
                 if resumable { return "geminiCLI" }
@@ -708,7 +721,14 @@ extension SoulRegistry {
         let geminiId = nativeSessionIDs["geminiCLI"] ?? sid
         let shortId = String(geminiId.prefix(8))
         if let hit = cache.firstEightIndex[shortId] {
-            return geminiChatHasContent(at: "\(hit.chatsDir)/\(hit.fileName)", expectedSessionId: geminiId)
+            let path = "\(hit.chatsDir)/\(hit.fileName)"
+            let key = "gemini-content|\(geminiId)|\(path)"
+            if let cached = cachedTranscriptProbe(forKey: key, path: path) {
+                return cached
+            }
+            let hasContent = geminiChatHasContent(at: path, expectedSessionId: geminiId)
+            recordTranscriptProbe(hasContent, forKey: key, path: path)
+            return hasContent
         }
         return false
     }
@@ -776,32 +796,64 @@ extension SoulRegistry {
     /// so every other session's count is a stat() hit.
     private struct TranscriptCountCache {
         var mtime: Date
+        var size: UInt64
         var count: Int
     }
     nonisolated(unsafe) private static var transcriptCountCache: [String: TranscriptCountCache] = [:]
     private static let transcriptCountCacheLock = NSLock()
 
+    private struct TranscriptProbeCache {
+        var mtime: Date
+        var size: UInt64
+        var value: Bool
+    }
+    nonisolated(unsafe) private static var transcriptProbeCache: [String: TranscriptProbeCache] = [:]
+    private static let transcriptProbeCacheLock = NSLock()
+
+    private static func fileStamp(forPath path: String) -> (mtime: Date, size: UInt64)? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mt = attrs[.modificationDate] as? Date
+        else { return nil }
+        let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+        return (mt, size)
+    }
+
     /// Returns the cached count for `path` iff the file's mtime matches the
     /// cache entry. Stats the file once; cheap.
     private static func cachedTranscriptCount(forPath path: String) -> Int? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let mt = attrs[.modificationDate] as? Date else {
-            return nil
-        }
+        guard let stamp = fileStamp(forPath: path) else { return nil }
         transcriptCountCacheLock.lock()
         defer { transcriptCountCacheLock.unlock() }
-        guard let hit = transcriptCountCache[path], hit.mtime == mt else { return nil }
+        guard let hit = transcriptCountCache[path],
+              hit.mtime == stamp.mtime,
+              hit.size == stamp.size
+        else { return nil }
         return hit.count
     }
 
     private static func recordTranscriptCount(_ count: Int, forPath path: String) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let mt = attrs[.modificationDate] as? Date else {
-            return
-        }
+        guard let stamp = fileStamp(forPath: path) else { return }
         transcriptCountCacheLock.lock()
-        transcriptCountCache[path] = TranscriptCountCache(mtime: mt, count: count)
+        transcriptCountCache[path] = TranscriptCountCache(mtime: stamp.mtime, size: stamp.size, count: count)
         transcriptCountCacheLock.unlock()
+    }
+
+    private static func cachedTranscriptProbe(forKey key: String, path: String) -> Bool? {
+        guard let stamp = fileStamp(forPath: path) else { return nil }
+        transcriptProbeCacheLock.lock()
+        defer { transcriptProbeCacheLock.unlock() }
+        guard let hit = transcriptProbeCache[key],
+              hit.mtime == stamp.mtime,
+              hit.size == stamp.size
+        else { return nil }
+        return hit.value
+    }
+
+    private static func recordTranscriptProbe(_ value: Bool, forKey key: String, path: String) {
+        guard let stamp = fileStamp(forPath: path) else { return }
+        transcriptProbeCacheLock.lock()
+        transcriptProbeCache[key] = TranscriptProbeCache(mtime: stamp.mtime, size: stamp.size, value: value)
+        transcriptProbeCacheLock.unlock()
     }
 
     /// Counts both JSON formatting styles for a key/value pair: the

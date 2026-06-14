@@ -14,7 +14,7 @@ import SoulCore
 ///
 /// `isEstimate` flags which mode produced the number so the chip can render
 /// a "~" prefix and the tooltip can say so.
-struct ContextUsage {
+struct ContextUsage: Sendable {
     let tokens: Int
     let max: Int
     let isEstimate: Bool
@@ -23,7 +23,7 @@ struct ContextUsage {
     /// (typically estimated sources). All values in raw token units.
     let breakdown: Breakdown?
 
-    struct Breakdown {
+    struct Breakdown: Sendable {
         /// Provider-reported model id (e.g. "claude-opus-4-7", "gemini-2.5-pro").
         let model: String?
         /// Fresh prompt tokens — text the model has to read this turn.
@@ -81,10 +81,10 @@ struct ContextUsage {
     /// value, even if coarse.
     ///
     /// SOUL-SOUL_DESKTOP-234: read from `AppShell.contextUsage`, which is a
-    /// computed property hit on every AppShell.body re-eval. Each call
-    /// opens (and for Claude, parses line-by-line) a session-sized JSONL
-    /// file on the main thread. A 2-second memo coalesces redundant reads;
-    /// the token-count chip doesn't need sub-2s freshness.
+    /// computed property hit on every AppShell.body re-eval. Each call used
+    /// to open session-sized JSONL files. Cache by the kernel hooks file's
+    /// content stamp so clicks/body churn do not reparse stable transcripts,
+    /// while active sessions still invalidate when the ledger advances.
     ///
     /// SOUL-IDENTITY-SPLIT: `sessionId` here is the *kernel* UUID. The
     /// on-disk Claude/Gemini transcript filename can differ — either
@@ -99,9 +99,15 @@ struct ContextUsage {
         // resolveTranscriptId walks hooks.jsonl, which is multi-MB on
         // active sessions; doing that before the cache lookup beachballs
         // the main thread on every body re-eval.
-        let key = "\(provider.rawValue)|\(cwd)|\(sessionId)"
+        let key = "\(provider.rawValue)|\(cwd)|\(sessionId)|\(projectKey)"
+        let hooksStamp = fileStamp(atPath: SoulRegistry.hooksPath(projectKey: projectKey, sessionId: sessionId))
         let now = Date()
-        if let cached = memo[key], now.timeIntervalSince(cached.date) < memoTTL {
+        memoLock.lock()
+        let cached = memo[key]
+        memoLock.unlock()
+        if let cached,
+           cached.hooksStamp == hooksStamp,
+           hooksStamp != nil || now.timeIntervalSince(cached.date) < memoTTL {
             return cached.value
         }
         let transcriptId = resolveTranscriptId(
@@ -114,7 +120,9 @@ struct ContextUsage {
         case .pi:        result = computePi(sessionId: transcriptId, cwd: cwd)
         case .codex:     result = nil  // Phase 1 stub: token usage not wired yet
         }
-        memo[key] = (now, result)
+        memoLock.lock()
+        memo[key] = MemoEntry(date: now, hooksStamp: hooksStamp, value: result)
+        memoLock.unlock()
         return result
     }
 
@@ -124,17 +132,36 @@ struct ContextUsage {
     ///   2. NativeSessionID event (initial divergence at session/new)
     ///   3. The kernel sid itself (identity-mapped sessions)
     private static func resolveTranscriptId(kernelSid: String, provider: Provider, projectKey: String) -> String {
-        if let tx = SoulRegistry.findProviderTranscriptID(projectKey: projectKey, sessionId: kernelSid, provider: provider.rawValue) {
-            return tx
-        }
-        if let native = SoulRegistry.findNativeSessionID(projectKey: projectKey, sessionId: kernelSid, provider: provider.rawValue) {
-            return native
-        }
-        return kernelSid
+        let identity = SoulRegistry.transcriptIdentity(
+            projectKey: projectKey,
+            sessionId: kernelSid,
+            provider: provider.rawValue
+        )
+        return identity.providerTranscriptId ?? identity.nativeSessionId ?? kernelSid
     }
 
-    private static var memo: [String: (date: Date, value: ContextUsage?)] = [:]
+    private struct FileStamp: Equatable {
+        let mtime: Date
+        let size: UInt64
+    }
+
+    private struct MemoEntry {
+        let date: Date
+        let hooksStamp: FileStamp?
+        let value: ContextUsage?
+    }
+
+    private static var memo: [String: MemoEntry] = [:]
+    private static let memoLock = NSLock()
     private static let memoTTL: TimeInterval = 2.0
+
+    private static func fileStamp(atPath path: String) -> FileStamp? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mt = attrs[.modificationDate] as? Date
+        else { return nil }
+        let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+        return FileStamp(mtime: mt, size: size)
+    }
 
     /// Coarse running estimate from the items revealed so far in a Replay.
     /// Sums message text bytes and divides by 4 (the same chars-per-token
@@ -308,32 +335,14 @@ struct ContextUsage {
             let bTime = (try? FileManager.default.attributesOfItem(atPath: "\(rhs.0)/\(rhs.1)")[.modificationDate] as? Date) ?? .distantPast
             return aTime < bTime
         })
-        guard let pick = resolved,
-              let blob = try? String(contentsOfFile: "\(pick.0)/\(pick.1)", encoding: .utf8)
-        else {
+        guard let pick = resolved else {
             return estimateFromHooks(sessionId: sessionId, max: max)
         }
         let chatsDir = pick.0
         let match = pick.1
+        let path = "\(chatsDir)/\(match)"
 
-        var lastTotal: Int? = nil
-        for line in blob.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tokens = obj["tokens"] as? [String: Any]
-            else { continue }
-            if let total = tokens["total"] as? Int {
-                lastTotal = total
-            } else if let inp = tokens["input"] as? Int {
-                // Fallback for older entries that lack `total`: sum the
-                // component counts we know about.
-                let cached = (tokens["cached"] as? Int) ?? 0
-                let thoughts = (tokens["thoughts"] as? Int) ?? 0
-                lastTotal = inp + cached + thoughts
-            }
-        }
-
-        if let t = lastTotal {
+        if let t = lastGeminiTokenTotal(atPath: path) {
             return ContextUsage(
                 tokens: t, max: max, isEstimate: false,
                 breakdown: Breakdown(
@@ -346,7 +355,7 @@ struct ContextUsage {
             )
         }
         // No tokens field anywhere — fall through to the coarse byte estimate.
-        return estimateBytesAtPath("\(chatsDir)/\(match)", max: max)
+        return estimateBytesAtPath(path, max: max)
             ?? estimateFromHooks(sessionId: sessionId, max: max)
     }
 
@@ -389,6 +398,49 @@ struct ContextUsage {
               let size = attrs[.size] as? Int, size > 0
         else { return nil }
         return ContextUsage(tokens: size / 4, max: max, isEstimate: true, breakdown: nil)
+    }
+
+    private static func lastGeminiTokenTotal(atPath path: String) -> Int? {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return nil
+        }
+        defer { try? handle.close() }
+
+        let end = (try? handle.seekToEnd()) ?? 0
+        let tailBytes: UInt64 = 256 * 1024
+        let offset = end > tailBytes ? end - tailBytes : 0
+        do {
+            try handle.seek(toOffset: offset)
+        } catch {
+            return nil
+        }
+        guard let data = try? handle.readToEnd(),
+              let blob = String(data: data, encoding: .utf8)
+        else { return nil }
+
+        for line in blob.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tokens = obj["tokens"] as? [String: Any],
+                  let total = geminiTokenTotal(from: tokens)
+            else { continue }
+            return total
+        }
+        return nil
+    }
+
+    private static func geminiTokenTotal(from tokens: [String: Any]) -> Int? {
+        if let total = tokens["total"] as? Int {
+            return total
+        }
+        if let inp = tokens["input"] as? Int {
+            // Fallback for older entries that lack `total`: sum the
+            // component counts we know about.
+            let cached = (tokens["cached"] as? Int) ?? 0
+            let thoughts = (tokens["thoughts"] as? Int) ?? 0
+            return inp + cached + thoughts
+        }
+        return nil
     }
 
     private static func estimateFromHooks(sessionId: String, max: Int) -> ContextUsage? {

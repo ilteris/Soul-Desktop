@@ -81,16 +81,18 @@ extension ThreadController {
             var history: [ThreadItem]?
             var title: String?
             var nativeId: String?
+            var finalizeRecord: SoulRegistry.FinalizeRecord?
             var slashPrompts: [(text: String, timestamp: Date)] = []
         }
         let result: HydrateResult = await Task.detached(priority: .userInitiated) {
             var r = HydrateResult()
+            let metadata = SoulRegistry.hooksMetadata(projectKey: proj.id, sessionId: sid, provider: prov.rawValue)
             // Native UUID lookup happens *before* the transcript read because
             // terminal-origin Gemini sessions are filed under a gemini-side
             // UUID that differs from the kernel UUID. Claude's identity-
             // mapped sessions use sid for both — passing sid through still
             // works when nativeId is nil.
-            r.nativeId = SoulRegistry.findNativeSessionID(projectKey: proj.id, sessionId: sid, provider: prov.rawValue)
+            r.nativeId = metadata.nativeSessionId
             let lookupId = r.nativeId ?? sid
             switch prov {
             case .claude:
@@ -163,8 +165,9 @@ extension ThreadController {
                 let events = HooksReader.events(forSession: sid, project: proj)
                 r.history = events.map { $0.item }
             }
-            r.title = SoulRegistry.findTitle(projectKey: proj.id, sessionId: sid)
-            r.slashPrompts = SoulRegistry.slashCommandPrompts(projectKey: proj.id, sessionId: sid)
+            r.title = metadata.title
+            r.slashPrompts = metadata.slashPrompts
+            r.finalizeRecord = metadata.latestFinalize
             return r
         }.value
 
@@ -184,7 +187,8 @@ extension ThreadController {
                 commitHydratedTranscript(
                     baseItems: ledgerItems,
                     slashPrompts: result.slashPrompts,
-                    sessionId: sid
+                    sessionId: sid,
+                    finalizeRecord: result.finalizeRecord
                 )
                 // SOUL-SOUL_DESKTOP-245 (Phase B): mint preamble from the
                 // ledger items so the fresh provider session gets the
@@ -224,6 +228,7 @@ extension ThreadController {
                     baseItems: [],
                     slashPrompts: [],
                     sessionId: sid,
+                    finalizeRecord: result.finalizeRecord,
                     statusTail: "ℹ session ledger present but turn content was dropped at write-time — finalize summary above; new turns start fresh"
                 )
                 preambleStagingTask?.cancel()
@@ -258,7 +263,8 @@ extension ThreadController {
         commitHydratedTranscript(
             baseItems: history,
             slashPrompts: result.slashPrompts,
-            sessionId: sid
+            sessionId: sid,
+            finalizeRecord: result.finalizeRecord
         )
         // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. Render
         // the prior items into a text preamble that gets prefixed to the
@@ -352,6 +358,7 @@ extension ThreadController {
         slashPrompts: [(text: String, timestamp: Date)],
         sessionId sid: String,
         includeFinalize: Bool = true,
+        finalizeRecord: SoulRegistry.FinalizeRecord? = nil,
         statusTail: String? = nil
     ) {
         let snapshot = buildHydratedTranscript(
@@ -359,6 +366,7 @@ extension ThreadController {
             slashPrompts: slashPrompts,
             sessionId: sid,
             includeFinalize: includeFinalize,
+            finalizeRecord: finalizeRecord,
             statusTail: statusTail
         )
         historicalIDs.formUnion(snapshot.historicalIDs)
@@ -373,6 +381,7 @@ extension ThreadController {
         slashPrompts: [(text: String, timestamp: Date)],
         sessionId sid: String,
         includeFinalize: Bool,
+        finalizeRecord: SoulRegistry.FinalizeRecord?,
         statusTail: String?
     ) -> HydratedTranscript {
         var hydrated = baseItems
@@ -381,7 +390,12 @@ extension ThreadController {
 
         var finalizeTs: Date? = nil
         if includeFinalize {
-            finalizeTs = insertFinalizeSummary(sessionId: sid, into: &hydrated, historicalIDs: &hydratedIDs)
+            finalizeTs = insertFinalizeSummary(
+                finalizeRecord,
+                sessionId: sid,
+                into: &hydrated,
+                historicalIDs: &hydratedIDs
+            )
         }
 
         if let statusTail {
@@ -398,12 +412,13 @@ extension ThreadController {
     }
 
     private func insertFinalizeSummary(
+        _ rec: SoulRegistry.FinalizeRecord?,
         sessionId sid: String,
         into hydrated: inout [ThreadItem],
         historicalIDs hydratedIDs: inout Set<UUID>
     ) -> Date? {
         let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+        guard let rec else {
             SoulSignposts.event("hydrateSnapshot.finalize.miss", "\(provLabel)")
             return nil
         }
@@ -670,9 +685,13 @@ extension ThreadController {
         // this, post-/compact sessions would replay the frozen pre-compact
         // file because the kernel sid never moves but Claude rotates the
         // on-disk filename.
-        let transcriptId = SoulRegistry.findProviderTranscriptID(projectKey: project.id, sessionId: sid, provider: "claude")
-            ?? SoulRegistry.findNativeSessionID(projectKey: project.id, sessionId: sid, provider: "claude")
-            ?? sid
+        let metadata = SoulRegistry.hooksMetadata(
+            projectKey: project.id,
+            sessionId: sid,
+            provider: "claude",
+            includeFinalize: false
+        )
+        let transcriptId = metadata.providerTranscriptId ?? metadata.nativeSessionId ?? sid
         guard let history = ClaudeTranscriptReader.transcript(forSession: transcriptId, cwd: activeProjectPath),
               !history.isEmpty
         else { return }
@@ -695,12 +714,14 @@ extension ThreadController {
     /// surface the structured summary.
     func injectFinalizeSummaryIfFresh(sessionId sid: String) {
         // SOUL-SOUL_DESKTOP-100: trace each branch.
-        let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
-            SoulSignposts.event("injectFinalizeSummaryIfFresh.miss", "\(provLabel)")
-            return
+        let projectId = project.id
+        Task.detached(priority: .utility) { [weak self] in
+            let rec = SoulRegistry.latestFinalize(projectKey: projectId, sessionId: sid)
+            await MainActor.run {
+                guard let self, self.sessionId == sid else { return }
+                self.injectFinalizeRecordIfFresh(rec, sessionId: sid)
+            }
         }
-        injectFinalizeRecordIfFresh(rec, sessionId: sid)
     }
 
     func injectFinalizeRecordIfFresh(_ rec: SoulRegistry.FinalizeRecord?, sessionId sid: String) {
@@ -735,7 +756,7 @@ extension ThreadController {
         // wherever `items.endIndex` happens to be. `injectFinalizeSummary`
         // owns the insert-at-correct-position logic and updates
         // `lastFinalizeInjectedAt` itself.
-        injectFinalizeSummary(sessionId: sid)
+        injectFinalizeSummary(rec, sessionId: sid)
         SoulSignposts.event("injectFinalizeSummaryIfFresh.delegated", "\(provLabel)")
     }
 
@@ -753,8 +774,19 @@ extension ThreadController {
     /// and insert before it.
     func injectFinalizeSummary(sessionId sid: String) {
         // SOUL-SOUL_DESKTOP-100: trace each branch.
+        let projectId = project.id
+        Task.detached(priority: .utility) { [weak self] in
+            let rec = SoulRegistry.latestFinalize(projectKey: projectId, sessionId: sid)
+            await MainActor.run {
+                guard let self, self.sessionId == sid else { return }
+                self.injectFinalizeSummary(rec, sessionId: sid)
+            }
+        }
+    }
+
+    private func injectFinalizeSummary(_ rec: SoulRegistry.FinalizeRecord?, sessionId sid: String) {
         let provLabel = "\(provider.rawValue):\(String(sid.prefix(8)))"
-        guard let rec = SoulRegistry.latestFinalize(projectKey: project.id, sessionId: sid) else {
+        guard let rec else {
             SoulSignposts.event("injectFinalizeSummary.miss", "\(provLabel)")
             return
         }
