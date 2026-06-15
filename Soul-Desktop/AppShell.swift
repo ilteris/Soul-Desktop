@@ -44,6 +44,7 @@ struct AppShell: View {
     @State private var codexSmokeModel = CodexSmokeViewModel()
     @State var showSettings = false
     @State var showNewProject = false
+    @State var projectPathOverrides: [String: String] = [:]
     @State var harness: Provider = .geminiCLI
 
     /// SOUL-SOUL_DESKTOP-237: presented when the user picks a different
@@ -147,8 +148,17 @@ struct AppShell: View {
         .easeInOut(duration: 0.22)
     }
 
+    func projectWithPathOverride(_ project: SoulProject?) -> SoulProject? {
+        guard var project else { return nil }
+        if let override = projectPathOverrides[project.id],
+           FileManager.default.fileExists(atPath: override) {
+            project.path = override
+        }
+        return project
+    }
+
     func currentProject() -> SoulProject? {
-        workspace.selectedProject
+        projectWithPathOverride(workspace.selectedProject)
     }
 
 
@@ -372,7 +382,7 @@ struct AppShell: View {
         }
         .sheet(isPresented: $showNewProject) {
             NewProjectWizard(
-                onCreated: { newKey in
+                onCreated: { newKey, workspacePathOverride in
                     showNewProject = false
                     Task { @MainActor in
                         // SOUL-SOUL_DESKTOP-326: project creation mutates the
@@ -381,6 +391,11 @@ struct AppShell: View {
                         // local project snapshot. Without this, the new
                         // project is present on disk but invisible until app
                         // reload / key-window refresh.
+                        if let workspacePathOverride {
+                            projectPathOverrides[newKey] = workspacePathOverride
+                        } else {
+                            projectPathOverrides.removeValue(forKey: newKey)
+                        }
                         await workspace.handleProjectMutationCompleted()
                         workspace.selectProject(newKey)
                     }

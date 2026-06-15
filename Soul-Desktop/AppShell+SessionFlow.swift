@@ -325,7 +325,7 @@ extension AppShell {
         }
         let resolvedProject: SoulProject? = {
             if let id = targetProjectID {
-                return workspace.project(id: id) ?? registryStore.projects().first { $0.id == id }
+                return projectWithPathOverride(workspace.project(id: id) ?? registryStore.projects().first { $0.id == id })
             }
             return currentProject()
         }()

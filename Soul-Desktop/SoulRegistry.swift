@@ -12,6 +12,7 @@ struct SoulProject: Identifiable, Hashable {
     var primaryHost: String?
     var devCommand: String?        // optional shell command, e.g. "npm run dev"
     var devURL: String?            // optional URL to open after dev server starts, e.g. "http://localhost:3002"
+    var companionPaths: [String] = []
     var worktreePolicy: String? = nil
 }
 
@@ -431,6 +432,7 @@ enum SoulRegistry {
                     primaryHost: val["primary_host"] as? String,
                     devCommand: val["dev_command"] as? String,
                     devURL: val["dev_url"] as? String,
+                    companionPaths: (val["companion_paths"] as? [String] ?? []).map(expand),
                     worktreePolicy: val["worktree_policy"] as? String
                 )
             }

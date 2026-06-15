@@ -101,6 +101,179 @@ struct Soul_DesktopTests {
         #expect(SlashCommandParse.parse("compact the code please").commandName == nil)
     }
 
+    @Test func addProjectPlannerReusesRegisteredProject() throws {
+        let resolution = ProjectFolderResolution(
+            status: "registered",
+            key: "truss-labs",
+            name: "Truss Labs",
+            matchKind: "primary_path",
+            projectPath: "~/Code/truss-labs",
+            matchedPath: "~/Code/truss-labs",
+            inputPath: "/Users/ilteris/Code/truss-labs",
+            projectStatus: "active",
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: nil,
+            message: nil
+        )
+
+        let plan = ProjectAddPlanner.plan(for: resolution, selectedPath: "/Users/ilteris/Code/truss-labs")
+
+        #expect(plan == .useExisting(ProjectAddExisting(
+            key: "truss-labs",
+            name: "Truss Labs",
+            matchKind: "primary_path",
+            matchedPath: "~/Code/truss-labs",
+            projectPath: "~/Code/truss-labs",
+            inputPath: "/Users/ilteris/Code/truss-labs",
+            projectStatus: "active"
+        )))
+    }
+
+    @Test func addProjectPlannerReactivatesRemoteProject() throws {
+        let resolution = ProjectFolderResolution(
+            status: "registered",
+            key: "old-app",
+            name: "Old App",
+            matchKind: "primary_path",
+            projectPath: "~/Code/old-app",
+            matchedPath: "~/Code/old-app",
+            inputPath: "/Users/ilteris/Code/old-app",
+            projectStatus: "remote",
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: nil,
+            message: nil
+        )
+
+        let plan = ProjectAddPlanner.plan(for: resolution, selectedPath: "/Users/ilteris/Code/old-app")
+
+        guard case .useExisting(let existing) = plan else {
+            Issue.record("expected existing-project plan")
+            return
+        }
+        #expect(existing.key == "old-app")
+        #expect(existing.isKnownRemote == true)
+    }
+
+    @Test func addProjectPlannerStillUsesExistingWhenResolverOmitsProjectStatus() throws {
+        let resolution = ProjectFolderResolution(
+            status: "registered",
+            key: "sec-nexus",
+            name: nil,
+            matchKind: "primary_path",
+            projectPath: "~/Code/sec-nexus",
+            matchedPath: "~/Code/sec-nexus",
+            inputPath: "/Users/ilteris/Code/sec-nexus",
+            projectStatus: nil,
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: nil,
+            message: nil
+        )
+
+        let plan = ProjectAddPlanner.plan(for: resolution, selectedPath: "/Users/ilteris/Code/sec-nexus")
+
+        guard case .useExisting(let existing) = plan else {
+            Issue.record("expected existing-project plan")
+            return
+        }
+        #expect(existing.key == "sec-nexus")
+        #expect(existing.isKnownRemote == false)
+    }
+
+    @Test func addProjectPlannerPreservesCompanionWorkspacePath() throws {
+        let resolution = ProjectFolderResolution(
+            status: "registered",
+            key: "truss-labs",
+            name: "Truss Labs",
+            matchKind: "companion_path",
+            projectPath: "~/Code/truss-labs",
+            matchedPath: "~/Code/ilteris-company/truss-private",
+            inputPath: "/Users/ilteris/Code/ilteris-company/truss-private",
+            projectStatus: "active",
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: nil,
+            message: nil
+        )
+
+        let plan = ProjectAddPlanner.plan(
+            for: resolution,
+            selectedPath: "/Users/ilteris/Code/ilteris-company/truss-private"
+        )
+
+        guard case .useExisting(let existing) = plan else {
+            Issue.record("expected existing-project plan")
+            return
+        }
+        #expect(existing.key == "truss-labs")
+        #expect(existing.workspacePathOverride == "/Users/ilteris/Code/ilteris-company/truss-private")
+    }
+
+    @Test func addProjectPlannerShowsCandidatesForAmbiguousFolder() throws {
+        let candidates = [
+            ProjectFolderResolution.Candidate(
+                key: "alpha",
+                name: "Alpha",
+                matchKind: "primary_path",
+                matchedPath: "~/Code/shared",
+                projectPath: "~/Code/shared",
+                projectStatus: "active"
+            ),
+            ProjectFolderResolution.Candidate(
+                key: "beta",
+                name: "Beta",
+                matchKind: "companion_path",
+                matchedPath: "~/Code/shared",
+                projectPath: "~/Code/beta",
+                projectStatus: "active"
+            )
+        ]
+        let resolution = ProjectFolderResolution(
+            status: "ambiguous",
+            key: nil,
+            name: nil,
+            matchKind: nil,
+            projectPath: nil,
+            matchedPath: nil,
+            inputPath: "/Users/ilteris/Code/shared",
+            projectStatus: nil,
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: candidates,
+            message: nil
+        )
+
+        #expect(ProjectAddPlanner.plan(for: resolution, selectedPath: "/Users/ilteris/Code/shared") == .chooseCandidate(candidates))
+    }
+
+    @Test func addProjectPlannerSuggestsCreateForUnregisteredRoot() throws {
+        let resolution = ProjectFolderResolution(
+            status: "unregistered_project_root",
+            key: nil,
+            name: nil,
+            matchKind: "project_shape",
+            projectPath: nil,
+            matchedPath: nil,
+            inputPath: "/Users/ilteris/Code/My App",
+            projectStatus: nil,
+            suggestedKey: nil,
+            suggestedName: nil,
+            candidates: nil,
+            message: nil
+        )
+
+        let plan = ProjectAddPlanner.plan(for: resolution, selectedPath: "/Users/ilteris/Code/My App")
+
+        #expect(plan == .createSuggested(ProjectAddSuggestion(
+            key: "my-app",
+            name: "My App",
+            path: "/Users/ilteris/Code/My App",
+            warning: nil
+        )))
+    }
+
     @Test func testNativeCompactDirectiveParsing() throws {
         let jsonStr = """
         {
