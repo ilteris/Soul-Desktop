@@ -193,22 +193,20 @@ struct Soul_DesktopTests {
         #expect(inspection.elements[1].role == "text field")
     }
 
-    @Test func computerUseExecutableResolutionSearchesHomebrewFallback() throws {
+    @Test func computerUseExecutableResolutionIgnoresPathPeekabooWithoutBundle() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("soul-peekaboo-bin-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let tool = dir.appendingPathComponent("npx")
+        let tool = dir.appendingPathComponent("peekaboo")
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: tool)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
 
-        let resolved = ComputerUseService.resolveExecutable("npx", environment: ["PATH": dir.path])
+        let bundleWithoutHelper = dir.appendingPathComponent("SoulDesktop.app", isDirectory: true)
 
-        #expect(resolved.executable == tool.path)
-        #expect(resolved.arguments.isEmpty)
-        #expect(ComputerUseService.isExecutableAvailable("npx", environment: ["PATH": dir.path]))
-        #expect(!ComputerUseService.isExecutableAvailable("missing-tool-\(UUID().uuidString)", environment: ["PATH": dir.path]))
+        #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundleWithoutHelper) == nil)
+        #expect(ComputerUseMCPConfig.command(bundleURL: bundleWithoutHelper) == nil)
     }
 
     @Test func computerUseExecutableResolutionPrefersBundledPeekaboo() throws {
@@ -224,21 +222,8 @@ struct Soul_DesktopTests {
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: bundled)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundled.path)
 
-        let pathDir = bundle.appendingPathComponent("path-bin", isDirectory: true)
-        try FileManager.default.createDirectory(at: pathDir, withIntermediateDirectories: true)
-        let pathPeekaboo = pathDir.appendingPathComponent("peekaboo")
-        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: pathPeekaboo)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pathPeekaboo.path)
-
-        let resolved = ComputerUseService.resolveExecutable(
-            "peekaboo",
-            environment: ["PATH": pathDir.path],
-            bundleURL: bundle
-        )
-
-        #expect(resolved.executable == bundled.path)
-        #expect(resolved.arguments.isEmpty)
         #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundle) == bundled.path)
+        #expect(ComputerUseMCPConfig.command(bundleURL: bundle) == bundled.path)
     }
 
     @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {

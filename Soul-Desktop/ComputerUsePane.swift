@@ -610,8 +610,6 @@ struct ComputerUseStatus: Equatable {
     var peekabooInstalled = false
     var peekabooVersion: String?
     var peekabooSource: ComputerUseRuntimeSource = .missing
-    var npxAvailable = false
-    var nodeVersion: String?
     var bridgeDetail = "Not checked"
     var bridgeState: ComputerUseStatusState = .unknown
     var screenRecording: ComputerUsePermissionState = .unknown
@@ -623,29 +621,21 @@ struct ComputerUseStatus: Equatable {
         if let peekabooVersion {
             return "\(peekabooSource.displayPrefix): \(peekabooVersion)"
         }
-        if npxAvailable {
-            let node = nodeVersion.map { " via Node \($0)" } ?? ""
-            return "Using NPX fallback\(node)"
-        }
-        return "Install with Homebrew or enable Node/NPX fallback"
+        return "Bundled Peekaboo helper missing; rebuild Soul Desktop."
     }
 
     var canCapture: Bool {
-        (peekabooInstalled || npxAvailable) && screenRecording != .missing
+        peekabooInstalled && screenRecording != .missing
     }
 }
 
 enum ComputerUseRuntimeSource: Equatable {
     case bundled
-    case system
-    case npx
     case missing
 
     var displayPrefix: String {
         switch self {
         case .bundled: return "Bundled CLI"
-        case .system: return "CLI installed"
-        case .npx: return "NPX fallback"
         case .missing: return "Peekaboo"
         }
     }
@@ -780,27 +770,19 @@ enum ComputerUseProvider: String, CaseIterable, Hashable {
 
 enum ComputerUseService {
     static func status(fullProbe: Bool) async -> ComputerUseStatus {
-        async let peekabooVersion = commandOutput(["peekaboo", "--version"], timeout: 4)
-        async let npxVersion = commandOutput(["npx", "--version"], timeout: 4)
-        async let nodeVersion = commandOutput(["node", "--version"], timeout: 4)
-
         var status = ComputerUseStatus()
-        let peekabooResolution = resolveExecutable("peekaboo")
-        let npxResolution = resolveExecutable("npx")
-        status.peekabooVersion = (await peekabooVersion).successOutput
-        status.peekabooInstalled = status.peekabooVersion != nil || isResolvedExecutable(peekabooResolution)
-        status.npxAvailable = (await npxVersion).successOutput != nil || isResolvedExecutable(npxResolution)
-        status.peekabooSource = status.peekabooInstalled
-            ? runtimeSource(for: peekabooResolution.executable)
-            : (status.npxAvailable ? .npx : .missing)
-        status.nodeVersion = (await nodeVersion).successOutput
+        if let bundled = bundledPeekabooPath() {
+            status.peekabooInstalled = true
+            status.peekabooSource = .bundled
+            status.peekabooVersion = (await commandOutput([bundled, "--version"], timeout: 4)).successOutput
+        }
         status.screenRecording = CGPreflightScreenCaptureAccess() ? .granted : .missing
         status.accessibility = AXIsProcessTrusted() ? .granted : .missing
         status.providerEnabled = ComputerUseProvider.allCases.reduce(into: [:]) { out, provider in
             out[provider] = ComputerUseMCPConfig.isEnabled(for: provider)
         }
 
-        if fullProbe, status.peekabooInstalled || status.npxAvailable {
+        if fullProbe, status.peekabooInstalled {
             let permissions = await runPeekaboo(["permissions", "status"], timeout: 12)
             status.applyPermissionOutput(permissions.combinedOutput)
             let bridge = await bridgeStatus()
@@ -949,11 +931,18 @@ enum ComputerUseService {
         currentDirectoryPath: String? = nil,
         timeout: TimeInterval
     ) async -> ComputerUseCommandResult {
-        let command = await peekabooCommand(arguments: arguments)
+        guard let executable = bundledPeekabooPath() else {
+            return ComputerUseCommandResult(
+                status: 1,
+                stdout: "",
+                stderr: "Bundled Peekaboo helper missing; rebuild Soul Desktop.",
+                timedOut: false
+            )
+        }
         do {
             let result = try await SafeProcessRunner.run(
-                executable: command.executable,
-                arguments: command.arguments,
+                executable: executable,
+                arguments: arguments,
                 currentDirectoryPath: currentDirectoryPath,
                 timeoutSeconds: timeout
             )
@@ -967,45 +956,16 @@ enum ComputerUseService {
         guard let executable = command.first else {
             return ComputerUseCommandResult(status: 1, stdout: "", stderr: "No command", timedOut: false)
         }
-        let resolved = resolveExecutable(executable)
         do {
             let result = try await SafeProcessRunner.run(
-                executable: resolved.executable,
-                arguments: resolved.arguments + Array(command.dropFirst()),
+                executable: executable,
+                arguments: Array(command.dropFirst()),
                 timeoutSeconds: timeout
             )
             return ComputerUseCommandResult(result: result)
         } catch {
             return ComputerUseCommandResult(status: 1, stdout: "", stderr: error.localizedDescription, timedOut: false)
         }
-    }
-
-    static func resolveExecutable(
-        _ executable: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        bundleURL: URL = Bundle.main.bundleURL
-    ) -> (executable: String, arguments: [String]) {
-        if executable.hasPrefix("/") {
-            return (executable, [])
-        }
-
-        if executable == "peekaboo", let bundled = bundledPeekabooPath(bundleURL: bundleURL) {
-            return (bundled, [])
-        }
-
-        let searchPath = executableSearchPath(environment: environment)
-        for directory in searchPath {
-            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(executable).path
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return (candidate, [])
-            }
-        }
-
-        return ("/usr/bin/env", [executable])
-    }
-
-    static func isExecutableAvailable(_ executable: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        isResolvedExecutable(resolveExecutable(executable, environment: environment))
     }
 
     static func bundledPeekabooPath(bundleURL: URL = Bundle.main.bundleURL) -> String? {
@@ -1015,50 +975,6 @@ enum ComputerUseService {
             .appendingPathComponent("peekaboo")
             .path
         return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
-    }
-
-    private static func isResolvedExecutable(_ resolved: (executable: String, arguments: [String])) -> Bool {
-        resolved.executable != "/usr/bin/env"
-    }
-
-    private static func runtimeSource(for executable: String) -> ComputerUseRuntimeSource {
-        if executable == bundledPeekabooPath() {
-            return .bundled
-        }
-        if executable == "/usr/bin/env" {
-            return .missing
-        }
-        return .system
-    }
-
-    private static func executableSearchPath(environment: [String: String]) -> [String] {
-        let pathEntries = (environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map(String.init)
-        let fallbackEntries = [
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin"
-        ]
-        var seen = Set<String>()
-        return (pathEntries + fallbackEntries).filter { entry in
-            guard !entry.isEmpty, !seen.contains(entry) else { return false }
-            seen.insert(entry)
-            return true
-        }
-    }
-
-    private static func peekabooCommand(arguments: [String]) async -> (executable: String, arguments: [String]) {
-        if (await commandOutput(["peekaboo", "--version"], timeout: 2)).successOutput != nil {
-            let resolved = resolveExecutable("peekaboo")
-            return (resolved.executable, resolved.arguments + arguments)
-        }
-        let resolved = resolveExecutable("npx")
-        return (resolved.executable, resolved.arguments + ["--yes", "@steipete/peekaboo"] + arguments)
     }
 
     private static func jsonObject(from output: String) -> [String: Any]? {
@@ -1178,14 +1094,13 @@ extension ComputerUseStatus {
 
 enum ComputerUseMCPConfig {
     static let serverName = "peekaboo"
-    static let fallbackCommand = "peekaboo"
     static let args = ["mcp"]
     static let env = [
         "PEEKABOO_DISABLE_TOOLS": "capture,agent,run,config,clean"
     ]
 
-    static func command(bundleURL: URL = Bundle.main.bundleURL) -> String {
-        ComputerUseService.bundledPeekabooPath(bundleURL: bundleURL) ?? fallbackCommand
+    static func command(bundleURL: URL = Bundle.main.bundleURL) -> String? {
+        ComputerUseService.bundledPeekabooPath(bundleURL: bundleURL)
     }
 
     static func reconcileEnabledProviders() {
@@ -1212,15 +1127,16 @@ enum ComputerUseMCPConfig {
     }
 
     static func setEnabled(_ enabled: Bool, for provider: ComputerUseProvider) throws {
+        let command = try enabled ? requiredCommand() : nil
         switch provider {
         case .geminiCLI, .claudeCode:
-            try setJSONEnabled(enabled, at: provider.configPath)
+            try setJSONEnabled(enabled, at: provider.configPath, command: command)
         case .codex:
-            try setCodexEnabled(enabled, at: provider.configPath)
+            try setCodexEnabled(enabled, at: provider.configPath, command: command)
         }
     }
 
-    static func setJSONEnabled(_ enabled: Bool, at path: String, command: String = command()) throws {
+    static func setJSONEnabled(_ enabled: Bool, at path: String, command: String? = nil) throws {
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var root: [String: Any] = [:]
@@ -1230,6 +1146,7 @@ enum ComputerUseMCPConfig {
         }
         var servers = root["mcpServers"] as? [String: Any] ?? [:]
         if enabled {
+            let command = try command ?? requiredCommand()
             servers[serverName] = [
                 "command": command,
                 "args": args,
@@ -1243,10 +1160,11 @@ enum ComputerUseMCPConfig {
         try data.write(to: url, options: .atomic)
     }
 
-    static func setCodexEnabled(_ enabled: Bool, at path: String, command: String = command()) throws {
+    static func setCodexEnabled(_ enabled: Bool, at path: String, command: String? = nil) throws {
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let command = try enabled ? (command ?? requiredCommand()) : nil
         let updated = setCodexPeekaboo(existing, enabled: enabled, command: command)
         try updated.data(using: .utf8)?.write(to: url, options: .atomic)
     }
@@ -1266,12 +1184,13 @@ enum ComputerUseMCPConfig {
         }
     }
 
-    static func setCodexPeekaboo(_ text: String, enabled: Bool, command: String = command()) -> String {
+    static func setCodexPeekaboo(_ text: String, enabled: Bool, command: String? = nil) -> String {
         let withoutSection = removeCodexPeekabooSection(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled else {
             return withoutSection.isEmpty ? "" : withoutSection + "\n"
         }
+        let command = command ?? ""
         let block = """
 
         [mcp_servers.peekaboo]
@@ -1282,6 +1201,15 @@ enum ComputerUseMCPConfig {
         PEEKABOO_DISABLE_TOOLS = "capture,agent,run,config,clean"
         """
         return withoutSection + block + "\n"
+    }
+
+    private static func requiredCommand() throws -> String {
+        if let command = command() {
+            return command
+        }
+        throw NSError(domain: "ComputerUseMCPConfig", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Bundled Peekaboo helper missing; rebuild Soul Desktop."
+        ])
     }
 
     private static func tomlEscaped(_ value: String) -> String {
