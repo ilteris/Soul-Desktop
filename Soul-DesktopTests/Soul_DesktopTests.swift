@@ -232,6 +232,25 @@ struct Soul_DesktopTests {
         #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
     }
 
+    @Test func computerUseArtifactScannerPrefersAnnotatedSnapshots() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-scan-\(UUID().uuidString)", isDirectory: true)
+        let snapshot = root.appendingPathComponent("snapshots/ABC", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let raw = snapshot.appendingPathComponent("raw.png")
+        let annotated = snapshot.appendingPathComponent("annotated.png")
+        try Data("raw".utf8).write(to: raw)
+        try Data("annotated".utf8).write(to: annotated)
+
+        let artifacts = ComputerUseArtifactScanner.currentArtifacts(directories: [root])
+
+        #expect(artifacts.count == 1)
+        #expect(artifacts.first?.path == annotated.resolvingSymlinksInPath().path)
+        #expect(artifacts.first?.title == "Peekaboo screenshot: ABC")
+    }
+
     @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {
         let appSupport = URL(fileURLWithPath: "/Users/tester/Library/Application Support", isDirectory: true)
 

@@ -158,6 +158,7 @@ extension ThreadController {
             agentStreamBuffer.clear()
             turnStartedAt = nil
             stopStallWatchdog()
+            stopComputerUseArtifactWatcher()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
 
@@ -189,6 +190,7 @@ extension ThreadController {
         var isFirstTurn = true
         do {
             try await ensureSessionResilient()
+            startComputerUseArtifactWatcher()
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
                 guard let sid = sessionId else { return }
