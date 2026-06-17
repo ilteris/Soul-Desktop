@@ -232,6 +232,16 @@ struct Soul_DesktopTests {
         #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundle) == bundled.path)
     }
 
+    @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {
+        let appSupport = URL(fileURLWithPath: "/Users/tester/Library/Application Support", isDirectory: true)
+
+        let dir = ComputerUseService.artifactDirectory(applicationSupportDirectory: appSupport)
+
+        #expect(dir.path == "/Users/tester/Library/Application Support/Soul-Desktop/ComputerUse")
+        #expect(!dir.path.contains("/tmp"))
+        #expect(!dir.path.contains("/T/"))
+    }
+
     @Test func registryWatcherFloorsFullRescanCadence() throws {
         let now = DispatchTime(uptimeNanoseconds: 10_000_000_000)
         let lastFire = DispatchTime(uptimeNanoseconds: 9_000_000_000)

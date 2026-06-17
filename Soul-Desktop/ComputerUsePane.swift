@@ -808,9 +808,7 @@ enum ComputerUseService {
     }
 
     static func captureScreen(projectPath: String?) async throws -> ComputerUseCapture {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("soul-peekaboo", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try preparedArtifactDirectory()
         let file = dir.appendingPathComponent("screen-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).png")
         let result = await runPeekaboo(
             ["image", "--mode", "screen", "--retina", "--path", file.path],
@@ -832,9 +830,7 @@ enum ComputerUseService {
     }
 
     static func inspectUI(target: String?, projectPath: String?) async throws -> ComputerUseInspection {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("soul-peekaboo", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try preparedArtifactDirectory()
         let file = dir.appendingPathComponent("see-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).png")
 
         var arguments = ["see", "--json", "--annotate", "--path", file.path]
@@ -854,6 +850,24 @@ enum ComputerUseService {
             ])
         }
         return payload
+    }
+
+    static func artifactDirectory(applicationSupportDirectory: URL? = nil) -> URL {
+        let supportDirectory = applicationSupportDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+
+        return supportDirectory
+            .appendingPathComponent("Soul-Desktop", isDirectory: true)
+            .appendingPathComponent("ComputerUse", isDirectory: true)
+    }
+
+    private static func preparedArtifactDirectory() throws -> URL {
+        let dir = artifactDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     static func parseTargetApps(_ output: String) -> [ComputerUseTargetApp] {
