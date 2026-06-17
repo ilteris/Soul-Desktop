@@ -829,6 +829,23 @@ enum ComputerUseService {
         return ComputerUseCapture(path: file.path, image: NSImage(contentsOf: file))
     }
 
+    static func openURL(_ url: String, target: String?, projectPath: String?) async throws {
+        var arguments = ["open", url, "--json", "--wait-until-ready"]
+        if let target, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--app", target]
+        }
+        let result = await runPeekaboo(
+            arguments,
+            currentDirectoryPath: projectPath,
+            timeout: 20
+        )
+        guard result.status == 0 else {
+            throw NSError(domain: "ComputerUse", code: Int(result.status), userInfo: [
+                NSLocalizedDescriptionKey: result.summary.isEmpty ? "Peekaboo open failed" : result.summary
+            ])
+        }
+    }
+
     static func targetApps() async -> [ComputerUseTargetApp] {
         let result = await runPeekaboo(["list", "apps", "--json"], timeout: 12)
         guard result.status == 0 else { return [] }

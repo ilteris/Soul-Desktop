@@ -4,7 +4,11 @@ import SoulCore
 
 struct ComputerUsePromptIntent {
     let target: String?
-    let requiresInteractionBeforeCapture: Bool
+    let navigationURL: String?
+
+    var requiresInteractionBeforeCapture: Bool {
+        navigationURL != nil
+    }
 
     static func detect(in text: String) -> ComputerUsePromptIntent? {
         let lower = text.lowercased()
@@ -57,14 +61,12 @@ struct ComputerUsePromptIntent {
         let browserInspection = lower.contains("browser")
             && ["inspect", "visible", "visual", "display", "screen", "showing", "state", "screenshot"]
                 .contains { lower.contains($0) }
-        let navigationBeforeCapture = isBrowserTarget(target, lower: lower)
-            && containsBrowserNavigation(in: lower)
-            && containsWebDestination(in: lower)
+        let navigationURL = browserNavigationURL(in: lower, target: target)
 
         guard screenshotAction || visualInspection || targetedInspection || browserInspection else { return nil }
         return ComputerUsePromptIntent(
             target: target ?? (browserInspection ? "Google Chrome" : nil),
-            requiresInteractionBeforeCapture: navigationBeforeCapture
+            navigationURL: navigationURL
         )
     }
 
@@ -112,6 +114,47 @@ struct ComputerUsePromptIntent {
             || lower.contains(" site")
             || lower.contains(" website")
     }
+
+    private static func browserNavigationURL(in lower: String, target: String?) -> String? {
+        guard isBrowserTarget(target, lower: lower),
+              containsBrowserNavigation(in: lower),
+              containsWebDestination(in: lower)
+        else { return nil }
+
+        let trimCharacters = CharacterSet(charactersIn: "'\"`.,;:!?()[]{}<>")
+            .union(.whitespacesAndNewlines)
+        let tokens = lower
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: trimCharacters) }
+            .filter { !$0.isEmpty }
+
+        for token in tokens {
+            guard looksLikeWebAddress(token) else { continue }
+            let normalized = normalizeWebAddress(token)
+            guard let components = URLComponents(string: normalized),
+                  components.scheme != nil,
+                  components.host != nil
+            else { continue }
+            return normalized
+        }
+        return nil
+    }
+
+    private static func looksLikeWebAddress(_ token: String) -> Bool {
+        token.hasPrefix("http://")
+            || token.hasPrefix("https://")
+            || token.hasPrefix("www.")
+            || token.contains(".com")
+            || token.contains(".org")
+            || token.contains(".net")
+    }
+
+    private static func normalizeWebAddress(_ token: String) -> String {
+        if token.hasPrefix("http://") || token.hasPrefix("https://") {
+            return token
+        }
+        return "https://\(token)"
+    }
 }
 
 extension ThreadController {
@@ -146,17 +189,8 @@ extension ThreadController {
     func enrichWithComputerUseIfNeeded(turn: inout QueuedPrompt) async {
         guard let intent = ComputerUsePromptIntent.detect(in: turn.display) else { return }
 
-        if intent.requiresInteractionBeforeCapture {
-            turn.agent += """
-
-            <computer_use_request>
-            This request requires live UI interaction before the final screenshot.
-            Target: \(intent.target ?? "frontmost app")
-            Use the bundled Peekaboo MCP/Soul computer use path for the browser interaction and resulting screenshot artifact.
-            Prefer the existing target app/window. Do not open a new browser window unless the user explicitly asks for a new window.
-            Do not use AppleScript, osascript, screencapture, shell scripts, or browser-opening command workarounds for this workflow.
-            </computer_use_request>
-            """
+        if let navigationURL = intent.navigationURL {
+            await enrichWithBrowserNavigationCapture(turn: &turn, intent: intent, url: navigationURL)
             return
         }
 
@@ -165,41 +199,90 @@ extension ThreadController {
                 target: intent.target,
                 projectPath: activeProjectPath
             )
-            insertComputerUseArtifact(path: capture.path, title: intent.target.map { "Screenshot: \($0)" } ?? "Screenshot: frontmost app")
-
-            let context = """
-
-            <computer_use_artifact>
-            Screenshot captured by Soul Desktop before this turn.
-            Path: \(capture.path)
-            Target: \(intent.target ?? "frontmost app")
-            Use this screenshot as the visual source of truth for the user's request.
-            Do not open new browser windows, navigate pages, run AppleScript, run screencapture, or create another screenshot unless the user explicitly asks for live UI interaction.
-            </computer_use_artifact>
-            """
-            turn.agent += context
-
-            if supportsImageAttachments,
-               let data = try? Data(contentsOf: URL(fileURLWithPath: capture.path)),
-               data.count <= 5 * 1024 * 1024 {
-                turn.extraBlocks.append(.image(mimeType: "image/png", base64: data.base64EncodedString()))
-            }
+            attachComputerUseCapture(capture, intent: intent, to: &turn, introduction: "Screenshot captured by Soul Desktop before this turn.")
         } catch {
-            items.append(.toolCall(
-                id: UUID(),
-                kind: "computer_use",
-                title: intent.target.map { "Screenshot: \($0)" } ?? "Screenshot: frontmost app",
-                status: "failed",
-                locationHint: nil,
-                details: nil
-            ))
+            appendComputerUseFailure(error, intent: intent, to: &turn)
+        }
+    }
+
+    private func enrichWithBrowserNavigationCapture(turn: inout QueuedPrompt, intent: ComputerUsePromptIntent, url: String) async {
+        do {
+            try await ComputerUseService.openURL(url, target: intent.target, projectPath: activeProjectPath)
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            let capture = try await ComputerUseService.captureImage(
+                target: intent.target,
+                projectPath: activeProjectPath
+            )
+            attachComputerUseCapture(
+                capture,
+                intent: intent,
+                to: &turn,
+                introduction: "Soul Desktop opened \(url) with bundled Peekaboo and captured this screenshot before dispatch."
+            )
             turn.agent += """
 
-            <computer_use_artifact>
-            Soul Desktop tried to capture a screenshot before this turn, but it failed: \(error.localizedDescription)
-            </computer_use_artifact>
+            <computer_use_request>
+            This request required live browser navigation before visual inspection.
+            Target: \(intent.target ?? "frontmost app")
+            URL opened: \(url)
+            The screenshot artifact above is the visual source of truth. Describe it directly.
+            Do not search for Peekaboo, do not run /opt/homebrew/bin/peekaboo, do not run AppleScript, do not run osascript, do not run screencapture, and do not save additional screenshots into the project workspace unless the user explicitly asks for a fresh capture.
+            </computer_use_request>
+            """
+        } catch {
+            appendComputerUseFailure(error, intent: intent, to: &turn)
+            turn.agent += """
+
+            <computer_use_request>
+            Soul Desktop could not complete the bundled Peekaboo browser-navigation capture for \(url): \(error.localizedDescription)
+            Do not fall back to Homebrew Peekaboo, AppleScript, osascript, screencapture, or shell browser automation. Ask the user to fix Soul Desktop computer-use permissions or bundled helper installation.
+            </computer_use_request>
             """
         }
+    }
+
+    private func attachComputerUseCapture(
+        _ capture: ComputerUseCapture,
+        intent: ComputerUsePromptIntent,
+        to turn: inout QueuedPrompt,
+        introduction: String
+    ) {
+        insertComputerUseArtifact(path: capture.path, title: intent.target.map { "Screenshot: \($0)" } ?? "Screenshot: frontmost app")
+
+        let context = """
+
+        <computer_use_artifact>
+        \(introduction)
+        Path: \(capture.path)
+        Target: \(intent.target ?? "frontmost app")
+        Use this screenshot as the visual source of truth for the user's request.
+        Do not search for Peekaboo, do not run /opt/homebrew/bin/peekaboo, do not run AppleScript, do not run osascript, do not run screencapture, and do not create another screenshot unless the user explicitly asks for a fresh capture.
+        </computer_use_artifact>
+        """
+        turn.agent += context
+
+        if supportsImageAttachments,
+           let data = try? Data(contentsOf: URL(fileURLWithPath: capture.path)),
+           data.count <= 5 * 1024 * 1024 {
+            turn.extraBlocks.append(.image(mimeType: "image/png", base64: data.base64EncodedString()))
+        }
+    }
+
+    private func appendComputerUseFailure(_ error: Error, intent: ComputerUsePromptIntent, to turn: inout QueuedPrompt) {
+        items.append(.toolCall(
+            id: UUID(),
+            kind: "computer_use",
+            title: intent.target.map { "Screenshot: \($0)" } ?? "Screenshot: frontmost app",
+            status: "failed",
+            locationHint: nil,
+            details: nil
+        ))
+        turn.agent += """
+
+        <computer_use_artifact>
+        Soul Desktop tried to capture a screenshot before this turn, but it failed: \(error.localizedDescription)
+        </computer_use_artifact>
+        """
     }
 
     private func publishNewComputerUseArtifacts() {
