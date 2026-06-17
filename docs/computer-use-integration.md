@@ -196,9 +196,10 @@ struct ComputerUsePane: View {
         case .screenRecording:
             CGRequestScreenCaptureAccess()
         case .eventSynthesizing:
-            // Shell call to run peekaboo permissions request-event-synthesizing
+            // Run the bundled helper: peekaboo permissions request-event-synthesizing
             let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/local/bin/peekaboo")
+            task.executableURL = Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Helpers/peekaboo")
             task.arguments = ["permissions", "request-event-synthesizing"]
             try? task.run()
         }
