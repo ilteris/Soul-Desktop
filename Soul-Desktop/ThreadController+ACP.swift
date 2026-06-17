@@ -89,6 +89,7 @@ extension ThreadController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.streamPreviewPublishScheduled = false
+                guard !self.streamPreviewPublishingSuspended else { return }
                 self.liveStreamPreview = self.agentStreamBuffer.preview(sanitizeMessage: self.sanitizeLiveAgentText)
                 self.lastStreamPreviewPublishAt = Date()
             }

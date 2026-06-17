@@ -437,10 +437,13 @@ struct ThreadView: View {
                 .onScrollPhaseChange { _, newPhase, _ in
                     switch newPhase {
                     case .tracking, .interacting, .decelerating:
-                        if controller.isWorking { freezeLiveTranscript() }
+                        let isWorking = controller.isWorking
+                        if isWorking { freezeLiveTranscript() }
                         controller.streamPreviewPublishingSuspended = true
-                        viewportPolicy.userBeganScrolling()
-                        startAutoRevealLoop(proxy: proxy)
+                        viewportPolicy.userBeganScrolling(detachImmediately: isWorking)
+                        if !isWorking {
+                            startAutoRevealLoop(proxy: proxy)
+                        }
                     case .animating:
                         viewportPolicy.programmaticAnimationStarted()
                         controller.streamPreviewPublishingSuspended = false
@@ -634,6 +637,7 @@ struct ThreadView: View {
     }
 
     private func revealEarlierIfNearTop(proxy: ScrollViewProxy) {
+        guard !controller.isWorking else { return }
         guard let scrollView = transcriptScrollView else { return }
         let hiddenCount = currentTranscriptSnapshot().hiddenMainCount
         guard hiddenCount > 0 else { return }
@@ -1147,9 +1151,9 @@ private struct ThreadViewportPolicy {
         userIsScrolling = false
     }
 
-    mutating func userBeganScrolling() {
+    mutating func userBeganScrolling(detachImmediately: Bool = false) {
         userIsScrolling = true
-        if !isAtBottom {
+        if detachImmediately || !isAtBottom {
             followMode = .detached
         }
     }
