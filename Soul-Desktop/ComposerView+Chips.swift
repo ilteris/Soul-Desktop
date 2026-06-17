@@ -254,23 +254,35 @@ struct RunLocalChip: View {
     }
 }
 
-struct ComputerUseEnabledChip: View {
+struct ComputerUseChip: View {
+    let enabled: Bool
+    let action: () -> Void
+
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "display.and.cursorarrow")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(SoulColor.accent)
-            Text("Computer")
-                .font(SoulFont.ui(11, weight: .medium))
-                .foregroundStyle(SoulColor.fgMuted)
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: enabled ? "display.and.cursorarrow" : "display")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(enabled ? SoulColor.accent : SoulColor.fgMuted)
+                Text(enabled ? "Computer use" : "Enable computer use")
+                    .font(SoulFont.ui(11, weight: .medium))
+                    .foregroundStyle(enabled ? SoulColor.fg : SoulColor.fgMuted)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background((enabled ? SoulColor.accent.opacity(0.08) : SoulColor.surface), in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    enabled ? SoulColor.accent.opacity(0.25) : SoulColor.border.opacity(0.6),
+                    lineWidth: 0.5
+                )
+            )
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(SoulColor.accent.opacity(0.08), in: Capsule())
-        .overlay(
-            Capsule().strokeBorder(SoulColor.accent.opacity(0.25), lineWidth: 0.5)
+        .buttonStyle(.soulChip)
+        .help(enabled
+            ? "Computer use is enabled. Open visual inspection and permission controls."
+            : "Enable visual inspection for this provider with Soul Desktop's bundled Peekaboo."
         )
-        .help("Computer use is enabled for this provider via Peekaboo")
     }
 }
 

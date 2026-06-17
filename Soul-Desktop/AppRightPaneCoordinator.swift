@@ -63,6 +63,11 @@ final class AppRightPaneCoordinator {
         }
     }
 
+    func openComputerUse() {
+        computerUseVisible = true
+        activeTab = .computerUse
+    }
+
     func closePane() {
         reviewVisible = false
         filePreviewPath = nil

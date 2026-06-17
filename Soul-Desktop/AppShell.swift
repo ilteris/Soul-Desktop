@@ -208,6 +208,13 @@ struct AppShell: View {
         }
     }
 
+    func openComputerUse() {
+        withAnimation(sidePanelAnimation) {
+            rightPane.openComputerUse()
+            showComputerUse = true
+        }
+    }
+
     private func setFilePreviewPath(_ path: String?) {
         withAnimation(sidePanelAnimation) {
             rightPane.setFilePreviewPath(path)
