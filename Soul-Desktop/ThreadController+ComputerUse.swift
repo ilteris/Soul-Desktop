@@ -4,6 +4,7 @@ import SoulCore
 
 struct ComputerUsePromptIntent {
     let target: String?
+    let requiresInteractionBeforeCapture: Bool
 
     static func detect(in text: String) -> ComputerUsePromptIntent? {
         let lower = text.lowercased()
@@ -56,9 +57,15 @@ struct ComputerUsePromptIntent {
         let browserInspection = lower.contains("browser")
             && ["inspect", "visible", "visual", "display", "screen", "showing", "state", "screenshot"]
                 .contains { lower.contains($0) }
+        let navigationBeforeCapture = isBrowserTarget(target, lower: lower)
+            && containsBrowserNavigation(in: lower)
+            && containsWebDestination(in: lower)
 
         guard screenshotAction || visualInspection || targetedInspection || browserInspection else { return nil }
-        return ComputerUsePromptIntent(target: target ?? (browserInspection ? "Google Chrome" : nil))
+        return ComputerUsePromptIntent(
+            target: target ?? (browserInspection ? "Google Chrome" : nil),
+            requiresInteractionBeforeCapture: navigationBeforeCapture
+        )
     }
 
     private static func targetApp(in lower: String) -> String? {
@@ -77,6 +84,33 @@ struct ComputerUsePromptIntent {
         return targets.first { target in
             target.needles.contains { lower.contains($0) }
         }?.app
+    }
+
+    private static func isBrowserTarget(_ target: String?, lower: String) -> Bool {
+        target == "Google Chrome" || target == "Safari" || lower.contains("browser")
+    }
+
+    private static func containsBrowserNavigation(in lower: String) -> Bool {
+        [
+            "open ",
+            "opening ",
+            "open up",
+            "navigate",
+            "go to ",
+            "load ",
+            "visit "
+        ].contains { lower.contains($0) }
+    }
+
+    private static func containsWebDestination(in lower: String) -> Bool {
+        lower.contains("http://")
+            || lower.contains("https://")
+            || lower.contains("www.")
+            || lower.contains(".com")
+            || lower.contains(".org")
+            || lower.contains(".net")
+            || lower.contains(" site")
+            || lower.contains(" website")
     }
 }
 
@@ -112,6 +146,20 @@ extension ThreadController {
     func enrichWithComputerUseIfNeeded(turn: inout QueuedPrompt) async {
         guard let intent = ComputerUsePromptIntent.detect(in: turn.display) else { return }
 
+        if intent.requiresInteractionBeforeCapture {
+            turn.agent += """
+
+            <computer_use_request>
+            This request requires live UI interaction before the final screenshot.
+            Target: \(intent.target ?? "frontmost app")
+            Use the bundled Peekaboo MCP/Soul computer use path for the browser interaction and resulting screenshot artifact.
+            Prefer the existing target app/window. Do not open a new browser window unless the user explicitly asks for a new window.
+            Do not use AppleScript, osascript, screencapture, shell scripts, or browser-opening command workarounds for this workflow.
+            </computer_use_request>
+            """
+            return
+        }
+
         do {
             let capture = try await ComputerUseService.captureImage(
                 target: intent.target,
@@ -126,7 +174,7 @@ extension ThreadController {
             Path: \(capture.path)
             Target: \(intent.target ?? "frontmost app")
             Use this screenshot as the visual source of truth for the user's request.
-            Do not open new browser windows, navigate pages, run AppleScript, run screencapture, or create another screenshot unless the user explicitly asks for a fresh capture.
+            Do not open new browser windows, navigate pages, run AppleScript, run screencapture, or create another screenshot unless the user explicitly asks for live UI interaction.
             </computer_use_artifact>
             """
             turn.agent += context

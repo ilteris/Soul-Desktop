@@ -228,10 +228,12 @@ struct Soul_DesktopTests {
 
     @Test func computerUsePromptIntentDetectsScreenshotRequests() {
         #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.requiresInteractionBeforeCapture == false)
         #expect(ComputerUsePromptIntent.detect(in: "inspect the UI in Xcode")?.target == "Xcode")
         #expect(ComputerUsePromptIntent.detect(in: "inspect Google Chrome's current display state")?.target == "Google Chrome")
         #expect(ComputerUsePromptIntent.detect(in: "tell me what is visible in the browser")?.target == "Google Chrome")
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.requiresInteractionBeforeCapture == true)
         #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
     }
 
