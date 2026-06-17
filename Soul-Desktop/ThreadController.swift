@@ -203,7 +203,7 @@ final class ThreadController {
 
         let itemId: UUID
         let display: String
-        let agent: String
+        var agent: String
         var extraBlocks: [ContentBlock] = []
         var ledgerEvent: LedgerEvent = .userPrompt
         var sourceProvider: Provider? = nil

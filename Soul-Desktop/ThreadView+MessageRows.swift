@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Message-row view family lifted out of ThreadView. Covers:
 ///
@@ -248,6 +249,80 @@ private struct FooterButton: View {
         }
         .buttonStyle(.soulHover)
         .help(help)
+    }
+}
+
+struct ComputerUseArtifactRow: View {
+    let title: String
+    let status: String
+    let path: String?
+    var isHistorical: Bool = false
+    @State private var copied = false
+
+    private var image: NSImage? {
+        guard let path else { return nil }
+        return NSImage(contentsOfFile: (path as NSString).expandingTildeInPath)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: status == "failed" ? "display.trianglebadge.exclamationmark" : "display.and.cursorarrow")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(status == "failed" ? Color.red.opacity(0.85) : SoulColor.accent)
+                Text(title)
+                    .font(SoulFont.ui(12, weight: .semibold))
+                    .foregroundStyle(SoulColor.fg)
+                Spacer()
+                Text(status == "failed" ? "failed" : "captured")
+                    .font(SoulFont.ui(10, weight: .medium))
+                    .foregroundStyle(status == "failed" ? Color.red.opacity(0.85) : SoulColor.fgMuted)
+            }
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(SoulColor.border.opacity(0.45), lineWidth: 0.5)
+                    )
+            } else if let path {
+                Text(path)
+                    .font(SoulFont.code(11))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+
+            if let path {
+                HStack(spacing: 4) {
+                    FooterButton(systemName: copied ? "checkmark" : "doc.on.doc", help: "Copy artifact path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(path, forType: .string)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                    }
+                    FooterButton(systemName: "folder", help: "Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: (path as NSString).expandingTildeInPath)])
+                    }
+                    Text((path as NSString).lastPathComponent)
+                        .font(SoulFont.ui(10))
+                        .foregroundStyle(SoulColor.fgSubtle.opacity(isHistorical ? 0.7 : 1.0))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .background(SoulColor.bgElevated.opacity(isHistorical ? 0.72 : 1.0), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SoulColor.border.opacity(0.45), lineWidth: 0.5)
+        )
     }
 }
 

@@ -226,6 +226,12 @@ struct Soul_DesktopTests {
         #expect(ComputerUseMCPConfig.command(bundleURL: bundle) == bundled.path)
     }
 
+    @Test func computerUsePromptIntentDetectsScreenshotRequests() {
+        #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "inspect the UI in Xcode")?.target == "Xcode")
+        #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
+    }
+
     @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {
         let appSupport = URL(fileURLWithPath: "/Users/tester/Library/Application Support", isDirectory: true)
 

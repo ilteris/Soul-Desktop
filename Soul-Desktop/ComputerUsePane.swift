@@ -804,10 +804,20 @@ enum ComputerUseService {
     }
 
     static func captureScreen(projectPath: String?) async throws -> ComputerUseCapture {
+        try await captureImage(target: nil, projectPath: projectPath)
+    }
+
+    static func captureImage(target: String?, projectPath: String?) async throws -> ComputerUseCapture {
         let dir = try preparedArtifactDirectory()
         let file = dir.appendingPathComponent("screen-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).png")
+        var arguments = ["image", "--retina", "--path", file.path]
+        if let target, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--app", target]
+        } else {
+            arguments += ["--app", "frontmost"]
+        }
         let result = await runPeekaboo(
-            ["image", "--mode", "screen", "--retina", "--path", file.path],
+            arguments,
             currentDirectoryPath: projectPath,
             timeout: 20
         )

@@ -1283,7 +1283,9 @@ struct ThreadItemRow: View {
             // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls route to
             // the dedicated SubagentCard instead of the generic ToolCallRow.
             // Match on the structured details kind populated by insertToolCall.
-            if case .claudeAgent(let subagentType, let descriptionText, let agentId, let bodyText, let totalTokens, let toolUses, let durationMs) = details?.kind {
+            if kind == "computer_use" {
+                ComputerUseArtifactRow(title: title, status: status, path: loc, isHistorical: isHistorical)
+            } else if case .claudeAgent(let subagentType, let descriptionText, let agentId, let bodyText, let totalTokens, let toolUses, let durationMs) = details?.kind {
                 ClaudeAgentCard(
                     subagentType: subagentType,
                     description: descriptionText,

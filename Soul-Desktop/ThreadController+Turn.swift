@@ -192,7 +192,7 @@ extension ThreadController {
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
                 guard let sid = sessionId else { return }
-                while let turn = current {
+                while var turn = current {
                     if isFirstTurn {
                         // UserPrompt was persisted synchronously when the
                         // visible bubble was created.
@@ -201,6 +201,7 @@ extension ThreadController {
                         relocateQueuedBubbleToEnd(turn)
                     }
                     isFirstTurn = false
+                    await enrichWithComputerUseIfNeeded(turn: &turn)
                     // SOUL-SOUL_DESKTOP-245 (Phase B): inject preamble on
                     // first dispatch for resumed codex sessions too.
                     let agentText = computerUseContextApplied(to: {
@@ -267,7 +268,7 @@ extension ThreadController {
             // when the session was resumed via backfill.
             let nid = nativeSessionId ?? sid
 
-            while let turn = current {
+            while var turn = current {
                 if isFirstTurn {
                     // UserPrompt was persisted synchronously when the
                     // visible bubble was created.
@@ -289,6 +290,7 @@ extension ThreadController {
                     }
                 }
                 isFirstTurn = false
+                await enrichWithComputerUseIfNeeded(turn: &turn)
                 // SOUL-SOUL_DESKTOP-245 (Phase B): if hydrate staged a
                 // preamble for this resumed session, prefix it to the
                 // agent-channel text on the first dispatch and clear so
