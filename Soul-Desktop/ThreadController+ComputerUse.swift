@@ -69,23 +69,26 @@ extension ThreadController {
         stopComputerUseArtifactRefresh()
         computerUseArtifactTrackingEnabled = ComputerUseAgentContext.isEnabled(for: provider)
             && ComputerUseService.bundledPeekabooPath() != nil
+        computerUseArtifactSignalObserved = false
         guard computerUseArtifactTrackingEnabled else { return }
         computerUseArtifactTrackingStartedAt = Date()
     }
 
     func endComputerUseArtifactTracking() {
-        if computerUseArtifactTrackingEnabled {
+        if computerUseArtifactTrackingEnabled && computerUseArtifactSignalObserved {
             publishNewComputerUseArtifacts()
         }
         stopComputerUseArtifactRefresh()
         computerUseArtifactTrackingEnabled = false
         computerUseArtifactTrackingStartedAt = nil
+        computerUseArtifactSignalObserved = false
     }
 
     func observePotentialComputerUseArtifact(kind: String, title: String, location: String? = nil) {
         guard computerUseArtifactTrackingEnabled,
               ComputerUseArtifactSignal.matches(kind: kind, title: title, location: location)
         else { return }
+        computerUseArtifactSignalObserved = true
         publishNewComputerUseArtifacts()
         scheduleComputerUseArtifactRefresh()
     }

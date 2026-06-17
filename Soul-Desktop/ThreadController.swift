@@ -193,6 +193,7 @@ final class ThreadController {
     @ObservationIgnored var computerUseArtifactTrackingEnabled = false
     @ObservationIgnored var computerUseArtifactRefreshTask: Task<Void, Never>?
     @ObservationIgnored var computerUseArtifactTrackingStartedAt: Date?
+    @ObservationIgnored var computerUseArtifactSignalObserved = false
     @ObservationIgnored var computerUseArtifactSeenPaths: Set<String> = []
 
     /// Sends issued while a turn is already running get parked here and
