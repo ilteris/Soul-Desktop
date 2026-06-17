@@ -559,19 +559,25 @@ struct MarkdownView: View, Equatable {
             var token = String(s[r])
             while let last = token.last, ".,;:)]}\"'".contains(last) { token.removeLast() }
             guard token.count >= 3 else { continue }
-            if requirePathish {
-                let slashes = token.filter({ $0 == "/" }).count
-                let lastSeg = token.split(separator: "/").last.map(String.init) ?? ""
-                let hasExt = lastSeg.contains(".") && !lastSeg.hasSuffix(".") && !lastSeg.hasPrefix(".")
-                guard slashes >= 2 || (slashes >= 1 && hasExt) else { continue }
-            }
             // Skip if this range already has a link attribute — Apple's
             // markdown parser may have linkified `[label](url)` earlier, and
             // we don't want to clobber that.
             let tokenRange = s.range(of: token, range: r) ?? r
             guard let lower = AttributedString.Index(tokenRange.lowerBound, within: attr),
                   let upper = AttributedString.Index(tokenRange.upperBound, within: attr) else { continue }
-            let attrRange = lower..<upper
+            var attrRange = clampPathCandidateToFirstAttributeRun(lower..<upper, in: attr)
+            token = String(attr.characters[attrRange])
+            while let last = token.last, ".,;:)]}\"'".contains(last), attrRange.lowerBound < attrRange.upperBound {
+                token.removeLast()
+                attrRange = attrRange.lowerBound..<attr.characters.index(before: attrRange.upperBound)
+            }
+            guard token.count >= 3 else { continue }
+            if requirePathish {
+                let slashes = token.filter({ $0 == "/" }).count
+                let lastSeg = token.split(separator: "/").last.map(String.init) ?? ""
+                let hasExt = lastSeg.contains(".") && !lastSeg.hasSuffix(".") && !lastSeg.hasPrefix(".")
+                guard slashes >= 2 || (slashes >= 1 && hasExt) else { continue }
+            }
             if attr[attrRange].link != nil { continue }
             var comps = URLComponents()
             comps.scheme = "soulpath"
@@ -579,6 +585,25 @@ struct MarkdownView: View, Equatable {
             guard let url = comps.url else { continue }
             attr[attrRange].link = url
         }
+    }
+
+    /// Apple's markdown pass removes delimiter characters before this path
+    /// linker runs. A source like `file.swift.**Title**` therefore appears as
+    /// `file.swift.Title` in the plain attributed characters, and the path
+    /// regex would otherwise absorb the first title word into the link. When a
+    /// candidate crosses a markdown styling boundary, keep only the first
+    /// attributed run and let normal trailing-punctuation trimming finish it.
+    private static func clampPathCandidateToFirstAttributeRun(
+        _ range: Range<AttributedString.Index>,
+        in attr: AttributedString
+    ) -> Range<AttributedString.Index> {
+        guard let run = attr.runs.first(where: {
+            $0.range.lowerBound <= range.lowerBound && range.lowerBound < $0.range.upperBound
+        }) else {
+            return range
+        }
+        guard run.range.upperBound < range.upperBound else { return range }
+        return range.lowerBound..<run.range.upperBound
     }
 
     /// If `s` (after trimming) is exactly one inline-code span — i.e.
