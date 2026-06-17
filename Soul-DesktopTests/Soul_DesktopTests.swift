@@ -108,6 +108,82 @@ struct Soul_DesktopTests {
         #expect(disabledServers["peekaboo"] == nil)
     }
 
+    @Test func peekabooAppInventoryParserAcceptsServiceEnvelope() throws {
+        let output = """
+        {
+          "success": true,
+          "data": {
+            "applications": [
+              {
+                "processIdentifier": 42,
+                "bundleIdentifier": "com.apple.Safari",
+                "name": "Safari",
+                "isActive": false,
+                "windowCount": 2
+              },
+              {
+                "pid": 99,
+                "bundle_id": "com.apple.finder",
+                "app_name": "Finder",
+                "is_active": true,
+                "window_count": 1
+              }
+            ]
+          }
+        }
+        """
+
+        let apps = ComputerUseService.parseTargetApps(output)
+
+        #expect(apps.count == 2)
+        #expect(apps.first?.name == "Finder")
+        #expect(apps.first?.isActive == true)
+        #expect(apps.first?.targetArgument == "com.apple.finder")
+        #expect(apps[1].detail.contains("2 windows"))
+    }
+
+    @Test func peekabooSeeParserExtractsSnapshotAndElements() throws {
+        let output = """
+        {
+          "success": true,
+          "data": {
+            "snapshot_id": "snap-123",
+            "ui_map": "/Users/me/.peekaboo/snapshots/snap-123/snapshot.json",
+            "application_name": "Safari",
+            "window_title": "Example",
+            "element_count": 10,
+            "interactable_count": 4,
+            "capture_mode": "window",
+            "ui_elements": [
+              {
+                "id": "B1",
+                "role": "button",
+                "title": "Reload",
+                "label": null,
+                "description": "Reload this page"
+              },
+              {
+                "id": "T1",
+                "role_description": "text field",
+                "label": "Address"
+              }
+            ]
+          }
+        }
+        """
+
+        let inspection = try #require(ComputerUseService.parseInspection(output, imagePath: "/tmp/missing.png"))
+
+        #expect(inspection.snapshotID == "snap-123")
+        #expect(inspection.uiMapPath == "/Users/me/.peekaboo/snapshots/snap-123/snapshot.json")
+        #expect(inspection.targetDetail == "Safari - Example")
+        #expect(inspection.elementCount == 10)
+        #expect(inspection.interactableCount == 4)
+        #expect(inspection.elements.count == 2)
+        #expect(inspection.elements[0].displayName == "Reload")
+        #expect(inspection.elements[1].role == "text field")
+    }
+
     @Test func registryWatcherFloorsFullRescanCadence() throws {
         let now = DispatchTime(uptimeNanoseconds: 10_000_000_000)
         let lastFire = DispatchTime(uptimeNanoseconds: 9_000_000_000)
