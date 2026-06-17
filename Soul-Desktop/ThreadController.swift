@@ -190,7 +190,9 @@ final class ThreadController {
     @ObservationIgnored var streamPreviewPublishingSuspended = false
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
     @ObservationIgnored static let streamPreviewInterval: TimeInterval = 0.25
-    @ObservationIgnored var computerUseArtifactWatcherTask: Task<Void, Never>?
+    @ObservationIgnored var computerUseArtifactTrackingEnabled = false
+    @ObservationIgnored var computerUseArtifactRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var computerUseArtifactTrackingStartedAt: Date?
     @ObservationIgnored var computerUseArtifactSeenPaths: Set<String> = []
 
     /// Sends issued while a turn is already running get parked here and

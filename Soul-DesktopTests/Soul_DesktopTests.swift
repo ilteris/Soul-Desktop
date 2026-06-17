@@ -251,6 +251,13 @@ struct Soul_DesktopTests {
         #expect(artifacts.first?.title == "Peekaboo screenshot: ABC")
     }
 
+    @Test func computerUseArtifactSignalOnlyMatchesVisualToolActivity() {
+        #expect(ComputerUseArtifactSignal.matches(kind: "mcp:peekaboo", title: "see", location: nil))
+        #expect(ComputerUseArtifactSignal.matches(kind: "mcp:computer-use", title: "capture screenshot", location: nil))
+        #expect(!ComputerUseArtifactSignal.matches(kind: "execute", title: "swift test", location: nil))
+        #expect(!ComputerUseArtifactSignal.matches(kind: "search", title: "screenshot renderer source", location: nil))
+    }
+
     @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {
         let appSupport = URL(fileURLWithPath: "/Users/tester/Library/Application Support", isDirectory: true)
 

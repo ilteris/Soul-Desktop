@@ -65,23 +65,29 @@ struct ComputerUsePromptIntent {
 }
 
 extension ThreadController {
-    func startComputerUseArtifactWatcher() {
-        stopComputerUseArtifactWatcher()
-        guard ComputerUseAgentContext.isEnabled(for: provider),
-              ComputerUseService.bundledPeekabooPath() != nil
-        else { return }
-        computerUseArtifactSeenPaths = Set(ComputerUseArtifactScanner.currentArtifacts().map(\.path))
-        computerUseArtifactWatcherTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 750_000_000)
-                self?.publishNewComputerUseArtifacts()
-            }
-        }
+    func beginComputerUseArtifactTracking() {
+        stopComputerUseArtifactRefresh()
+        computerUseArtifactTrackingEnabled = ComputerUseAgentContext.isEnabled(for: provider)
+            && ComputerUseService.bundledPeekabooPath() != nil
+        guard computerUseArtifactTrackingEnabled else { return }
+        computerUseArtifactTrackingStartedAt = Date()
     }
 
-    func stopComputerUseArtifactWatcher() {
-        computerUseArtifactWatcherTask?.cancel()
-        computerUseArtifactWatcherTask = nil
+    func endComputerUseArtifactTracking() {
+        if computerUseArtifactTrackingEnabled {
+            publishNewComputerUseArtifacts()
+        }
+        stopComputerUseArtifactRefresh()
+        computerUseArtifactTrackingEnabled = false
+        computerUseArtifactTrackingStartedAt = nil
+    }
+
+    func observePotentialComputerUseArtifact(kind: String, title: String, location: String? = nil) {
+        guard computerUseArtifactTrackingEnabled,
+              ComputerUseArtifactSignal.matches(kind: kind, title: title, location: location)
+        else { return }
+        publishNewComputerUseArtifacts()
+        scheduleComputerUseArtifactRefresh()
     }
 
     func enrichWithComputerUseIfNeeded(turn: inout QueuedPrompt) async {
@@ -128,10 +134,28 @@ extension ThreadController {
     }
 
     private func publishNewComputerUseArtifacts() {
+        let cutoff = computerUseArtifactTrackingStartedAt?.addingTimeInterval(-1) ?? .distantPast
         let artifacts = ComputerUseArtifactScanner.currentArtifacts()
-        for artifact in artifacts where !computerUseArtifactSeenPaths.contains(artifact.path) {
+        for artifact in artifacts where artifact.modifiedAt >= cutoff && !computerUseArtifactSeenPaths.contains(artifact.path) {
             insertComputerUseArtifact(path: artifact.path, title: artifact.title)
         }
+    }
+
+    private func scheduleComputerUseArtifactRefresh() {
+        stopComputerUseArtifactRefresh()
+        computerUseArtifactRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.publishNewComputerUseArtifacts()
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.publishNewComputerUseArtifacts()
+        }
+    }
+
+    private func stopComputerUseArtifactRefresh() {
+        computerUseArtifactRefreshTask?.cancel()
+        computerUseArtifactRefreshTask = nil
     }
 
     private func insertComputerUseArtifact(path: String, title: String) {
@@ -154,6 +178,23 @@ struct ComputerUseArtifact: Hashable {
     let path: String
     let title: String
     let modifiedAt: Date
+}
+
+enum ComputerUseArtifactSignal {
+    static func matches(kind: String, title: String, location: String?) -> Bool {
+        let parts = [kind, title, location ?? ""]
+        let haystack = parts
+            .joined(separator: " ")
+            .lowercased()
+        if haystack.contains("peekaboo")
+            || haystack.contains("computer_use")
+            || haystack.contains("computer-use") {
+            return true
+        }
+        guard kind.lowercased().contains("mcp") else { return false }
+        let visualMCPNeedles = ["see", "screenshot", "snapshot", "image", "screen", "click", "type"]
+        return visualMCPNeedles.contains { haystack.contains($0) }
+    }
 }
 
 enum ComputerUseArtifactScanner {
