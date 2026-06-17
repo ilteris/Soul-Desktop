@@ -16,6 +16,7 @@ enum ComputerUseAgentContext {
             "<computer_use>",
             "Peekaboo MCP is available for permissioned visual/UI inspection and desktop interaction.",
             "Use it only when the user asks to inspect the screen/app UI, understand visible state, click/type in the UI, or debug a visual interaction.",
+            "For screenshot or visible-state requests, use Peekaboo/Soul computer use. Do not use AppleScript, screencapture, shell scripts, or browser-opening workarounds unless the user explicitly asks for that mechanism.",
             "Do not use Peekaboo for ordinary code search, editing, builds, tests, or non-visual repository work.",
             "If permissions are missing, ask the user to grant them in Soul Desktop's Computer pane instead of retrying blindly.",
             "Artifact directory: \(ComputerUseService.artifactDirectory().path)"

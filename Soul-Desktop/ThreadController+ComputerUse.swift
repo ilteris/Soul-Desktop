@@ -7,6 +7,7 @@ struct ComputerUsePromptIntent {
 
     static func detect(in text: String) -> ComputerUsePromptIntent? {
         let lower = text.lowercased()
+        let target = targetApp(in: lower)
         let screenshotAction = [
             "get a screenshot",
             "take a screenshot",
@@ -38,11 +39,26 @@ struct ComputerUsePromptIntent {
             "inspect ui",
             "inspect the app",
             "visual state",
-            "visible state"
+            "visible state",
+            "display state",
+            "current display",
+            "current screen",
+            "currently visible",
+            "what is visible",
+            "what's visible",
+            "what do you see",
+            "what is showing",
+            "what's showing"
         ].contains { lower.contains($0) }
+        let targetedInspection = target != nil
+            && ["inspect", "look at", "visible", "visual", "display", "screen", "showing", "state"]
+                .contains { lower.contains($0) }
+        let browserInspection = lower.contains("browser")
+            && ["inspect", "visible", "visual", "display", "screen", "showing", "state", "screenshot"]
+                .contains { lower.contains($0) }
 
-        guard screenshotAction || visualInspection else { return nil }
-        return ComputerUsePromptIntent(target: targetApp(in: lower))
+        guard screenshotAction || visualInspection || targetedInspection || browserInspection else { return nil }
+        return ComputerUsePromptIntent(target: target ?? (browserInspection ? "Google Chrome" : nil))
     }
 
     private static func targetApp(in lower: String) -> String? {
@@ -109,6 +125,8 @@ extension ThreadController {
             Screenshot captured by Soul Desktop before this turn.
             Path: \(capture.path)
             Target: \(intent.target ?? "frontmost app")
+            Use this screenshot as the visual source of truth for the user's request.
+            Do not open new browser windows, navigate pages, run AppleScript, run screencapture, or create another screenshot unless the user explicitly asks for a fresh capture.
             </computer_use_artifact>
             """
             turn.agent += context
