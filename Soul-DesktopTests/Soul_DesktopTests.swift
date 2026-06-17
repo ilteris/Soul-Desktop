@@ -184,6 +184,54 @@ struct Soul_DesktopTests {
         #expect(inspection.elements[1].role == "text field")
     }
 
+    @Test func computerUseExecutableResolutionSearchesHomebrewFallback() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-bin-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let tool = dir.appendingPathComponent("npx")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+
+        let resolved = ComputerUseService.resolveExecutable("npx", environment: ["PATH": dir.path])
+
+        #expect(resolved.executable == tool.path)
+        #expect(resolved.arguments.isEmpty)
+        #expect(ComputerUseService.isExecutableAvailable("npx", environment: ["PATH": dir.path]))
+        #expect(!ComputerUseService.isExecutableAvailable("missing-tool-\(UUID().uuidString)", environment: ["PATH": dir.path]))
+    }
+
+    @Test func computerUseExecutableResolutionPrefersBundledPeekaboo() throws {
+        let bundle = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("SoulDesktop-\(UUID().uuidString).app", isDirectory: true)
+        let helperDir = bundle
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+        try FileManager.default.createDirectory(at: helperDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let bundled = helperDir.appendingPathComponent("peekaboo")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: bundled)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundled.path)
+
+        let pathDir = bundle.appendingPathComponent("path-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: pathDir, withIntermediateDirectories: true)
+        let pathPeekaboo = pathDir.appendingPathComponent("peekaboo")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: pathPeekaboo)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pathPeekaboo.path)
+
+        let resolved = ComputerUseService.resolveExecutable(
+            "peekaboo",
+            environment: ["PATH": pathDir.path],
+            bundleURL: bundle
+        )
+
+        #expect(resolved.executable == bundled.path)
+        #expect(resolved.arguments.isEmpty)
+        #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundle) == bundled.path)
+    }
+
     @Test func registryWatcherFloorsFullRescanCadence() throws {
         let now = DispatchTime(uptimeNanoseconds: 10_000_000_000)
         let lastFire = DispatchTime(uptimeNanoseconds: 9_000_000_000)

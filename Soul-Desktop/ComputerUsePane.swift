@@ -608,6 +608,7 @@ enum ComputerUsePermissionState: Equatable {
 struct ComputerUseStatus: Equatable {
     var peekabooInstalled = false
     var peekabooVersion: String?
+    var peekabooSource: ComputerUseRuntimeSource = .missing
     var npxAvailable = false
     var nodeVersion: String?
     var bridgeDetail = "Not checked"
@@ -619,7 +620,7 @@ struct ComputerUseStatus: Equatable {
 
     var peekabooDetail: String {
         if let peekabooVersion {
-            return "CLI installed: \(peekabooVersion)"
+            return "\(peekabooSource.displayPrefix): \(peekabooVersion)"
         }
         if npxAvailable {
             let node = nodeVersion.map { " via Node \($0)" } ?? ""
@@ -630,6 +631,22 @@ struct ComputerUseStatus: Equatable {
 
     var canCapture: Bool {
         (peekabooInstalled || npxAvailable) && screenRecording != .missing
+    }
+}
+
+enum ComputerUseRuntimeSource: Equatable {
+    case bundled
+    case system
+    case npx
+    case missing
+
+    var displayPrefix: String {
+        switch self {
+        case .bundled: return "Bundled CLI"
+        case .system: return "CLI installed"
+        case .npx: return "NPX fallback"
+        case .missing: return "Peekaboo"
+        }
     }
 }
 
@@ -754,9 +771,14 @@ enum ComputerUseService {
         async let nodeVersion = commandOutput(["node", "--version"], timeout: 4)
 
         var status = ComputerUseStatus()
+        let peekabooResolution = resolveExecutable("peekaboo")
+        let npxResolution = resolveExecutable("npx")
         status.peekabooVersion = (await peekabooVersion).successOutput
-        status.peekabooInstalled = status.peekabooVersion != nil
-        status.npxAvailable = (await npxVersion).successOutput != nil
+        status.peekabooInstalled = status.peekabooVersion != nil || isResolvedExecutable(peekabooResolution)
+        status.npxAvailable = (await npxVersion).successOutput != nil || isResolvedExecutable(npxResolution)
+        status.peekabooSource = status.peekabooInstalled
+            ? runtimeSource(for: peekabooResolution.executable)
+            : (status.npxAvailable ? .npx : .missing)
         status.nodeVersion = (await nodeVersion).successOutput
         status.screenRecording = CGPreflightScreenCaptureAccess() ? .granted : .missing
         status.accessibility = AXIsProcessTrusted() ? .granted : .missing
@@ -899,13 +921,11 @@ enum ComputerUseService {
         currentDirectoryPath: String? = nil,
         timeout: TimeInterval
     ) async -> ComputerUseCommandResult {
-        let command = (await commandOutput(["peekaboo", "--version"], timeout: 2)).successOutput == nil
-            ? ("/usr/bin/env", ["npx", "--yes", "@steipete/peekaboo"] + arguments)
-            : ("/usr/bin/env", ["peekaboo"] + arguments)
+        let command = await peekabooCommand(arguments: arguments)
         do {
             let result = try await SafeProcessRunner.run(
-                executable: command.0,
-                arguments: command.1,
+                executable: command.executable,
+                arguments: command.arguments,
                 currentDirectoryPath: currentDirectoryPath,
                 timeoutSeconds: timeout
             )
@@ -919,16 +939,98 @@ enum ComputerUseService {
         guard let executable = command.first else {
             return ComputerUseCommandResult(status: 1, stdout: "", stderr: "No command", timedOut: false)
         }
+        let resolved = resolveExecutable(executable)
         do {
             let result = try await SafeProcessRunner.run(
-                executable: "/usr/bin/env",
-                arguments: [executable] + Array(command.dropFirst()),
+                executable: resolved.executable,
+                arguments: resolved.arguments + Array(command.dropFirst()),
                 timeoutSeconds: timeout
             )
             return ComputerUseCommandResult(result: result)
         } catch {
             return ComputerUseCommandResult(status: 1, stdout: "", stderr: error.localizedDescription, timedOut: false)
         }
+    }
+
+    static func resolveExecutable(
+        _ executable: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundleURL: URL = Bundle.main.bundleURL
+    ) -> (executable: String, arguments: [String]) {
+        if executable.hasPrefix("/") {
+            return (executable, [])
+        }
+
+        if executable == "peekaboo", let bundled = bundledPeekabooPath(bundleURL: bundleURL) {
+            return (bundled, [])
+        }
+
+        let searchPath = executableSearchPath(environment: environment)
+        for directory in searchPath {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(executable).path
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return (candidate, [])
+            }
+        }
+
+        return ("/usr/bin/env", [executable])
+    }
+
+    static func isExecutableAvailable(_ executable: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        isResolvedExecutable(resolveExecutable(executable, environment: environment))
+    }
+
+    static func bundledPeekabooPath(bundleURL: URL = Bundle.main.bundleURL) -> String? {
+        let candidate = bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent("peekaboo")
+            .path
+        return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
+    }
+
+    private static func isResolvedExecutable(_ resolved: (executable: String, arguments: [String])) -> Bool {
+        resolved.executable != "/usr/bin/env"
+    }
+
+    private static func runtimeSource(for executable: String) -> ComputerUseRuntimeSource {
+        if executable == bundledPeekabooPath() {
+            return .bundled
+        }
+        if executable == "/usr/bin/env" {
+            return .missing
+        }
+        return .system
+    }
+
+    private static func executableSearchPath(environment: [String: String]) -> [String] {
+        let pathEntries = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        let fallbackEntries = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        var seen = Set<String>()
+        return (pathEntries + fallbackEntries).filter { entry in
+            guard !entry.isEmpty, !seen.contains(entry) else { return false }
+            seen.insert(entry)
+            return true
+        }
+    }
+
+    private static func peekabooCommand(arguments: [String]) async -> (executable: String, arguments: [String]) {
+        if (await commandOutput(["peekaboo", "--version"], timeout: 2)).successOutput != nil {
+            let resolved = resolveExecutable("peekaboo")
+            return (resolved.executable, resolved.arguments + arguments)
+        }
+        let resolved = resolveExecutable("npx")
+        return (resolved.executable, resolved.arguments + ["--yes", "@steipete/peekaboo"] + arguments)
     }
 
     private static func jsonObject(from output: String) -> [String: Any]? {
