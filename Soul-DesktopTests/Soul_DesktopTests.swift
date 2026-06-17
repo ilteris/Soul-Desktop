@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import AppKit
 import SoulCore
 @testable import Soul_Desktop
 
@@ -276,6 +277,16 @@ struct Soul_DesktopTests {
         #expect(!dir.path.contains("/T/"))
     }
 
+    @Test func computerUseRejectsBlankWhiteCaptures() throws {
+        let white = try makeTestImage(width: 64, height: 64) { _, _ in NSColor.white }
+        let marked = try makeTestImage(width: 64, height: 64) { x, y in
+            x == y ? NSColor.black : NSColor.white
+        }
+
+        #expect(ComputerUseService.isBlankWhiteImage(white))
+        #expect(!ComputerUseService.isBlankWhiteImage(marked))
+    }
+
     @Test func computerUseAgentContextReportsLatestStableInspectionArtifact() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("soul-peekaboo-artifacts-\(UUID().uuidString)", isDirectory: true)
@@ -294,6 +305,35 @@ struct Soul_DesktopTests {
 
         let latest = try #require(ComputerUseAgentContext.latestInspectionArtifactPath(directory: dir))
         #expect(URL(fileURLWithPath: latest).standardizedFileURL == newer.standardizedFileURL)
+    }
+
+    private func makeTestImage(width: Int, height: Int, color: (Int, Int) -> NSColor) throws -> CGImage {
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelColor = color(x, y).usingColorSpace(.deviceRGB) ?? .black
+                let index = y * bytesPerRow + x * bytesPerPixel
+                pixels[index] = UInt8(clamping: Int((pixelColor.redComponent * 255).rounded()))
+                pixels[index + 1] = UInt8(clamping: Int((pixelColor.greenComponent * 255).rounded()))
+                pixels[index + 2] = UInt8(clamping: Int((pixelColor.blueComponent * 255).rounded()))
+                pixels[index + 3] = UInt8(clamping: Int((pixelColor.alphaComponent * 255).rounded()))
+            }
+        }
+
+        return try pixels.withUnsafeMutableBytes { rawBuffer in
+            let context = CGContext(
+                data: rawBuffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            )
+            return try #require(context?.makeImage())
+        }
     }
 
     @Test func registryWatcherFloorsFullRescanCadence() throws {

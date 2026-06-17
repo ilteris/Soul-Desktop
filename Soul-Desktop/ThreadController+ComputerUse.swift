@@ -230,11 +230,29 @@ extension ThreadController {
             </computer_use_request>
             """
         } catch {
-            appendComputerUseFailure(error, intent: intent, to: &turn)
+            await enrichWithBrowserInspectionFallback(turn: &turn, intent: intent, url: url, captureError: error)
+        }
+    }
+
+    private func enrichWithBrowserInspectionFallback(
+        turn: inout QueuedPrompt,
+        intent: ComputerUsePromptIntent,
+        url: String,
+        captureError: Error
+    ) async {
+        do {
+            let inspection = try await ComputerUseService.inspectUI(
+                target: intent.target,
+                projectPath: activeProjectPath
+            )
+            appendComputerUseInspection(inspection, intent: intent, url: url, captureError: captureError, to: &turn)
+        } catch {
+            appendComputerUseFailure(captureError, intent: intent, to: &turn)
             turn.agent += """
 
             <computer_use_request>
-            Soul Desktop could not complete the bundled Peekaboo browser-navigation capture for \(url): \(error.localizedDescription)
+            Soul Desktop could not complete the bundled Peekaboo browser-navigation capture for \(url): \(captureError.localizedDescription)
+            Soul Desktop also could not inspect the visible UI tree: \(error.localizedDescription)
             Do not fall back to Homebrew Peekaboo, AppleScript, osascript, screencapture, or shell browser automation. Ask the user to fix Soul Desktop computer-use permissions or bundled helper installation.
             </computer_use_request>
             """
@@ -283,6 +301,52 @@ extension ThreadController {
         Soul Desktop tried to capture a screenshot before this turn, but it failed: \(error.localizedDescription)
         </computer_use_artifact>
         """
+    }
+
+    private func appendComputerUseInspection(
+        _ inspection: ComputerUseInspection,
+        intent: ComputerUsePromptIntent,
+        url: String,
+        captureError: Error,
+        to turn: inout QueuedPrompt
+    ) {
+        let visibleElements = visibleComputerUseElements(from: inspection)
+        items.append(.toolCall(
+            id: UUID(),
+            kind: "computer_use",
+            title: intent.target.map { "Visible UI: \($0)" } ?? "Visible UI",
+            status: "captured",
+            locationHint: nil,
+            details: nil
+        ))
+
+        turn.agent += """
+
+        <computer_use_observation>
+        Soul Desktop opened \(url) with bundled Peekaboo, but the screenshot capture was rejected because it was blank: \(captureError.localizedDescription)
+        Target: \(inspection.targetDetail ?? intent.target ?? "frontmost app")
+        Visible UI text from Peekaboo accessibility inspection:
+        \(visibleElements)
+        Use this visible UI observation as the source of truth for the user's request.
+        Do not search for Peekaboo, do not run /opt/homebrew/bin/peekaboo, do not run AppleScript, do not run osascript, do not run screencapture, and do not inspect unrelated project files unless the user asks for code work.
+        </computer_use_observation>
+        """
+    }
+
+    private func visibleComputerUseElements(from inspection: ComputerUseInspection) -> String {
+        let names = inspection.elements
+            .map(\.displayName)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "group" && $0 != "link" && $0 != "button" && $0 != "tab" }
+
+        var unique: [String] = []
+        var seen = Set<String>()
+        for name in names where !seen.contains(name) {
+            seen.insert(name)
+            unique.append(name)
+        }
+
+        return unique.prefix(20).map { "- \($0)" }.joined(separator: "\n")
     }
 
     private func publishNewComputerUseArtifacts() {

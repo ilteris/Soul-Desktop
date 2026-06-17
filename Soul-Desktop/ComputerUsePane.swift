@@ -826,6 +826,11 @@ enum ComputerUseService {
                 NSLocalizedDescriptionKey: result.summary.isEmpty ? "Peekaboo capture failed" : result.summary
             ])
         }
+        if isBlankWhiteImage(at: file) {
+            throw NSError(domain: "ComputerUse", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Peekaboo capture produced a blank white image"
+            ])
+        }
         return ComputerUseCapture(path: file.path, image: NSImage(contentsOf: file))
     }
 
@@ -1002,6 +1007,53 @@ enum ComputerUseService {
             .appendingPathComponent("peekaboo")
             .path
         return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : nil
+    }
+
+    static func isBlankWhiteImage(at url: URL) -> Bool {
+        guard let image = NSImage(contentsOf: url),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return false }
+        return isBlankWhiteImage(cgImage)
+    }
+
+    static func isBlankWhiteImage(_ cgImage: CGImage) -> Bool {
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else { return false }
+        guard cgImage.bitsPerComponent == 8,
+              cgImage.bitsPerPixel >= 8,
+              let dataProvider = cgImage.dataProvider,
+              let data = dataProvider.data,
+              let bytes = CFDataGetBytePtr(data)
+        else { return false }
+
+        let dataLength = CFDataGetLength(data)
+        let bytesPerPixel = max(1, cgImage.bitsPerPixel / 8)
+        let bytesPerRow = cgImage.bytesPerRow
+
+        let sampleColumns = min(width, 80)
+        let sampleRows = min(height, 80)
+        var samples = 0
+        var nonWhiteSamples = 0
+
+        for row in 0..<sampleRows {
+            let y = min(height - 1, Int((Double(row) + 0.5) * Double(height) / Double(sampleRows)))
+            for column in 0..<sampleColumns {
+                let x = min(width - 1, Int((Double(column) + 0.5) * Double(width) / Double(sampleColumns)))
+                let index = y * bytesPerRow + x * bytesPerPixel
+                guard index >= 0 && index < dataLength else { continue }
+
+                samples += 1
+                let byteCount = min(bytesPerPixel, min(4, dataLength - index))
+                let looksWhite = (0..<byteCount).allSatisfy { bytes[index + $0] >= 251 }
+                if !looksWhite {
+                    nonWhiteSamples += 1
+                }
+            }
+        }
+
+        guard samples > 0 else { return false }
+        return Double(nonWhiteSamples) / Double(samples) < 0.0025
     }
 
     private static func jsonObject(from output: String) -> [String: Any]? {
