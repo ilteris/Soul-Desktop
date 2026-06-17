@@ -188,6 +188,8 @@ extension ThreadController {
 
     func enrichWithComputerUseIfNeeded(turn: inout QueuedPrompt) async {
         guard let intent = ComputerUsePromptIntent.detect(in: turn.display) else { return }
+        computerUseActivity = computerUseActivityTitle(for: intent)
+        defer { computerUseActivity = nil }
 
         if let navigationURL = intent.navigationURL {
             await enrichWithBrowserNavigationCapture(turn: &turn, intent: intent, url: navigationURL)
@@ -203,6 +205,13 @@ extension ThreadController {
         } catch {
             appendComputerUseFailure(error, intent: intent, to: &turn)
         }
+    }
+
+    private func computerUseActivityTitle(for intent: ComputerUsePromptIntent) -> String {
+        if let target = intent.target {
+            return "Inspecting \(target)..."
+        }
+        return "Inspecting screen..."
     }
 
     private func enrichWithBrowserNavigationCapture(turn: inout QueuedPrompt, intent: ComputerUsePromptIntent, url: String) async {

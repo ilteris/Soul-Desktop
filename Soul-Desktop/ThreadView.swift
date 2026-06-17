@@ -20,7 +20,6 @@ struct ThreadView: View {
     var branchSeedLoading: Bool = false
     var terminalActive: Bool = false
     var onToggleTerminal: () -> Void = {}
-    var onOpenComputerUse: () -> Void = {}
 
     @State private var renaming = false
     @State private var renameDraft = ""
@@ -333,8 +332,6 @@ struct ThreadView: View {
                 },
                 onClearQueue: { controller.clearQueue() },
                 onSteer: { Task { await controller.steerToNextQueued() } },
-                computerUseEnabled: ComputerUseAgentContext.isEnabled(for: controller.provider),
-                onOpenComputerUse: onOpenComputerUse,
                 terminalActive: terminalActive,
                 onToggleTerminal: onToggleTerminal,
                 permissionMode: Binding(

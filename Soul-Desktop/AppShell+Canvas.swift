@@ -157,8 +157,7 @@ extension AppShell {
                     onBranchFromDisabled: { provider in branchFrom(ctrl, to: provider) },
                     branchSeedLoading: branchSeedLoading,
                     terminalActive: showTerminal,
-                    onToggleTerminal: toggleTerminal,
-                    onOpenComputerUse: openComputerUse
+                    onToggleTerminal: toggleTerminal
                 )
                 .environment(\.autoCompactController, autoCompact)
                 .id(ctrl.id)
@@ -190,7 +189,6 @@ extension AppShell {
                         pendingPermissionMode: $pendingPermissionMode,
                         provider: harness,
                         onPickHarness: onPickHarness,
-                        onOpenComputerUse: openComputerUse,
                         branchSeedLoading: branchSeedLoading,
                         droppedAttachments: $emptyStateDroppedAttachments
                     )

@@ -195,6 +195,7 @@ final class ThreadController {
     @ObservationIgnored var computerUseArtifactTrackingStartedAt: Date?
     @ObservationIgnored var computerUseArtifactSignalObserved = false
     @ObservationIgnored var computerUseArtifactSeenPaths: Set<String> = []
+    var computerUseActivity: String? = nil
 
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each

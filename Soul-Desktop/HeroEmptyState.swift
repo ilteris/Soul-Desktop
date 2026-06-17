@@ -16,7 +16,6 @@ struct HeroEmptyState: View {
     @Binding var pendingPermissionMode: PermissionMode
     var provider: Provider = .geminiCLI
     var onPickHarness: (Provider) -> Void = { _ in }
-    var onOpenComputerUse: () -> Void = {}
     var branchSeedLoading: Bool = false
     @State private var builtInCommands: [SlashCommand] = []
     @Binding var droppedAttachments: [String]
@@ -43,7 +42,6 @@ struct HeroEmptyState: View {
                 devURL: devURL,
                 devRunning: devRunning,
                 onRunLocal: onRunLocal,
-                onOpenComputerUse: onOpenComputerUse,
                 permissionMode: $pendingPermissionMode,
                 provider: provider,
                 onPickHarness: onPickHarness,

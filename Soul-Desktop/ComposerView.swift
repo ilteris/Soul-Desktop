@@ -39,8 +39,6 @@ struct ComposerView: View {
     var devURL: String? = nil
     var devRunning: Bool = false
     var onRunLocal: (String, String?) -> Void = { _, _ in }
-    var computerUseEnabled: Bool = false
-    var onOpenComputerUse: () -> Void = {}
     /// Terminal toggle, surfaced in the composer footer alongside the
     /// project/branch chips. SOUL-200.
     var terminalActive: Bool = false
@@ -490,9 +488,6 @@ struct ComposerView: View {
                     RunLocalChip(isRunning: devRunning) {
                         onRunLocal(cmd, devURL)
                     }
-                }
-                if ComputerUseProvider(provider) != nil {
-                    ComputerUseChip(enabled: computerUseEnabled, action: onOpenComputerUse)
                 }
                 Spacer(minLength: 0)
                 Button(action: onToggleTerminal) {
