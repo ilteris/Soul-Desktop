@@ -349,6 +349,8 @@ extension ThreadController {
             return "edit|\(lineCount(oldS))|\(lineCount(newS))"
         case .write(let content):
             return "write|\(lineCount(content))"
+        case .patch(let lines):
+            return "patch|\(lines.filter { $0.kind == .removed }.count)|\(lines.filter { $0.kind == .added }.count)"
         case .output(let text):
             return "output|\(text.count)"
         case .subagent:

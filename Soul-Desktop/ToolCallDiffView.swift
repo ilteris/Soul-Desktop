@@ -29,6 +29,8 @@ struct DiffView: View {
                 // Pure addition: every line is `.added`. Same renderer; the
                 // left column shows blank for each row.
                 diffRows(old: "", new: content, startLine: details.startLine ?? 1)
+            case .patch(let lines):
+                patchRows(lines)
             case .output(let text):
                 CollapsibleBubbleBody(
                     text: text,
@@ -54,6 +56,56 @@ struct DiffView: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(SoulColor.border, lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private func patchRows(_ rows: [ToolCallDetails.DiffLine]) -> some View {
+        let gutter = Self.gutterWidth(for: rows)
+        let cap = revealedRowCount ?? Self.defaultRowCap
+        let isCapped = rows.count > cap
+        let visible = isCapped ? Array(rows.prefix(cap)) : rows
+        let remaining = max(0, rows.count - cap)
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(visible.enumerated()), id: \.offset) { _, row in
+                diffLineView(row, gutterWidth: gutter)
+            }
+            if isCapped {
+                let chunk = min(Self.revealChunk, remaining)
+                Button {
+                    revealedRowCount = min(rows.count, cap + Self.revealChunk)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10))
+                        Text("Show \(chunk) more lines (\(remaining) remaining)")
+                            .font(SoulFont.code(11))
+                    }
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+            if (revealedRowCount ?? Self.defaultRowCap) > Self.defaultRowCap {
+                Button {
+                    revealedRowCount = Self.defaultRowCap
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10))
+                        Text("Collapse")
+                            .font(SoulFont.code(11))
+                    }
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Compute aligned diff rows via Swift's `CollectionDifference` so
@@ -109,6 +161,18 @@ struct DiffView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func diffLineView(_ line: ToolCallDetails.DiffLine, gutterWidth: CGFloat) -> some View {
+        switch line.kind {
+        case .unchanged:
+            inlineRow(oldNum: line.oldLine, newNum: line.newLine, sign: " ", text: line.text, tint: nil, gutterWidth: gutterWidth)
+        case .removed:
+            inlineRow(oldNum: line.oldLine, newNum: nil, sign: "-", text: line.text, tint: .red, gutterWidth: gutterWidth)
+        case .added:
+            inlineRow(oldNum: nil, newNum: line.newLine, sign: "+", text: line.text, tint: .green, gutterWidth: gutterWidth)
+        }
     }
 
     /// SOUL-SOUL_DESKTOP-169: unified inline diff layout. The old two-column
@@ -227,6 +291,16 @@ struct DiffView: View {
             case .removed(let n, _): maxNum = max(maxNum, n)
             case .added(let n, _): maxNum = max(maxNum, n)
             }
+        }
+        let chars = max(3, String(maxNum).count)
+        return CGFloat(chars) * 7 + 4
+    }
+
+    private static func gutterWidth(for rows: [ToolCallDetails.DiffLine]) -> CGFloat {
+        var maxNum = 1
+        for row in rows {
+            if let oldLine = row.oldLine { maxNum = max(maxNum, oldLine) }
+            if let newLine = row.newLine { maxNum = max(maxNum, newLine) }
         }
         let chars = max(3, String(maxNum).count)
         return CGFloat(chars) * 7 + 4

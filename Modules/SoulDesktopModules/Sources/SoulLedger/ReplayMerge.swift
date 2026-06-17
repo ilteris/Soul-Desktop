@@ -85,6 +85,8 @@ private func toolCallFingerprint(kind: String, title: String, loc: String?, deta
         body = "edit|\(transcriptLineCount(oldS))|\(transcriptLineCount(newS))"
     case .write(let content):
         body = "write|\(transcriptLineCount(content))"
+    case .patch(let lines):
+        body = "patch|\(lines.filter { $0.kind == .removed }.count)|\(lines.filter { $0.kind == .added }.count)"
     case .output(let text):
         body = "output|\(text.count)"
     case .subagent, .claudeAgent:

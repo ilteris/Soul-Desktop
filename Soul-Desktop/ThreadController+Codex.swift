@@ -861,33 +861,7 @@ extension ThreadController {
         else { return nil }
         let kind = stringField(change, "kind") ?? "modify"
         let diff = stringField(change, "diff") ?? ""
-        let startLine = Self.firstHunkStartLine(in: diff)
-        if kind == "add" {
-            return ToolCallDetails(kind: .write(content: diff), startLine: startLine)
-        }
-        // For modify/delete we expose the raw diff in newString and leave
-        // oldString empty — the side-by-side diff card still renders
-        // something the user can scan; a richer hunk parser is a follow-up.
-        return ToolCallDetails(kind: .edit(oldString: "", newString: diff), startLine: startLine)
-    }
-
-    /// Parse the new-file start line from the first unified-diff hunk header
-    /// (`@@ -a,b +c,d @@` → `c`). Codex ships file changes as a unified diff
-    /// blob with no separate location field, so this is the only anchor the
-    /// chip can show. Returns nil when no parseable hunk header is present
-    /// (the chip then degrades to the bare filename).
-    static func firstHunkStartLine(in diff: String) -> Int? {
-        for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
-            guard line.hasPrefix("@@") else { continue }
-            // Find the `+c` token after the first space following `@@`. A
-            // hunk header with no `+` is corrupt — skip it and try the next
-            // hunk rather than abandoning the whole diff.
-            guard let plus = line.firstIndex(of: "+") else { continue }
-            let after = line[line.index(after: plus)...]
-            let digits = after.prefix { $0.isNumber }
-            return Int(digits)
-        }
-        return nil
+        return UnifiedDiffParser.details(from: diff, changeKind: kind)
     }
 
     /// Title for a fileChange row — first path's basename, falls back to a

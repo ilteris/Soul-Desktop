@@ -149,6 +149,11 @@ struct ToolCallGroupRow: View {
             return (diff.insertions.count, diff.removals.count)
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
+        case .patch(let lines):
+            return (
+                lines.filter { $0.kind == .added }.count,
+                lines.filter { $0.kind == .removed }.count
+            )
         case .output, .subagent, .claudeAgent:
             return (0, 0)
         }
@@ -203,6 +208,18 @@ struct ToolCallGroupRow: View {
                 case .write(let content):
                     combined += "--- /dev/null\n+++ \(filename)\n"
                     combined += content.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
+                case .patch(let lines):
+                    combined += "--- \(filename) (old)\n+++ \(filename) (new)\n"
+                    for line in lines {
+                        switch line.kind {
+                        case .unchanged:
+                            combined += " \(line.text)\n"
+                        case .removed:
+                            combined += "-\(line.text)\n"
+                        case .added:
+                            combined += "+\(line.text)\n"
+                        }
+                    }
                 case .output(let text):
                     combined += "--- \(filename) output ---\n\(text)\n"
                 case .subagent, .claudeAgent:
@@ -216,4 +233,3 @@ struct ToolCallGroupRow: View {
         NSPasteboard.general.setString(combined.trimmingCharacters(in: .whitespacesAndNewlines), forType: .string)
     }
 }
-

@@ -117,6 +117,11 @@ struct ToolCallRow: View {
             return (diff.insertions.count, diff.removals.count)
         case .write(let content):
             return (lineCount(content), details.previousLineCount ?? 0)
+        case .patch(let lines):
+            return (
+                lines.filter { $0.kind == .added }.count,
+                lines.filter { $0.kind == .removed }.count
+            )
         case .output, .subagent, .claudeAgent:
             return (0, 0)
         }

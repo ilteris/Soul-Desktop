@@ -21,9 +21,30 @@ public struct PlanEntry: Hashable {
 /// the before/after content for Edit/Write operations so the card can show
 /// an inline diff on expand. Other tools (Read, Bash, Grep) leave this nil.
 public struct ToolCallDetails: Hashable {
+    public struct DiffLine: Hashable, Sendable {
+        public enum Kind: Hashable, Sendable {
+            case unchanged
+            case removed
+            case added
+        }
+
+        public var kind: Kind
+        public var oldLine: Int?
+        public var newLine: Int?
+        public var text: String
+
+        public init(kind: Kind, oldLine: Int?, newLine: Int?, text: String) {
+            self.kind = kind
+            self.oldLine = oldLine
+            self.newLine = newLine
+            self.text = text
+        }
+    }
+
     public enum Kind: Hashable {
         case edit(oldString: String, newString: String)
         case write(content: String)
+        case patch(lines: [DiffLine])
         case output(text: String)
         /// SOUL-SOUL_DESKTOP-111: structured payload for delegate_to_specialist
         /// tool calls so ThreadView can render a SubagentCard instead of the
