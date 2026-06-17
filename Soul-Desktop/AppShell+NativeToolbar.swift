@@ -34,6 +34,15 @@ extension AppShell {
                     }
                     SessionStatsChip(controller: thread)
                     AgentLogChip(controller: thread)
+                    Button(action: { toggleComputerUse() }) {
+                        Image(systemName: "cursorarrow.rays")
+                            .font(.system(size: SoulMetric.icon, weight: .regular))
+                            .foregroundStyle(rightPane.computerUseVisible ? SoulColor.accent : SoulColor.fgMuted)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.soulHover)
+                    .help("Open computer use")
                     ThreadOverflowMenu(
                         controller: thread,
                         onSmokeTest: { showSmoke = true },

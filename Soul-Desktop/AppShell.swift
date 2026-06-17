@@ -63,6 +63,7 @@ struct AppShell: View {
     @StateObject var terminalModel = TerminalPanelModel()
     @State var showTerminal: Bool = false
     @AppStorage("soul.review.visible") var showReview: Bool = false
+    @AppStorage("soul.computerUse.visible") var showComputerUse: Bool = false
     @State var rightPane = AppRightPaneCoordinator()
     @AppStorage("soul.sidebar.visible") var showSidebar: Bool = true
     /// SOUL-208: NavigationSplitView visibility binding.
@@ -200,6 +201,13 @@ struct AppShell: View {
         }
     }
 
+    func toggleComputerUse() {
+        withAnimation(sidePanelAnimation) {
+            rightPane.toggleComputerUse()
+            showComputerUse = rightPane.computerUseVisible
+        }
+    }
+
     private func setFilePreviewPath(_ path: String?) {
         withAnimation(sidePanelAnimation) {
             rightPane.setFilePreviewPath(path)
@@ -317,6 +325,7 @@ struct AppShell: View {
         }
         .onAppear {
             rightPane.reviewVisible = showReview
+            rightPane.computerUseVisible = showComputerUse
         }
         .task {
             await workspace.start()

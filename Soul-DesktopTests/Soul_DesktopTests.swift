@@ -61,6 +61,53 @@ struct Soul_DesktopTests {
         #expect(result.timedOut == true)
     }
 
+    @Test func peekabooCodexMCPSectionRoundTrips() throws {
+        let original = """
+        model = "gpt-5.5"
+
+        [mcp_servers.node_repl]
+        command = "node"
+        """
+
+        let enabled = ComputerUseMCPConfig.setCodexPeekaboo(original, enabled: true)
+
+        #expect(ComputerUseMCPConfig.codexPeekabooEnabled(in: enabled))
+        #expect(enabled.contains("[mcp_servers.peekaboo]"))
+        #expect(enabled.contains(#"args = ["-y", "@steipete/peekaboo", "mcp"]"#))
+        #expect(enabled.contains(#"PEEKABOO_DISABLE_TOOLS = "capture,agent,run,config,clean""#))
+
+        let disabled = ComputerUseMCPConfig.setCodexPeekaboo(enabled, enabled: false)
+
+        #expect(!ComputerUseMCPConfig.codexPeekabooEnabled(in: disabled))
+        #expect(disabled.contains("[mcp_servers.node_repl]"))
+        #expect(!disabled.contains("[mcp_servers.peekaboo]"))
+    }
+
+    @Test func peekabooJSONMCPRegistrationWritesExpectedShape() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-json-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let path = dir.appendingPathComponent("settings.json").path
+        try ComputerUseMCPConfig.setJSONEnabled(true, at: path)
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(root["mcpServers"] as? [String: Any])
+        let peekaboo = try #require(servers["peekaboo"] as? [String: Any])
+
+        #expect(peekaboo["command"] as? String == "npx")
+        #expect(peekaboo["args"] as? [String] == ["-y", "@steipete/peekaboo", "mcp"])
+        #expect((peekaboo["env"] as? [String: String])?["PEEKABOO_DISABLE_TOOLS"] == "capture,agent,run,config,clean")
+
+        try ComputerUseMCPConfig.setJSONEnabled(false, at: path)
+        let disabledData = try Data(contentsOf: URL(fileURLWithPath: path))
+        let disabledRoot = try #require(JSONSerialization.jsonObject(with: disabledData) as? [String: Any])
+        let disabledServers = try #require(disabledRoot["mcpServers"] as? [String: Any])
+        #expect(disabledServers["peekaboo"] == nil)
+    }
+
     @Test func registryWatcherFloorsFullRescanCadence() throws {
         let now = DispatchTime(uptimeNanoseconds: 10_000_000_000)
         let lastFire = DispatchTime(uptimeNanoseconds: 9_000_000_000)
