@@ -256,6 +256,7 @@ struct ComputerUseArtifactRow: View {
     let title: String
     let status: String
     let path: String?
+    var note: String?
     var isHistorical: Bool = false
     @State private var copied = false
 
@@ -277,6 +278,12 @@ struct ComputerUseArtifactRow: View {
                 Text(status == "failed" ? "failed" : "captured")
                     .font(SoulFont.ui(10, weight: .medium))
                     .foregroundStyle(status == "failed" ? Color.red.opacity(0.85) : SoulColor.fgMuted)
+            }
+
+            if let note, !note.isEmpty {
+                Text(note)
+                    .font(SoulFont.ui(11))
+                    .foregroundStyle(SoulColor.fgMuted)
             }
 
             if let image {

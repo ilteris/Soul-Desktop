@@ -317,7 +317,7 @@ extension ThreadController {
             title: intent.target.map { "Visible UI: \($0)" } ?? "Visible UI",
             status: "captured",
             locationHint: nil,
-            details: nil
+            details: ToolCallDetails(kind: .output(text: "Screenshot was blank; using visible UI inspection instead."))
         ))
 
         turn.agent += """
