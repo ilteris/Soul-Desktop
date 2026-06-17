@@ -25,6 +25,11 @@ struct ReplayMergeTests {
         return (hooksURL.path, dir.path)
     }
 
+    private func jsonLine(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
     private func merge(_ f: (hooksPath: String, sessionDir: String)) -> [ReplayEvent] {
         // projectKey/projectPath are dummies: the Claude/Gemini transcript
         // readers resolve ~/.claude and ~/.gemini paths that don't exist for a
@@ -109,5 +114,157 @@ struct ReplayMergeTests {
         let events = merge(f)
 
         #expect(events.count == 1)
+    }
+
+    @Test("renders delegation records as subagent card and strips duplicated progress prelude")
+    func stripsDelegationProgressPrelude() throws {
+        let noisyAgent = """
+        I will invoke our specialized `@adversarial_judge` subagent to perform an exhaustive audit.
+        I will search the session registry for any delegated subagent outputs to retrieve the judge's full audit envelope.
+        I will read the newly generated subagent delegation report `/tmp/del_adversarial_judge.json`.
+        Our `@adversarial_judge` subagent has completed a deep architectural and security audit.
+
+        The useful summary stays visible.
+        """
+        let cleanAgent = """
+        Our `@adversarial_judge` subagent has completed a deep architectural and security audit.
+
+        The useful summary stays visible.
+        """
+        let f = try fixture(hooks: [
+            try jsonLine([
+                "event": "UserPrompt",
+                "timestamp": "2026-05-25T15:00:00Z",
+                "text": "delegate to subagent"
+            ]),
+            try jsonLine([
+                "event": "DelegationStarted",
+                "timestamp": "2026-05-25T15:00:01Z",
+                "delegation_id": "invoke_agent__abc123",
+                "specialist": "adversarial_judge",
+                "objective": "Audit the sandbox spec",
+                "color": "#8E8E93",
+                "live_log": "/tmp/live.log"
+            ]),
+            try jsonLine([
+                "event": "DelegationCompleted",
+                "timestamp": "2026-05-25T15:00:02Z",
+                "delegation_id": "invoke_agent__abc123",
+                "specialist": "adversarial_judge",
+                "status": "completed",
+                "finding_path": "/tmp/del_adversarial_judge.json",
+                "color": "#8E8E93"
+            ]),
+            try jsonLine([
+                "event": "AfterAgent",
+                "timestamp": "2026-05-25T15:00:03Z",
+                "content": noisyAgent
+            ]),
+            try jsonLine([
+                "event": "AfterAgent",
+                "timestamp": "2026-05-25T15:00:04Z",
+                "content": cleanAgent
+            ])
+        ])
+
+        let events = merge(f)
+
+        #expect(events.count == 3)
+        guard case .toolCall(_, let kind, let title, let status, _, let details) = events[1].item else {
+            Issue.record("delegation did not render as tool call")
+            return
+        }
+        #expect(kind == "delegate")
+        #expect(title == "@adversarial_judge")
+        #expect(status == "completed")
+        guard case .subagent(let specialist, let objective, let subagentId, _, let findingPath) = details?.kind else {
+            Issue.record("delegation did not carry subagent details")
+            return
+        }
+        #expect(specialist == "adversarial_judge")
+        #expect(objective == "Audit the sandbox spec")
+        #expect(subagentId == "invoke_agent__abc123")
+        #expect(findingPath == "/tmp/del_adversarial_judge.json")
+
+        guard case .agentMessage(_, let text, _, _) = events[2].item else {
+            Issue.record("final event did not preserve useful summary")
+            return
+        }
+        #expect(text == cleanAgent)
+        #expect(!text.contains("I will search the session registry"))
+        #expect(!text.contains("subagent delegation report"))
+    }
+
+    @Test("suppresses status-only delegation assistant prose")
+    func suppressesStatusOnlyDelegationProse() throws {
+        let f = try fixture(hooks: [
+            try jsonLine([
+                "event": "DelegationStarted",
+                "timestamp": "2026-05-25T15:00:01Z",
+                "delegation_id": "invoke_agent__abc123",
+                "specialist": "adversarial_judge",
+                "objective": "Audit the sandbox spec"
+            ]),
+            try jsonLine([
+                "event": "AfterAgent",
+                "timestamp": "2026-05-25T15:00:02Z",
+                "content": "Routing Gemini native delegation through soul delegate.Started @adversarial_judge on geminiRunning tool: read_fileCompleted tool: read_fileSoul delegate still running (30s elapsed)."
+            ])
+        ])
+
+        let events = merge(f)
+
+        #expect(events.count == 1)
+        guard case .toolCall(_, _, _, _, _, let details) = events[0].item else {
+            Issue.record("delegation card missing")
+            return
+        }
+        guard case .subagent = details?.kind else {
+            Issue.record("delegation card missing subagent details")
+            return
+        }
+    }
+
+    @Test("does not sanitize unrelated later turns after delegation")
+    func keepsUnrelatedLaterDelegationMentions() throws {
+        let laterText = "A later subagent design note can mention Running tool: examples without being hidden."
+        let f = try fixture(hooks: [
+            try jsonLine([
+                "event": "UserPrompt",
+                "timestamp": "2026-05-25T15:00:00Z",
+                "text": "delegate to subagent"
+            ]),
+            try jsonLine([
+                "event": "DelegationStarted",
+                "timestamp": "2026-05-25T15:00:01Z",
+                "delegation_id": "invoke_agent__abc123",
+                "specialist": "adversarial_judge",
+                "objective": "Audit the sandbox spec"
+            ]),
+            try jsonLine([
+                "event": "AfterAgent",
+                "timestamp": "2026-05-25T15:00:02Z",
+                "content": "Routing Gemini native delegation through soul delegate.Started @adversarial_judge on geminiRunning tool: read_fileCompleted tool: read_fileSoul delegate still running (30s elapsed)."
+            ]),
+            try jsonLine([
+                "event": "UserPrompt",
+                "timestamp": "2026-05-25T15:01:00Z",
+                "text": "now talk about architecture"
+            ]),
+            try jsonLine([
+                "event": "AfterAgent",
+                "timestamp": "2026-05-25T15:01:01Z",
+                "content": laterText
+            ])
+        ])
+
+        let events = merge(f)
+
+        #expect(events.count == 4)
+        guard case .agentMessage(_, let text, _, _) = events[3].item else {
+            Issue.record("later assistant text missing")
+            return
+        }
+        #expect(text == laterText)
     }
 }

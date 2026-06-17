@@ -253,8 +253,8 @@ public enum LedgerReplayMerge {
         guard FileManager.default.fileExists(atPath: path) else { return [] }
 
         let records = readLedgerReplayRecords(atPath: path)
-
         var out: [ReplayEvent] = []
+        var currentTurnDelegations: [DelegationContentSanitizerContext] = []
         for record in records {
             let ts = record.timestamp
 
@@ -274,7 +274,10 @@ public enum LedgerReplayMerge {
                     ))
                 }
             case .afterAgent(let payload):
-                let content = payload.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                let content = DelegationContentSanitizer.sanitizeAgentText(
+                    payload.content,
+                    contexts: currentTurnDelegations
+                )
                 if !content.isEmpty {
                     out.append(ReplayEvent(
                         id: UUID(),
@@ -285,6 +288,7 @@ public enum LedgerReplayMerge {
                     ))
                 }
             case .userPrompt(let payload):
+                currentTurnDelegations.removeAll(keepingCapacity: true)
                 // Soul-Desktop writes the user's literal prompt into hooks when
                 // it owns the session (no terminal-side Claude transcript). Without
                 // this, a gemini session whose only artifact is the kernel hooks
@@ -315,6 +319,7 @@ public enum LedgerReplayMerge {
                     ))
                 }
             case .delegationStarted(let payload, let completed):
+                currentTurnDelegations.append(delegationContext(from: payload, completed: completed))
                 if let item = delegationItem(from: payload, completed: completed) {
                     out.append(ReplayEvent(id: UUID(), timestamp: ts, item: item))
                 }
@@ -334,6 +339,17 @@ public enum LedgerReplayMerge {
             }
         }
         return out
+    }
+
+    private static func delegationContext(
+        from payload: LedgerDelegationStartedPayload,
+        completed: LedgerDelegationCompletedPayload?
+    ) -> DelegationContentSanitizerContext {
+        DelegationContentSanitizerContext(
+            specialist: payload.specialist,
+            delegationId: payload.delegationId,
+            findingPath: completed?.findingPath ?? payload.findingPath
+        )
     }
 
     private static func delegationItem(

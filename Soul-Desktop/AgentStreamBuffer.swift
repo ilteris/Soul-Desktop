@@ -80,9 +80,9 @@ final class AgentStreamBuffer {
         }
     }
 
-    func drainAll() -> [CompletedSegment] {
+    func drainAll(sanitizeMessage: ((String) -> String)? = nil) -> [CompletedSegment] {
         queue.sync {
-            let completed = segments.compactMap(completedSegment)
+            let completed = segments.compactMap { completedSegment($0, sanitizeMessage: sanitizeMessage) }
             completed.forEach(appendCompletedPreview)
             segments.removeAll(keepingCapacity: true)
             codexIdsByItemId.removeAll(keepingCapacity: true)
@@ -91,9 +91,19 @@ final class AgentStreamBuffer {
         }
     }
 
-    func preview() -> String? {
+    func preview(sanitizeMessage: ((String) -> String)? = nil) -> String? {
         queue.sync {
-            let text = ([completedPreviewText] + segments.map(\.text))
+            let liveTexts = segments.compactMap { segment -> String? in
+                let text: String
+                if segment.kind == .message, let sanitizeMessage {
+                    text = sanitizeMessage(segment.text)
+                } else {
+                    text = segment.text
+                }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : text
+            }
+            let text = ([completedPreviewText] + liveTexts)
                 .joined(separator: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
@@ -149,14 +159,20 @@ final class AgentStreamBuffer {
         completedPreviewText += text
     }
 
-    private func completedSegment(_ segment: Segment) -> CompletedSegment? {
-        guard !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    private func completedSegment(_ segment: Segment, sanitizeMessage: ((String) -> String)? = nil) -> CompletedSegment? {
+        let text: String
+        if segment.kind == .message, let sanitizeMessage {
+            text = sanitizeMessage(segment.text)
+        } else {
+            text = segment.text
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return CompletedSegment(
             id: segment.id,
             kind: segment.kind,
-            text: segment.text,
+            text: text,
             timestamp: segment.timestamp
         )
     }

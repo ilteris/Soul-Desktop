@@ -54,7 +54,7 @@ extension ThreadController {
     }
 
     func materializeBufferedAgentStreams() {
-        let completed = agentStreamBuffer.drainAll()
+        let completed = agentStreamBuffer.drainAll(sanitizeMessage: sanitizeLiveAgentText)
         streamPreviewPublishScheduled = false
         guard !completed.isEmpty else { return }
         for segment in completed {
@@ -68,7 +68,7 @@ extension ThreadController {
             }
         }
         if isWorking {
-            liveStreamPreview = agentStreamBuffer.preview()
+            liveStreamPreview = agentStreamBuffer.preview(sanitizeMessage: sanitizeLiveAgentText)
         } else {
             liveStreamPreview = nil
         }
@@ -78,7 +78,7 @@ extension ThreadController {
         guard !streamPreviewPublishingSuspended else { return }
         let now = Date()
         if now.timeIntervalSince(lastStreamPreviewPublishAt) >= Self.streamPreviewInterval {
-            liveStreamPreview = agentStreamBuffer.preview()
+            liveStreamPreview = agentStreamBuffer.preview(sanitizeMessage: sanitizeLiveAgentText)
             lastStreamPreviewPublishAt = now
             return
         }
@@ -89,7 +89,7 @@ extension ThreadController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.streamPreviewPublishScheduled = false
-                self.liveStreamPreview = self.agentStreamBuffer.preview()
+                self.liveStreamPreview = self.agentStreamBuffer.preview(sanitizeMessage: self.sanitizeLiveAgentText)
                 self.lastStreamPreviewPublishAt = Date()
             }
         }
@@ -253,6 +253,35 @@ extension ThreadController {
                 chunk: chunk
             )
         }
+    }
+
+    private func sanitizeLiveAgentText(_ raw: String) -> String {
+        guard provider == .geminiCLI else { return raw }
+        let contexts = activeDelegationContextsForCurrentTurn()
+        guard !contexts.isEmpty else { return raw }
+        return DelegationContentSanitizer.sanitizeAgentText(raw, contexts: contexts)
+    }
+
+    private func activeDelegationContextsForCurrentTurn() -> [DelegationContentSanitizerContext] {
+        var contexts: [DelegationContentSanitizerContext] = []
+        for item in items.reversed() {
+            switch item {
+            case .userMessage:
+                return contexts.reversed()
+            case .toolCall(let id, _, _, _, _, let details):
+                guard case .subagent(let specialist, _, let subagentId, _, let findingPath) = details?.kind else {
+                    continue
+                }
+                contexts.append(DelegationContentSanitizerContext(
+                    specialist: specialist,
+                    delegationId: subagentId.isEmpty ? id.uuidString : subagentId,
+                    findingPath: findingPath
+                ))
+            default:
+                continue
+            }
+        }
+        return contexts.reversed()
     }
 
     /// Inject a paragraph break when a reasoning chunk begins with a bold
