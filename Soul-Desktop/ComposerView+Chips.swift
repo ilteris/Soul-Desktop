@@ -254,6 +254,26 @@ struct RunLocalChip: View {
     }
 }
 
+struct ComputerUseEnabledChip: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "display.and.cursorarrow")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(SoulColor.accent)
+            Text("Computer")
+                .font(SoulFont.ui(11, weight: .medium))
+                .foregroundStyle(SoulColor.fgMuted)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(SoulColor.accent.opacity(0.08), in: Capsule())
+        .overlay(
+            Capsule().strokeBorder(SoulColor.accent.opacity(0.25), lineWidth: 0.5)
+        )
+        .help("Computer use is enabled for this provider via Peekaboo")
+    }
+}
+
 struct BranchChip: View {
     let currentBranch: String
     let projectPath: String?

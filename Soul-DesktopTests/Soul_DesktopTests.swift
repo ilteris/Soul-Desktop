@@ -69,11 +69,16 @@ struct Soul_DesktopTests {
         command = "node"
         """
 
-        let enabled = ComputerUseMCPConfig.setCodexPeekaboo(original, enabled: true)
+        let enabled = ComputerUseMCPConfig.setCodexPeekaboo(
+            original,
+            enabled: true,
+            command: "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo"
+        )
 
         #expect(ComputerUseMCPConfig.codexPeekabooEnabled(in: enabled))
         #expect(enabled.contains("[mcp_servers.peekaboo]"))
-        #expect(enabled.contains(#"args = ["-y", "@steipete/peekaboo", "mcp"]"#))
+        #expect(enabled.contains(#"command = "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo""#))
+        #expect(enabled.contains(#"args = ["mcp"]"#))
         #expect(enabled.contains(#"PEEKABOO_DISABLE_TOOLS = "capture,agent,run,config,clean""#))
 
         let disabled = ComputerUseMCPConfig.setCodexPeekaboo(enabled, enabled: false)
@@ -90,15 +95,19 @@ struct Soul_DesktopTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let path = dir.appendingPathComponent("settings.json").path
-        try ComputerUseMCPConfig.setJSONEnabled(true, at: path)
+        try ComputerUseMCPConfig.setJSONEnabled(
+            true,
+            at: path,
+            command: "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo"
+        )
 
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let servers = try #require(root["mcpServers"] as? [String: Any])
         let peekaboo = try #require(servers["peekaboo"] as? [String: Any])
 
-        #expect(peekaboo["command"] as? String == "npx")
-        #expect(peekaboo["args"] as? [String] == ["-y", "@steipete/peekaboo", "mcp"])
+        #expect(peekaboo["command"] as? String == "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo")
+        #expect(peekaboo["args"] as? [String] == ["mcp"])
         #expect((peekaboo["env"] as? [String: String])?["PEEKABOO_DISABLE_TOOLS"] == "capture,agent,run,config,clean")
 
         try ComputerUseMCPConfig.setJSONEnabled(false, at: path)
@@ -240,6 +249,26 @@ struct Soul_DesktopTests {
         #expect(dir.path == "/Users/tester/Library/Application Support/Soul-Desktop/ComputerUse")
         #expect(!dir.path.contains("/tmp"))
         #expect(!dir.path.contains("/T/"))
+    }
+
+    @Test func computerUseAgentContextReportsLatestStableInspectionArtifact() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-artifacts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let older = dir.appendingPathComponent("see-1-AAAA.png")
+        let newer = dir.appendingPathComponent("see-2-BBBB.png")
+        let annotated = dir.appendingPathComponent("see-3-CCCC_annotated.png")
+        try Data("old".utf8).write(to: older)
+        try Data("new".utf8).write(to: newer)
+        try Data("annotated".utf8).write(to: annotated)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: older.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: newer.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: annotated.path)
+
+        let latest = try #require(ComputerUseAgentContext.latestInspectionArtifactPath(directory: dir))
+        #expect(URL(fileURLWithPath: latest).standardizedFileURL == newer.standardizedFileURL)
     }
 
     @Test func registryWatcherFloorsFullRescanCadence() throws {

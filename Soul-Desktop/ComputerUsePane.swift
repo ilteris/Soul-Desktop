@@ -156,6 +156,7 @@ struct ComputerUsePane: View {
     private func checkStatus(fullProbe: Bool) async {
         isChecking = true
         defer { isChecking = false }
+        ComputerUseMCPConfig.reconcileEnabledProviders()
         status = await ComputerUseService.status(fullProbe: fullProbe)
     }
 
@@ -762,6 +763,19 @@ enum ComputerUseProvider: String, CaseIterable, Hashable {
     var configPathDisplay: String {
         configPath.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
+
+    init?(_ provider: Provider) {
+        switch provider {
+        case .geminiCLI:
+            self = .geminiCLI
+        case .claude:
+            self = .claudeCode
+        case .codex:
+            self = .codex
+        case .pi:
+            return nil
+        }
+    }
 }
 
 enum ComputerUseService {
@@ -1164,11 +1178,28 @@ extension ComputerUseStatus {
 
 enum ComputerUseMCPConfig {
     static let serverName = "peekaboo"
-    static let command = "npx"
-    static let args = ["-y", "@steipete/peekaboo", "mcp"]
+    static let fallbackCommand = "peekaboo"
+    static let args = ["mcp"]
     static let env = [
         "PEEKABOO_DISABLE_TOOLS": "capture,agent,run,config,clean"
     ]
+
+    static func command(bundleURL: URL = Bundle.main.bundleURL) -> String {
+        ComputerUseService.bundledPeekabooPath(bundleURL: bundleURL) ?? fallbackCommand
+    }
+
+    static func reconcileEnabledProviders() {
+        for provider in ComputerUseProvider.allCases where isEnabled(for: provider) {
+            try? setEnabled(true, for: provider)
+        }
+    }
+
+    static func reconcileEnabledProvider(for provider: Provider) {
+        guard let computerUseProvider = ComputerUseProvider(provider),
+              isEnabled(for: computerUseProvider)
+        else { return }
+        try? setEnabled(true, for: computerUseProvider)
+    }
 
     static func isEnabled(for provider: ComputerUseProvider) -> Bool {
         switch provider {
@@ -1189,7 +1220,7 @@ enum ComputerUseMCPConfig {
         }
     }
 
-    static func setJSONEnabled(_ enabled: Bool, at path: String) throws {
+    static func setJSONEnabled(_ enabled: Bool, at path: String, command: String = command()) throws {
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var root: [String: Any] = [:]
@@ -1212,11 +1243,11 @@ enum ComputerUseMCPConfig {
         try data.write(to: url, options: .atomic)
     }
 
-    static func setCodexEnabled(_ enabled: Bool, at path: String) throws {
+    static func setCodexEnabled(_ enabled: Bool, at path: String, command: String = command()) throws {
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        let updated = setCodexPeekaboo(existing, enabled: enabled)
+        let updated = setCodexPeekaboo(existing, enabled: enabled, command: command)
         try updated.data(using: .utf8)?.write(to: url, options: .atomic)
     }
 
@@ -1235,7 +1266,7 @@ enum ComputerUseMCPConfig {
         }
     }
 
-    static func setCodexPeekaboo(_ text: String, enabled: Bool) -> String {
+    static func setCodexPeekaboo(_ text: String, enabled: Bool, command: String = command()) -> String {
         let withoutSection = removeCodexPeekabooSection(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled else {
@@ -1244,13 +1275,19 @@ enum ComputerUseMCPConfig {
         let block = """
 
         [mcp_servers.peekaboo]
-        command = "npx"
-        args = ["-y", "@steipete/peekaboo", "mcp"]
+        command = "\(tomlEscaped(command))"
+        args = ["mcp"]
 
         [mcp_servers.peekaboo.env]
         PEEKABOO_DISABLE_TOOLS = "capture,agent,run,config,clean"
         """
         return withoutSection + block + "\n"
+    }
+
+    private static func tomlEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func codexPeekabooSection(in text: String) -> [String]? {

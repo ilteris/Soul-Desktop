@@ -203,7 +203,7 @@ extension ThreadController {
                     isFirstTurn = false
                     // SOUL-SOUL_DESKTOP-245 (Phase B): inject preamble on
                     // first dispatch for resumed codex sessions too.
-                    let agentText: String = {
+                    let agentText = computerUseContextApplied(to: {
                         if let pre = pendingContextPreamble {
                             pendingContextPreamble = nil
                             let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
@@ -211,7 +211,7 @@ extension ThreadController {
                             return prefixed
                         }
                         return turn.agent
-                    }()
+                    }())
                     let promptRequest = ProviderRuntimePromptRequest<ContentBlock>(
                         session: runtimeSessionSnapshot(),
                         text: agentText,
@@ -294,7 +294,7 @@ extension ThreadController {
                 // agent-channel text on the first dispatch and clear so
                 // subsequent turns don't re-send it. Display text is
                 // untouched — the canvas already shows the prior items.
-                let agentText: String = {
+                let agentText = computerUseContextApplied(to: {
                     if let pre = pendingContextPreamble {
                         pendingContextPreamble = nil
                         let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
@@ -302,7 +302,7 @@ extension ThreadController {
                         return prefixed
                     }
                     return turn.agent
-                }()
+                }())
                 // SOUL-IDENTITY-SPLIT: open the FSEvents window right
                 // before the prompt lands so the watcher catches Claude
                 // rotating its on-disk transcript filename (the post-

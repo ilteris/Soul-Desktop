@@ -506,6 +506,7 @@ extension ThreadController {
     }
 
     private func spawnAndInitialize(skipNewSession: Bool, resumeSessionId: String? = nil) async throws {
+        ComputerUseMCPConfig.reconcileEnabledProvider(for: provider)
         if provider == .codex {
             try await spawnAndInitializeCodex()
             return

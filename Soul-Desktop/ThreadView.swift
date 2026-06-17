@@ -332,6 +332,7 @@ struct ThreadView: View {
                 },
                 onClearQueue: { controller.clearQueue() },
                 onSteer: { Task { await controller.steerToNextQueued() } },
+                computerUseEnabled: ComputerUseAgentContext.isEnabled(for: controller.provider),
                 terminalActive: terminalActive,
                 onToggleTerminal: onToggleTerminal,
                 permissionMode: Binding(

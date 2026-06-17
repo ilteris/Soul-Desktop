@@ -47,6 +47,10 @@ extension ThreadController {
         )
     }
 
+    func computerUseContextApplied(to text: String) -> String {
+        ComputerUseAgentContext.prefixIfEnabled(text, provider: provider)
+    }
+
     func applyRuntimeStartResult(_ result: ProviderRuntimeStartResult) {
         if let nativeSessionID = result.nativeSessionID {
             nativeSessionId = nativeSessionID
