@@ -1280,7 +1280,15 @@ struct ThreadItemRow: View {
             // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls route to
             // the dedicated SubagentCard instead of the generic ToolCallRow.
             // Match on the structured details kind populated by insertToolCall.
-            if case .claudeAgent(let subagentType, let descriptionText, let agentId, let bodyText, let totalTokens, let toolUses, let durationMs) = details?.kind {
+            if kind == "computer_use" {
+                ComputerUseArtifactRow(
+                    title: title,
+                    status: status,
+                    path: loc,
+                    note: computerUseNote(from: details),
+                    isHistorical: isHistorical
+                )
+            } else if case .claudeAgent(let subagentType, let descriptionText, let agentId, let bodyText, let totalTokens, let toolUses, let durationMs) = details?.kind {
                 ClaudeAgentCard(
                     subagentType: subagentType,
                     description: descriptionText,
@@ -1357,6 +1365,12 @@ struct ThreadItemRow: View {
         case .finalize(_, let intent, let summary, let rationale, let fixed, let nextStep, _):
             FinalizeCard(intent: intent, summary: summary, rationale: rationale, fixed: fixed, nextStep: nextStep)
         }
+    }
+
+    private func computerUseNote(from details: ToolCallDetails?) -> String? {
+        guard case .output(let text) = details?.kind else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
 }

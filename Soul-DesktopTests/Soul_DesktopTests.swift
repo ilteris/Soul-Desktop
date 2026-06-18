@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import AppKit
 import SoulCore
 @testable import Soul_Desktop
 
@@ -59,6 +60,280 @@ struct Soul_DesktopTests {
 
         #expect(result.status == SafeProcessRunner.timeoutStatus)
         #expect(result.timedOut == true)
+    }
+
+    @Test func peekabooCodexMCPSectionRoundTrips() throws {
+        let original = """
+        model = "gpt-5.5"
+
+        [mcp_servers.node_repl]
+        command = "node"
+        """
+
+        let enabled = ComputerUseMCPConfig.setCodexPeekaboo(
+            original,
+            enabled: true,
+            command: "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo"
+        )
+
+        #expect(ComputerUseMCPConfig.codexPeekabooEnabled(in: enabled))
+        #expect(enabled.contains("[mcp_servers.peekaboo]"))
+        #expect(enabled.contains(#"command = "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo""#))
+        #expect(enabled.contains(#"args = ["mcp"]"#))
+        #expect(enabled.contains(#"PEEKABOO_DISABLE_TOOLS = "capture,agent,run,config,clean""#))
+
+        let disabled = ComputerUseMCPConfig.setCodexPeekaboo(enabled, enabled: false)
+
+        #expect(!ComputerUseMCPConfig.codexPeekabooEnabled(in: disabled))
+        #expect(disabled.contains("[mcp_servers.node_repl]"))
+        #expect(!disabled.contains("[mcp_servers.peekaboo]"))
+    }
+
+    @Test func peekabooJSONMCPRegistrationWritesExpectedShape() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-json-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let path = dir.appendingPathComponent("settings.json").path
+        try ComputerUseMCPConfig.setJSONEnabled(
+            true,
+            at: path,
+            command: "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo"
+        )
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(root["mcpServers"] as? [String: Any])
+        let peekaboo = try #require(servers["peekaboo"] as? [String: Any])
+
+        #expect(peekaboo["command"] as? String == "/Applications/Soul-Desktop.app/Contents/Helpers/peekaboo")
+        #expect(peekaboo["args"] as? [String] == ["mcp"])
+        #expect((peekaboo["env"] as? [String: String])?["PEEKABOO_DISABLE_TOOLS"] == "capture,agent,run,config,clean")
+
+        try ComputerUseMCPConfig.setJSONEnabled(false, at: path)
+        let disabledData = try Data(contentsOf: URL(fileURLWithPath: path))
+        let disabledRoot = try #require(JSONSerialization.jsonObject(with: disabledData) as? [String: Any])
+        let disabledServers = try #require(disabledRoot["mcpServers"] as? [String: Any])
+        #expect(disabledServers["peekaboo"] == nil)
+    }
+
+    @Test func peekabooAppInventoryParserAcceptsServiceEnvelope() throws {
+        let output = """
+        {
+          "success": true,
+          "data": {
+            "applications": [
+              {
+                "processIdentifier": 42,
+                "bundleIdentifier": "com.apple.Safari",
+                "name": "Safari",
+                "isActive": false,
+                "windowCount": 2
+              },
+              {
+                "pid": 99,
+                "bundle_id": "com.apple.finder",
+                "app_name": "Finder",
+                "is_active": true,
+                "window_count": 1
+              }
+            ]
+          }
+        }
+        """
+
+        let apps = ComputerUseService.parseTargetApps(output)
+
+        #expect(apps.count == 2)
+        #expect(apps.first?.name == "Finder")
+        #expect(apps.first?.isActive == true)
+        #expect(apps.first?.targetArgument == "com.apple.finder")
+        #expect(apps[1].detail.contains("2 windows"))
+    }
+
+    @Test func peekabooSeeParserExtractsSnapshotAndElements() throws {
+        let output = """
+        {
+          "success": true,
+          "data": {
+            "snapshot_id": "snap-123",
+            "ui_map": "/Users/me/.peekaboo/snapshots/snap-123/snapshot.json",
+            "application_name": "Safari",
+            "window_title": "Example",
+            "element_count": 10,
+            "interactable_count": 4,
+            "capture_mode": "window",
+            "ui_elements": [
+              {
+                "id": "B1",
+                "role": "button",
+                "title": "Reload",
+                "label": null,
+                "description": "Reload this page"
+              },
+              {
+                "id": "T1",
+                "role_description": "text field",
+                "label": "Address"
+              }
+            ]
+          }
+        }
+        """
+
+        let inspection = try #require(ComputerUseService.parseInspection(output, imagePath: "/tmp/missing.png"))
+
+        #expect(inspection.snapshotID == "snap-123")
+        #expect(inspection.uiMapPath == "/Users/me/.peekaboo/snapshots/snap-123/snapshot.json")
+        #expect(inspection.targetDetail == "Safari - Example")
+        #expect(inspection.elementCount == 10)
+        #expect(inspection.interactableCount == 4)
+        #expect(inspection.elements.count == 2)
+        #expect(inspection.elements[0].displayName == "Reload")
+        #expect(inspection.elements[1].role == "text field")
+    }
+
+    @Test func computerUseExecutableResolutionIgnoresPathPeekabooWithoutBundle() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-bin-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let tool = dir.appendingPathComponent("peekaboo")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+
+        let bundleWithoutHelper = dir.appendingPathComponent("SoulDesktop.app", isDirectory: true)
+
+        #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundleWithoutHelper) == nil)
+        #expect(ComputerUseMCPConfig.command(bundleURL: bundleWithoutHelper) == nil)
+    }
+
+    @Test func computerUseExecutableResolutionPrefersBundledPeekaboo() throws {
+        let bundle = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("SoulDesktop-\(UUID().uuidString).app", isDirectory: true)
+        let helperDir = bundle
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+        try FileManager.default.createDirectory(at: helperDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let bundled = helperDir.appendingPathComponent("peekaboo")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: bundled)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundled.path)
+
+        #expect(ComputerUseService.bundledPeekabooPath(bundleURL: bundle) == bundled.path)
+        #expect(ComputerUseMCPConfig.command(bundleURL: bundle) == bundled.path)
+    }
+
+    @Test func computerUsePromptIntentDetectsScreenshotRequests() {
+        #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.requiresInteractionBeforeCapture == false)
+        #expect(ComputerUsePromptIntent.detect(in: "go to Chrome and get a screenshot")?.navigationURL == nil)
+        #expect(ComputerUsePromptIntent.detect(in: "inspect the UI in Xcode")?.target == "Xcode")
+        #expect(ComputerUsePromptIntent.detect(in: "inspect Google Chrome's current display state")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "tell me what is visible in the browser")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.requiresInteractionBeforeCapture == true)
+        #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.navigationURL == "https://trusslabs.org")
+        #expect(ComputerUsePromptIntent.detect(in: "open https://trusslabs.org in Chrome and take a screenshot")?.navigationURL == "https://trusslabs.org")
+        #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
+    }
+
+    @Test func computerUseArtifactScannerPrefersAnnotatedSnapshots() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-scan-\(UUID().uuidString)", isDirectory: true)
+        let snapshot = root.appendingPathComponent("snapshots/ABC", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let raw = snapshot.appendingPathComponent("raw.png")
+        let annotated = snapshot.appendingPathComponent("annotated.png")
+        try Data("raw".utf8).write(to: raw)
+        try Data("annotated".utf8).write(to: annotated)
+
+        let artifacts = ComputerUseArtifactScanner.currentArtifacts(directories: [root])
+
+        #expect(artifacts.count == 1)
+        #expect(artifacts.first?.path == annotated.resolvingSymlinksInPath().path)
+        #expect(artifacts.first?.title == "Peekaboo screenshot: ABC")
+    }
+
+    @Test func computerUseArtifactSignalOnlyMatchesVisualToolActivity() {
+        #expect(ComputerUseArtifactSignal.matches(kind: "mcp:peekaboo", title: "see", location: nil))
+        #expect(ComputerUseArtifactSignal.matches(kind: "mcp:computer-use", title: "capture screenshot", location: nil))
+        #expect(!ComputerUseArtifactSignal.matches(kind: "execute", title: "swift test", location: nil))
+        #expect(!ComputerUseArtifactSignal.matches(kind: "search", title: "screenshot renderer source", location: nil))
+    }
+
+    @Test func computerUseArtifactsUseStableApplicationSupportDirectory() {
+        let appSupport = URL(fileURLWithPath: "/Users/tester/Library/Application Support", isDirectory: true)
+
+        let dir = ComputerUseService.artifactDirectory(applicationSupportDirectory: appSupport)
+
+        #expect(dir.path == "/Users/tester/Library/Application Support/Soul-Desktop/ComputerUse")
+        #expect(!dir.path.contains("/tmp"))
+        #expect(!dir.path.contains("/T/"))
+    }
+
+    @Test func computerUseRejectsBlankWhiteCaptures() throws {
+        let white = try makeTestImage(width: 64, height: 64) { _, _ in NSColor.white }
+        let marked = try makeTestImage(width: 64, height: 64) { x, y in
+            x == y ? NSColor.black : NSColor.white
+        }
+
+        #expect(ComputerUseService.isBlankWhiteImage(white))
+        #expect(!ComputerUseService.isBlankWhiteImage(marked))
+    }
+
+    @Test func computerUseAgentContextReportsLatestStableInspectionArtifact() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("soul-peekaboo-artifacts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let older = dir.appendingPathComponent("see-1-AAAA.png")
+        let newer = dir.appendingPathComponent("see-2-BBBB.png")
+        let annotated = dir.appendingPathComponent("see-3-CCCC_annotated.png")
+        try Data("old".utf8).write(to: older)
+        try Data("new".utf8).write(to: newer)
+        try Data("annotated".utf8).write(to: annotated)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: older.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: newer.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: annotated.path)
+
+        let latest = try #require(ComputerUseAgentContext.latestInspectionArtifactPath(directory: dir))
+        #expect(URL(fileURLWithPath: latest).standardizedFileURL == newer.standardizedFileURL)
+    }
+
+    private func makeTestImage(width: Int, height: Int, color: (Int, Int) -> NSColor) throws -> CGImage {
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelColor = color(x, y).usingColorSpace(.deviceRGB) ?? .black
+                let index = y * bytesPerRow + x * bytesPerPixel
+                pixels[index] = UInt8(clamping: Int((pixelColor.redComponent * 255).rounded()))
+                pixels[index + 1] = UInt8(clamping: Int((pixelColor.greenComponent * 255).rounded()))
+                pixels[index + 2] = UInt8(clamping: Int((pixelColor.blueComponent * 255).rounded()))
+                pixels[index + 3] = UInt8(clamping: Int((pixelColor.alphaComponent * 255).rounded()))
+            }
+        }
+
+        return try pixels.withUnsafeMutableBytes { rawBuffer in
+            let context = CGContext(
+                data: rawBuffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            )
+            return try #require(context?.makeImage())
+        }
     }
 
     @Test func registryWatcherFloorsFullRescanCadence() throws {

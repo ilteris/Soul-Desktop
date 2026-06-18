@@ -514,6 +514,9 @@ extension ThreadController {
         if status == "failed" {
             ToolFailureLog.dump(payload: payload, provider: provider, sessionId: sessionId)
         }
+        if !isReplayingLoad {
+            observePotentialComputerUseArtifact(kind: kind, title: title, location: location)
+        }
 
         // Try structured extraction from rawInput first. ACP `tool_call_update`
         // notifications often re-send the same toolCallId with only the

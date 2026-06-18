@@ -3,6 +3,7 @@ import SwiftUI
 enum AppRightPaneTab: Hashable {
     case review
     case file
+    case computerUse
 }
 
 @MainActor
@@ -10,17 +11,20 @@ enum AppRightPaneTab: Hashable {
 final class AppRightPaneCoordinator {
     var reviewVisible: Bool
     var filePreviewPath: String?
+    var computerUseVisible: Bool
     var activeTab: AppRightPaneTab = .review
 
-    init(reviewVisible: Bool = false, filePreviewPath: String? = nil) {
+    init(reviewVisible: Bool = false, filePreviewPath: String? = nil, computerUseVisible: Bool = false) {
         self.reviewVisible = reviewVisible
         self.filePreviewPath = filePreviewPath
+        self.computerUseVisible = computerUseVisible
     }
 
     var openTabs: [AppRightPaneTab] {
         var tabs: [AppRightPaneTab] = []
         if reviewVisible { tabs.append(.review) }
         if filePreviewPath != nil { tabs.append(.file) }
+        if computerUseVisible { tabs.append(.computerUse) }
         return tabs
     }
 
@@ -52,9 +56,17 @@ final class AppRightPaneCoordinator {
         }
     }
 
+    func toggleComputerUse() {
+        computerUseVisible.toggle()
+        if computerUseVisible {
+            activeTab = .computerUse
+        }
+    }
+
     func closePane() {
         reviewVisible = false
         filePreviewPath = nil
+        computerUseVisible = false
     }
 
     func closeTab(_ tab: AppRightPaneTab) {
@@ -63,6 +75,8 @@ final class AppRightPaneCoordinator {
             reviewVisible = false
         case .file:
             filePreviewPath = nil
+        case .computerUse:
+            computerUseVisible = false
         }
     }
 
@@ -73,6 +87,8 @@ final class AppRightPaneCoordinator {
         case .file:
             guard let path = filePreviewPath else { return "File" }
             return (path as NSString).lastPathComponent
+        case .computerUse:
+            return "Computer"
         }
     }
 }

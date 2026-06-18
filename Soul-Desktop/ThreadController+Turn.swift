@@ -158,6 +158,7 @@ extension ThreadController {
             agentStreamBuffer.clear()
             turnStartedAt = nil
             stopStallWatchdog()
+            endComputerUseArtifactTracking()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
 
@@ -189,10 +190,11 @@ extension ThreadController {
         var isFirstTurn = true
         do {
             try await ensureSessionResilient()
+            beginComputerUseArtifactTracking()
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
                 guard let sid = sessionId else { return }
-                while let turn = current {
+                while var turn = current {
                     if isFirstTurn {
                         // UserPrompt was persisted synchronously when the
                         // visible bubble was created.
@@ -201,9 +203,10 @@ extension ThreadController {
                         relocateQueuedBubbleToEnd(turn)
                     }
                     isFirstTurn = false
+                    await enrichWithComputerUseIfNeeded(turn: &turn)
                     // SOUL-SOUL_DESKTOP-245 (Phase B): inject preamble on
                     // first dispatch for resumed codex sessions too.
-                    let agentText: String = {
+                    let agentText = computerUseContextApplied(to: {
                         if let pre = pendingContextPreamble {
                             pendingContextPreamble = nil
                             let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
@@ -211,7 +214,7 @@ extension ThreadController {
                             return prefixed
                         }
                         return turn.agent
-                    }()
+                    }())
                     let promptRequest = ProviderRuntimePromptRequest<ContentBlock>(
                         session: runtimeSessionSnapshot(),
                         text: agentText,
@@ -267,7 +270,7 @@ extension ThreadController {
             // when the session was resumed via backfill.
             let nid = nativeSessionId ?? sid
 
-            while let turn = current {
+            while var turn = current {
                 if isFirstTurn {
                     // UserPrompt was persisted synchronously when the
                     // visible bubble was created.
@@ -289,12 +292,13 @@ extension ThreadController {
                     }
                 }
                 isFirstTurn = false
+                await enrichWithComputerUseIfNeeded(turn: &turn)
                 // SOUL-SOUL_DESKTOP-245 (Phase B): if hydrate staged a
                 // preamble for this resumed session, prefix it to the
                 // agent-channel text on the first dispatch and clear so
                 // subsequent turns don't re-send it. Display text is
                 // untouched — the canvas already shows the prior items.
-                let agentText: String = {
+                let agentText = computerUseContextApplied(to: {
                     if let pre = pendingContextPreamble {
                         pendingContextPreamble = nil
                         let prefixed = LedgerPreamble.prefix(pre, to: turn.agent)
@@ -302,7 +306,7 @@ extension ThreadController {
                         return prefixed
                     }
                     return turn.agent
-                }()
+                }())
                 // SOUL-IDENTITY-SPLIT: open the FSEvents window right
                 // before the prompt lands so the watcher catches Claude
                 // rotating its on-disk transcript filename (the post-

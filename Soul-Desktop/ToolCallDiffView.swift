@@ -1,7 +1,7 @@
 import SwiftUI
 import SoulCore
 
-private enum DiffRow {
+enum DiffRow: Equatable {
     case unchanged(leftNum: Int, rightNum: Int, text: String)
     case removed(num: Int, text: String)
     case added(num: Int, text: String)
@@ -108,10 +108,10 @@ struct DiffView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Compute aligned diff rows via Swift's `CollectionDifference` so
-    /// unchanged lines render once across both columns (no tint) instead of
-    /// once per column (full red + full green wash). Drops the wholesale-
-    /// rewrite case from 600+ noisy rows to ~the actual change count.
+    /// Compute changed diff rows via Swift's `CollectionDifference`. Edit
+    /// tools often pass old/new strings with surrounding context or even whole
+    /// files; rendering unchanged rows makes expanded edit cards noisy. Match
+    /// the Codex unified-diff path by showing only added/removed rows.
     @ViewBuilder
     private func diffRows(old: String, new: String, startLine: Int) -> some View {
         let rows = Self.computeRows(old: old, new: new, startLine: startLine)
@@ -234,9 +234,9 @@ struct DiffView: View {
     }
 
     /// Walk `oldLines` and `newLines` in tandem using the diff's
-    /// removed/added offset sets as an oracle. Unchanged lines emit a single
-    /// aligned row; removed and added lines emit one-sided rows.
-    private static func computeRows(old: String, new: String, startLine: Int) -> [DiffRow] {
+    /// removed/added offset sets as an oracle. Unchanged lines only advance
+    /// the cursors; removed and added lines emit one-sided rows.
+    static func computeRows(old: String, new: String, startLine: Int) -> [DiffRow] {
         let oldLines = old.isEmpty ? [] : old.components(separatedBy: "\n")
         let newLines = new.isEmpty ? [] : new.components(separatedBy: "\n")
         let diff = newLines.difference(from: oldLines)
@@ -265,8 +265,8 @@ struct DiffView: View {
                 rows.append(.added(num: rBase + j, text: newLines[j]))
                 j += 1
             } else if i < oldLines.count, j < newLines.count {
-                // Both cursors on common (unchanged) content.
-                rows.append(.unchanged(leftNum: lBase + i, rightNum: rBase + j, text: oldLines[i]))
+                // Both cursors on common (unchanged) content. Skip it so
+                // expanded edit cards show only what changed.
                 i += 1
                 j += 1
             } else if i < oldLines.count {

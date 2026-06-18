@@ -148,6 +148,7 @@
 				A2B2B68A2FB0145A004C6EEC /* Frameworks */,
 				A2B2B68B2FB0145A004C6EEC /* Resources */,
 				C0D3C0DE0000000000000005 /* Copy Bundled Gemini CLI */,
+				C0D3C0DE0000000000000006 /* Copy Bundled Peekaboo */,
 			);
 			buildRules = (
 			);
@@ -311,6 +312,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -e\nSRC=\"${SRCROOT}/Vendor/GeminiCLI\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GeminiCLI\"\nrm -rf \"$DST\"\nif [ -d \"$SRC\" ]; then\n  mkdir -p \"$(dirname \"$DST\")\"\n  ditto \"$SRC\" \"$DST\"\nfi\n";
+		};
+		C0D3C0DE0000000000000006 /* Copy Bundled Peekaboo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Vendor/Peekaboo/bin/peekaboo",
+			);
+			name = "Copy Bundled Peekaboo";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/peekaboo",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nSRC=\"${SRCROOT}/Vendor/Peekaboo/bin/peekaboo\"\nDST=\"${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Helpers/peekaboo\"\nif [ -f \"$SRC\" ]; then\n  mkdir -p \"$(dirname \"$DST\")\"\n  ditto \"$SRC\" \"$DST\"\n  chmod 755 \"$DST\"\n  if [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ]; then\n    SIGN_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-}\"\n    if [ -n \"$SIGN_IDENTITY\" ] && [ \"$SIGN_IDENTITY\" != \"-\" ]; then\n      /usr/bin/codesign --force --sign \"$SIGN_IDENTITY\" --timestamp=none \"$DST\"\n    else\n      /usr/bin/codesign --force --sign - --timestamp=none \"$DST\"\n    fi\n  fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

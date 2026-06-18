@@ -34,6 +34,15 @@ extension AppShell {
                     }
                     SessionStatsChip(controller: thread)
                     AgentLogChip(controller: thread)
+                    let computerUseActivity = thread.computerUseActivity
+                    Button(action: { toggleComputerUse() }) {
+                        ComputerUseToolbarIcon(
+                            isActive: computerUseActivity != nil,
+                            isOpen: rightPane.computerUseVisible
+                        )
+                    }
+                    .buttonStyle(.soulHover)
+                    .help(computerUseActivity ?? "Open computer use")
                     ThreadOverflowMenu(
                         controller: thread,
                         onSmokeTest: { showSmoke = true },
@@ -47,5 +56,31 @@ extension AppShell {
                 .padding(.horizontal, 16)
             }
         }
+    }
+}
+
+private struct ComputerUseToolbarIcon: View {
+    let isActive: Bool
+    let isOpen: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: "cursorarrow.rays")
+                .font(.system(size: SoulMetric.icon, weight: .regular))
+                .foregroundStyle((isActive || isOpen) ? SoulColor.accent : SoulColor.fgMuted)
+                .frame(width: 22, height: 22)
+
+            if isActive {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.45)
+                    .frame(width: 9, height: 9)
+                    .background(SoulColor.bgElevated, in: Circle())
+                    .offset(x: 2, y: 2)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .contentShape(Rectangle())
+        .accessibilityLabel(Text(verbatim: isActive ? "Computer use active" : "Open computer use"))
     }
 }

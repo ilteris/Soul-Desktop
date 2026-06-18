@@ -37,6 +37,11 @@ extension AppShell {
                         onClose: { closeRightTab(.file) },
                         embedded: true
                     )
+                } else if rightPane.effectiveActiveTab == .computerUse, rightPane.computerUseVisible {
+                    ComputerUseConsolePanel(
+                        projectPath: thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path,
+                        onClose: { closeRightTab(.computerUse) }
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -68,6 +73,7 @@ extension AppShell {
         withAnimation(sidePanelAnimation) {
             rightPane.closePane()
             showReview = rightPane.reviewVisible
+            showComputerUse = rightPane.computerUseVisible
         }
     }
 
@@ -83,7 +89,7 @@ extension AppShell {
                 }
             }) {
                 HStack(spacing: 5) {
-                    Image(systemName: tab == .review ? "checklist" : "doc.text")
+                    Image(systemName: rightPaneIcon(for: tab))
                         .font(.system(size: 10))
                     Text(rightPane.label(for: tab))
                         .font(SoulFont.ui(11, weight: isActive ? .semibold : .regular))
@@ -142,6 +148,15 @@ extension AppShell {
         withAnimation(sidePanelAnimation) {
             rightPane.closeTab(tab)
             showReview = rightPane.reviewVisible
+            showComputerUse = rightPane.computerUseVisible
+        }
+    }
+
+    func rightPaneIcon(for tab: AppRightPaneTab) -> String {
+        switch tab {
+        case .review: return "checklist"
+        case .file: return "doc.text"
+        case .computerUse: return "cursorarrow.rays"
         }
     }
 }

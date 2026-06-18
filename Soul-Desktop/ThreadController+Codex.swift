@@ -459,6 +459,7 @@ extension ThreadController {
                 locationHint: nil,
                 details: nil
             ))
+            observePotentialComputerUseArtifact(kind: "mcp:\(server)", title: tool)
         case "webSearch":
             materializeBufferedAgentStreams()
             let query = stringField(item, "query") ?? ""

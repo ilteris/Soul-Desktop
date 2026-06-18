@@ -190,6 +190,12 @@ final class ThreadController {
     @ObservationIgnored var streamPreviewPublishingSuspended = false
     @ObservationIgnored static let streamCoalesceInterval: TimeInterval = 1.0 / 30.0
     @ObservationIgnored static let streamPreviewInterval: TimeInterval = 0.25
+    @ObservationIgnored var computerUseArtifactTrackingEnabled = false
+    @ObservationIgnored var computerUseArtifactRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var computerUseArtifactTrackingStartedAt: Date?
+    @ObservationIgnored var computerUseArtifactSignalObserved = false
+    @ObservationIgnored var computerUseArtifactSeenPaths: Set<String> = []
+    var computerUseActivity: String? = nil
 
     /// Sends issued while a turn is already running get parked here and
     /// drained in order once the current `client.prompt` resolves. Each
@@ -203,7 +209,7 @@ final class ThreadController {
 
         let itemId: UUID
         let display: String
-        let agent: String
+        var agent: String
         var extraBlocks: [ContentBlock] = []
         var ledgerEvent: LedgerEvent = .userPrompt
         var sourceProvider: Provider? = nil

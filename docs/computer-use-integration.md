@@ -65,7 +65,7 @@ The integration operates across three main components: the **Soul Desktop GUI**,
 * **Pros:** 
   - Written in Swift 6, utilizing native macOS frameworks (Accessibility / `AXUIElement`, `ScreenCaptureKit`).
   - Supports background event synthesizing (interacting with background apps without stealing focus).
-  - Exposes an out-of-the-box MCP server (`npx -y @steipete/peekaboo`) and a direct CLI.
+  - Exposes an MCP server and direct CLI through the Peekaboo helper bundled inside the Soul Desktop app.
   - Generates structured JSON representations of the menu bar, dock, and application UI elements.
 
 ---
@@ -76,8 +76,8 @@ The integration operates across three main components: the **Soul Desktop GUI**,
 We will replace the `ComingSoonPane(title: "Computer use")` placeholder in [Soul-Desktop/SettingsView.swift](file:///Users/ilteris/Code/Soul-Desktop/Soul-Desktop/SettingsView.swift) with a dedicated configuration view.
 
 The view will perform three core tasks:
-1. **Dependency Verification:** Run a shell check (`which peekaboo`) or verify if `npx @steipete/peekaboo` is callable.
-2. **Permission Diagnostics:** Read native macOS permissions (Screen Recording & Accessibility) by invoking `peekaboo permissions status --json` or querying `AXIsProcessTrustedWithOptions`.
+1. **Dependency Verification:** Verify that `Contents/Helpers/peekaboo` exists inside the running Soul Desktop app bundle.
+2. **Permission Diagnostics:** Read native macOS permissions (Screen Recording & Accessibility) by invoking the bundled `peekaboo permissions status --json` helper or querying `AXIsProcessTrustedWithOptions`.
 3. **MCP Server Integration:** Read and write to `~/.gemini/settings.json` and `~/.claude/.claude.json` to configure Peekaboo as an active MCP server.
 
 #### Swift Structure Draft (`ComputerUsePane.swift`)
@@ -133,13 +133,13 @@ struct ComputerUsePane: View {
             VStack(spacing: 12) {
                 IntegrationToggle(
                     title: "Enable Peekaboo for Gemini CLI",
-                    description: "Registers @steipete/peekaboo in ~/.gemini/settings.json",
+                    description: "Registers Soul Desktop's bundled Peekaboo helper in ~/.gemini/settings.json",
                     isOn: $mcpEnabledInGemini,
                     onChange: { toggleMCP(for: .gemini, enable: mcpEnabledInGemini) }
                 )
                 IntegrationToggle(
                     title: "Enable Peekaboo for Claude Code",
-                    description: "Registers @steipete/peekaboo in ~/.claude/.claude.json",
+                    description: "Registers Soul Desktop's bundled Peekaboo helper in ~/.claude/.claude.json",
                     isOn: $mcpEnabledInClaude,
                     onChange: { toggleMCP(for: .claude, enable: mcpEnabledInClaude) }
                 )
@@ -196,9 +196,10 @@ struct ComputerUsePane: View {
         case .screenRecording:
             CGRequestScreenCaptureAccess()
         case .eventSynthesizing:
-            // Shell call to run peekaboo permissions request-event-synthesizing
+            // Run the bundled helper: peekaboo permissions request-event-synthesizing
             let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/local/bin/peekaboo")
+            task.executableURL = Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Helpers/peekaboo")
             task.arguments = ["permissions", "request-event-synthesizing"]
             try? task.run()
         }
@@ -215,8 +216,10 @@ struct ComputerUsePane: View {
         
         if enable {
             mcpServers["peekaboo"] = [
-                "command": "npx",
-                "args": ["-y", "@steipete/peekaboo"],
+                "command": Bundle.main.bundleURL
+                    .appendingPathComponent("Contents/Helpers/peekaboo")
+                    .path,
+                "args": ["mcp"],
                 "env": [
                     "PEEKABOO_AI_PROVIDERS": "openai/gpt-5.5,anthropic/claude-opus-4-7"
                 ]
@@ -256,7 +259,7 @@ To address this, we implement three mitigation strategies:
 
 The integration is considered complete when:
 - [ ] **Accessibility & Screen Recording Status:** The `ComputerUsePane` successfully displays real-time permission states for Accessibility, Screen Recording, and Event Synthesizing.
-- [ ] **One-Click Enablement:** Toggling MCP integration automatically adds or removes the `@steipete/peekaboo` definition in both `~/.gemini/settings.json` and `~/.claude/.claude.json`.
+- [ ] **One-Click Enablement:** Toggling MCP integration automatically adds or removes a bundled Peekaboo helper definition in both `~/.gemini/settings.json` and `~/.claude/.claude.json`.
 - [ ] **UI Rendering:** Tool track renders element descriptions correctly (e.g., when Peekaboo returns a click, hover, scroll, or snapshot ID, it displays correctly as a tool block in the ThreadView).
 - [ ] **No Regression:** Verified that general thread state-machine and other MCP servers continue to function under standard operations.
 

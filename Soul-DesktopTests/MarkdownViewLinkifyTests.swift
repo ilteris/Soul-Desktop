@@ -28,6 +28,24 @@ struct MarkdownViewLinkifyTests {
         #expect(Self.linkedText(in: attr) == ["www/src/pages/sandbox.astro"])
     }
 
+    @Test func latexArrowFallbackRendersAsGlyphInProse() throws {
+        let attr = MarkdownView.attributedInline(
+            #"/Users/ilteris/Code/klaweht-blog $\rightarrow$ <cwd>"#
+        )
+
+        #expect(String(attr.characters).contains("/Users/ilteris/Code/klaweht-blog → <cwd>"))
+        #expect(!String(attr.characters).contains(#"$\rightarrow$"#))
+        #expect(Self.linkedText(in: attr) == ["/Users/ilteris/Code/klaweht-blog"])
+    }
+
+    @Test func latexArrowFallbackSkipsInlineCode() throws {
+        let attr = MarkdownView.attributedInline(
+            #"Keep `$\rightarrow$` literal inside code"#
+        )
+
+        #expect(String(attr.characters).contains(#"$\rightarrow$"#))
+    }
+
     private static func linkedText(in attr: AttributedString) -> [String] {
         attr.runs.compactMap { run in
             guard run.link != nil else { return nil }

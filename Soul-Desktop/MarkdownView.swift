@@ -396,6 +396,7 @@ struct MarkdownView: View, Equatable {
         // after the styled run. Convert any `[label](url)` patterns still
         // present in the post-parser AttributedString to real link runs.
         applyMarkdownLinkFallback(&attr)
+        applyInlineMathSymbolFallback(&attr)
         linkifyPaths(&attr)
         stripLinkUnderlines(&attr)
         return attr
@@ -427,6 +428,56 @@ struct MarkdownView: View, Equatable {
             var replacement = AttributedString(labelText)
             replacement.link = url
             attr.replaceSubrange(attrRange, with: replacement)
+        }
+    }
+
+    /// We do not run a math renderer, but agents occasionally emit small
+    /// LaTeX inline symbols in prose (`$\rightarrow$`) where a literal glyph
+    /// was intended. Swift's markdown parser leaves those spans untouched, so
+    /// normalize a tiny allowlist before path linkification. Code spans are
+    /// deliberately skipped so shell snippets and source examples stay exact.
+    private static func applyInlineMathSymbolFallback(_ attr: inout AttributedString) {
+        let replacements = [
+            #"\rightarrow"#: "→",
+            #"\to"#: "→",
+            #"\leftarrow"#: "←",
+            #"\Rightarrow"#: "⇒",
+            #"\Leftarrow"#: "⇐",
+            #"\leftrightarrow"#: "↔"
+        ]
+        let escapedAlternatives = replacements.keys
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        guard let regex = try? NSRegularExpression(pattern: #"\$(\#(escapedAlternatives))\$"#) else {
+            return
+        }
+
+        let plain = String(attr.characters)
+        let nsPlain = plain as NSString
+        let matches = regex.matches(in: plain, range: NSRange(location: 0, length: nsPlain.length))
+        for match in matches.reversed() {
+            guard match.numberOfRanges >= 2,
+                  let fullRange = Range(match.range(at: 0), in: plain),
+                  let tokenRange = Range(match.range(at: 1), in: plain),
+                  let replacementText = replacements[String(plain[tokenRange])],
+                  let lower = AttributedString.Index(fullRange.lowerBound, within: attr),
+                  let upper = AttributedString.Index(fullRange.upperBound, within: attr)
+            else {
+                continue
+            }
+            let attrRange = lower..<upper
+            guard !containsCodeRun(attrRange, in: attr) else { continue }
+            attr.replaceSubrange(attrRange, with: AttributedString(replacementText))
+        }
+    }
+
+    private static func containsCodeRun(
+        _ range: Range<AttributedString.Index>,
+        in attr: AttributedString
+    ) -> Bool {
+        attr.runs.contains { run in
+            guard run.range.overlaps(range) else { return false }
+            return run.inlinePresentationIntent?.contains(.code) == true
         }
     }
 
