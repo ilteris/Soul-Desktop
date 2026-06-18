@@ -30,9 +30,29 @@ func drainQueuedPromptAfterTurn() {
     /// so dispatching it directly keeps the safety-net drain without the dup.
     func beginQueuedRedispatch(_ next: QueuedPrompt) {
         isWorking = true
-        turnStartedAt = Date()
+        beginQueuedTurnDispatch(next)
         startStallWatchdog()
-        relocateQueuedBubbleToEnd(next)
+    }
+
+    func beginQueuedTurnDispatch(_ turn: QueuedPrompt) {
+        turnStartedAt = Date()
+        relocateQueuedBubbleToEnd(turn)
+        consumeSteerPendingIfNeeded(for: turn)
+    }
+
+    func consumeSteerPendingIfNeeded(for turn: QueuedPrompt) {
+        var queueState = TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        )
+        guard queueState.consumeSteerPending() else { return }
+        steerPending = queueState.steerPending
+        if let idx = items.firstIndex(where: { $0.id == turn.itemId }) {
+            items.insert(.status(id: UUID(), text: "↪ steered to next prompt"), at: idx)
+        } else {
+            items.append(.status(id: UUID(), text: "↪ steered to next prompt"))
+        }
     }
 
     func popNextQueuedPromptForDispatch() -> QueuedPrompt? {
@@ -42,11 +62,17 @@ func drainQueuedPromptAfterTurn() {
             steerPending: steerPending
         )
         guard queueState.claimQueuedPromptForDispatch() else { return nil }
-        let next = queuedPrompts.removeFirst()
-        if steeredVisiblePromptId == next.itemId {
+        return queuedPrompts.removeFirst()
+    }
+
+    /// A steered prompt is removed from `queuedPrompts` as soon as the send
+    /// loop claims it, but it must keep rendering outside the frozen queued
+    /// snapshot while the provider works on that turn. Clear the marker only
+    /// after that dispatched turn has reached a safe boundary.
+    func finishSteeredPromptDispatch(_ turn: QueuedPrompt) {
+        if steeredVisiblePromptId == turn.itemId {
             steeredVisiblePromptId = nil
         }
-        return next
     }
 
     func markInFlightToolCallsStopped() {
@@ -201,15 +227,18 @@ func drainQueuedPromptAfterTurn() {
         queueState.clearQueuedPrompts()
         queuedPrompts.removeAll()
         steeredVisiblePromptId = nil
-        if !queuedItemIDs.isEmpty {
-            items.removeAll { item in
-                if case .userMessage(let id, _, _) = item {
-                    return queuedItemIDs.contains(id)
-                }
-                return false
-            }
-        }
+        removeUserMessageBubbles(ids: queuedItemIDs)
         steerPending = queueState.steerPending
+    }
+
+    func removeUserMessageBubbles(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        items.removeAll { item in
+            if case .userMessage(let id, _, _) = item {
+                return ids.contains(id)
+            }
+            return false
+        }
     }
 
     /// SOUL-SOUL_DESKTOP-199: edit a queued (not-yet-dispatched) user prompt

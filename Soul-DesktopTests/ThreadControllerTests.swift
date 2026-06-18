@@ -357,6 +357,78 @@ struct ThreadControllerTests {
         #expect(controller.items.compactMap(Self.userMessageText) == ["active"])
     }
 
+    @Test func testSteeredPromptStaysVisibleAfterQueueClaimUntilTurnCompletes() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+        let queuedId = try #require(controller.queuedPrompts.first?.itemId)
+
+        await controller.steerToNextQueued()
+        #expect(controller.steeredVisiblePromptId == queuedId)
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active", "queued"])
+        #expect(controller.groupedItemsSplit.queued.isEmpty)
+
+        let claimed = try #require(controller.popNextQueuedPromptForDispatch())
+        #expect(claimed.itemId == queuedId)
+        #expect(controller.queuedPrompts.isEmpty)
+        #expect(controller.steeredVisiblePromptId == queuedId)
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active", "queued"])
+        #expect(controller.groupedItemsSplit.queued.isEmpty)
+        #expect(controller.steerPending)
+
+        controller.beginQueuedTurnDispatch(claimed)
+        #expect(!controller.steerPending)
+        #expect(controller.items.compactMap(Self.statusText) == ["↪ steered to next prompt"])
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active", "queued"])
+
+        controller.finishSteeredPromptDispatch(claimed)
+        #expect(controller.steeredVisiblePromptId == nil)
+        #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active", "queued"])
+    }
+
+    @Test func testQueuedRedispatchConsumesSteerPending() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+
+        await controller.steerToNextQueued()
+        let claimed = try #require(controller.popNextQueuedPromptForDispatch())
+        #expect(controller.steerPending)
+
+        controller.beginQueuedRedispatch(claimed)
+
+        #expect(!controller.steerPending)
+        #expect(controller.isWorking)
+        #expect(controller.items.compactMap(Self.statusText) == ["↪ steered to next prompt"])
+        #expect(controller.items.compactMap(Self.userMessageText) == ["active", "queued"])
+    }
+
+    @Test func testCancelDropsQueuedAndSteeredBubblesThatHaveNotDispatched() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+
+        await controller.steerToNextQueued()
+        #expect(controller.items.compactMap(Self.userMessageText) == ["active", "queued"])
+        #expect(controller.steeredVisiblePromptId != nil)
+
+        await controller.cancel()
+
+        #expect(controller.queuedPrompts.isEmpty)
+        #expect(controller.steeredVisiblePromptId == nil)
+        #expect(controller.items.compactMap(Self.userMessageText) == ["active"])
+        #expect(controller.groupedItemsSplit.queued.isEmpty)
+    }
+
     private static func testProject() -> SoulProject {
         SoulProject(
             id: "test",
@@ -376,5 +448,18 @@ struct ThreadControllerTests {
             return text
         }
         return nil
+    }
+
+    private static func statusText(_ item: ThreadItem) -> String? {
+        if case .status(_, let text) = item {
+            return text
+        }
+        return nil
+    }
+
+    private struct NoopLedger: ThreadLedger {
+        func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {}
+        func retireAgentChunks(projectKey: String, sessionId: String) {}
+        func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool { false }
     }
 }

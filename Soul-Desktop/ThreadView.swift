@@ -262,6 +262,7 @@ struct ThreadView: View {
     @ViewBuilder
     private func composerSection(proxy: ScrollViewProxy) -> some View {
         let composerEnabled = controller.canAcceptComposerInput
+        let visibleQueuedPrompts = controller.queuedPrompts.filter { controller.queuedItemIDs.contains($0.itemId) }
         VStack(spacing: 8) {
             // Auto-compact "Compacting…" banner. The AppShell-owned
             // AutoCompactController publishes a banner string while a
@@ -325,8 +326,8 @@ struct ThreadView: View {
                   supportsImageAttachments: controller.supportsImageAttachments,
                 onCancel: onCancel,
                 isWorking: controller.isWorking,
-                queuedCount: controller.queuedPrompts.count,
-                queuedTail: controller.queuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
+                queuedCount: visibleQueuedPrompts.count,
+                queuedTail: visibleQueuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
                 onEditQueued: { id, newText in
                     controller.editQueuedPrompt(itemId: id, newText: newText)
                 },
@@ -523,13 +524,11 @@ struct ThreadView: View {
                     followLiveTurn(proxy: proxy)
                     refreshTranscriptBottomState(layoutPasses: 3)
                 }
-                .onChange(of: controller.steeredVisiblePromptId) { _, steeredId in
-                    if steeredId != nil {
-                        frozenTranscriptRows = nil
-                        frozenHiddenMainCount = 0
-                        frozenQueuedItems = []
-                        followLiveTurn(proxy: proxy)
-                    }
+                .onChange(of: controller.steeredVisiblePromptId) { _, _ in
+                    frozenTranscriptRows = nil
+                    frozenHiddenMainCount = 0
+                    frozenQueuedItems = []
+                    followLiveTurn(proxy: proxy)
                 }
                 .onChange(of: controller.isWorking) { _, isWorking in
                     if isWorking {

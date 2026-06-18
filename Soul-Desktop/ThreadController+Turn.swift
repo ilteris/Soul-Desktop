@@ -199,8 +199,7 @@ extension ThreadController {
                         // UserPrompt was persisted synchronously when the
                         // visible bubble was created.
                     } else {
-                        turnStartedAt = Date()
-                        relocateQueuedBubbleToEnd(turn)
+                        beginQueuedTurnDispatch(turn)
                     }
                     isFirstTurn = false
                     await enrichWithComputerUseIfNeeded(turn: &turn)
@@ -260,6 +259,7 @@ extension ThreadController {
                     // Same finalize-card live injection as the ACP branch.
                     injectFinalizeSummaryIfFresh(sessionId: sid)
                     generateTitleAfterFirstSubstantiveTurnIfNeeded()
+                    finishSteeredPromptDispatch(turn)
 
                     current = popNextQueuedPromptForDispatch()
                 }
@@ -275,21 +275,7 @@ extension ThreadController {
                     // UserPrompt was persisted synchronously when the
                     // visible bubble was created.
                 } else {
-                    turnStartedAt = Date()
-                    relocateQueuedBubbleToEnd(turn)
-                    var queueState = TurnQueueState(
-                        isWorking: isWorking,
-                        queuedCount: queuedPrompts.count,
-                        steerPending: steerPending
-                    )
-                    if queueState.consumeSteerPending() {
-                        steerPending = queueState.steerPending
-                        if let idx = items.firstIndex(where: { $0.id == turn.itemId }) {
-                            items.insert(.status(id: UUID(), text: "↪ steered to next prompt"), at: idx)
-                        } else {
-                            items.append(.status(id: UUID(), text: "↪ steered to next prompt"))
-                        }
-                    }
+                    beginQueuedTurnDispatch(turn)
                 }
                 isFirstTurn = false
                 await enrichWithComputerUseIfNeeded(turn: &turn)
@@ -399,6 +385,7 @@ extension ThreadController {
                 injectFinalizeSummaryIfFresh(sessionId: sid)
 
                 generateTitleAfterFirstSubstantiveTurnIfNeeded()
+                finishSteeredPromptDispatch(turn)
 
                 // Pop the next queued turn. Re-check on each iteration so
                 // sends that arrived during this loop's await get drained
@@ -511,9 +498,12 @@ extension ThreadController {
             queuedCount: queuedPrompts.count,
             steerPending: steerPending
         )
+        let droppedQueuedItemIDs = Set(queuedPrompts.map(\.itemId))
         queueState.cancelActiveTurnAndClearQueue()
         queuedPrompts.removeAll()
         steerPending = queueState.steerPending
+        steeredVisiblePromptId = nil
+        removeUserMessageBubbles(ids: droppedQueuedItemIDs)
         markInFlightToolCallsStopped()
         appendCancelStatusIfNeeded()
         isWorking = queueState.isWorking

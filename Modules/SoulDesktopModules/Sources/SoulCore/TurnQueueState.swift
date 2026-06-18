@@ -56,7 +56,7 @@ public struct TurnQueueState: Equatable, Sendable {
 
     @discardableResult
     public mutating func requestSteerToNextQueuedPrompt() -> Bool {
-        guard isWorking, hasQueuedPrompt else { return false }
+        guard isWorking, hasQueuedPrompt, !steerPending else { return false }
         steerPending = true
         return true
     }

@@ -68,6 +68,19 @@ struct TurnQueueStateTests {
     }
 
     @Test
+    func steerRequestIsNotReentrantWhileProviderCancelIsPending() {
+        var state = TurnQueueState(isWorking: true, queuedCount: 2)
+
+        let firstRequest = state.requestSteerToNextQueuedPrompt()
+        #expect(firstRequest)
+        #expect(state.steerPending)
+        let secondRequest = state.requestSteerToNextQueuedPrompt()
+        #expect(!secondRequest)
+        #expect(state.steerPending)
+        #expect(state.queuedCount == 2)
+    }
+
+    @Test
     func clearAndCancelResetQueueState() {
         var clearing = TurnQueueState(isWorking: true, queuedCount: 3, steerPending: true)
         clearing.clearQueuedPrompts()
