@@ -37,6 +37,8 @@ extension AppShell {
                         onClose: { closeRightTab(.file) },
                         embedded: true
                     )
+                } else if rightPane.effectiveActiveTab == .web, let url = rightPane.webPreviewURL {
+                    WebPreviewPanel(source: .web(url))
                 } else if rightPane.effectiveActiveTab == .computerUse, rightPane.computerUseVisible {
                     ComputerUseConsolePanel(
                         projectPath: thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path,
@@ -84,6 +86,8 @@ extension AppShell {
             Button(action: {
                 if isActive, tab == .file, let path = rightPane.filePreviewPath {
                     revealInFinder(path)
+                } else if isActive, tab == .web, let url = rightPane.webPreviewURL {
+                    NSWorkspace.shared.open(url)
                 } else {
                     rightPane.activeTab = tab
                 }
@@ -99,7 +103,7 @@ extension AppShell {
                 .foregroundStyle(isActive ? SoulColor.fg : SoulColor.fgMuted)
             }
             .buttonStyle(.soulHover)
-            .help(isActive && tab == .file ? "Click again to reveal in Finder" : "")
+            .help(activeTabHelp(tab, isActive: isActive))
             .contextMenu {
                 if tab == .file, let path = rightPane.filePreviewPath {
                     Button("Reveal in Finder") { revealInFinder(path) }
@@ -110,6 +114,12 @@ extension AppShell {
                     Button("Copy Path") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString((path as NSString).expandingTildeInPath, forType: .string)
+                    }
+                } else if tab == .web, let url = rightPane.webPreviewURL {
+                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    Button("Copy URL") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
                     }
                 }
             }
@@ -156,7 +166,17 @@ extension AppShell {
         switch tab {
         case .review: return "checklist"
         case .file: return "doc.text"
+        case .web: return "globe"
         case .computerUse: return "cursorarrow.rays"
+        }
+    }
+
+    func activeTabHelp(_ tab: AppRightPaneTab, isActive: Bool) -> String {
+        guard isActive else { return "" }
+        switch tab {
+        case .file: return "Click again to reveal in Finder"
+        case .web: return "Click again to open in browser"
+        case .review, .computerUse: return ""
         }
     }
 }

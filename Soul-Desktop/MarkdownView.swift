@@ -29,6 +29,7 @@ struct MarkdownView: View, Equatable {
     var lazy: Bool = false
 
     @Environment(\.openFilePreview) private var openFilePreview
+    @Environment(\.openWebPreview) private var openWebPreview
 
     static func == (lhs: MarkdownView, rhs: MarkdownView) -> Bool {
         lhs.text == rhs.text
@@ -99,6 +100,10 @@ struct MarkdownView: View, Equatable {
             if scheme.isEmpty || !webSchemes.contains(scheme) {
                 let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
                 openFilePreview(raw)
+                return .handled
+            }
+            if WebPreviewRouting.shouldOpenInSoul(url) {
+                openWebPreview(url)
                 return .handled
             }
             return .systemAction

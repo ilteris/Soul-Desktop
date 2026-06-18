@@ -3,6 +3,7 @@ import SwiftUI
 enum AppRightPaneTab: Hashable {
     case review
     case file
+    case web
     case computerUse
 }
 
@@ -11,12 +12,14 @@ enum AppRightPaneTab: Hashable {
 final class AppRightPaneCoordinator {
     var reviewVisible: Bool
     var filePreviewPath: String?
+    var webPreviewURL: URL?
     var computerUseVisible: Bool
     var activeTab: AppRightPaneTab = .review
 
-    init(reviewVisible: Bool = false, filePreviewPath: String? = nil, computerUseVisible: Bool = false) {
+    init(reviewVisible: Bool = false, filePreviewPath: String? = nil, webPreviewURL: URL? = nil, computerUseVisible: Bool = false) {
         self.reviewVisible = reviewVisible
         self.filePreviewPath = filePreviewPath
+        self.webPreviewURL = webPreviewURL
         self.computerUseVisible = computerUseVisible
     }
 
@@ -24,6 +27,7 @@ final class AppRightPaneCoordinator {
         var tabs: [AppRightPaneTab] = []
         if reviewVisible { tabs.append(.review) }
         if filePreviewPath != nil { tabs.append(.file) }
+        if webPreviewURL != nil { tabs.append(.web) }
         if computerUseVisible { tabs.append(.computerUse) }
         return tabs
     }
@@ -56,6 +60,13 @@ final class AppRightPaneCoordinator {
         }
     }
 
+    func setWebPreviewURL(_ url: URL?) {
+        webPreviewURL = url
+        if url != nil {
+            activeTab = .web
+        }
+    }
+
     func toggleComputerUse() {
         computerUseVisible.toggle()
         if computerUseVisible {
@@ -66,6 +77,7 @@ final class AppRightPaneCoordinator {
     func closePane() {
         reviewVisible = false
         filePreviewPath = nil
+        webPreviewURL = nil
         computerUseVisible = false
     }
 
@@ -75,6 +87,8 @@ final class AppRightPaneCoordinator {
             reviewVisible = false
         case .file:
             filePreviewPath = nil
+        case .web:
+            webPreviewURL = nil
         case .computerUse:
             computerUseVisible = false
         }
@@ -87,6 +101,9 @@ final class AppRightPaneCoordinator {
         case .file:
             guard let path = filePreviewPath else { return "File" }
             return (path as NSString).lastPathComponent
+        case .web:
+            guard let url = webPreviewURL else { return "Web" }
+            return url.host() ?? url.absoluteString
         case .computerUse:
             return "Computer"
         }

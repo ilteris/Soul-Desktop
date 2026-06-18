@@ -214,6 +214,12 @@ struct AppShell: View {
         }
     }
 
+    private func setWebPreviewURL(_ url: URL?) {
+        withAnimation(sidePanelAnimation) {
+            rightPane.setWebPreviewURL(url)
+        }
+    }
+
     func openPreviewPath(_ raw: String) {
         let stripped = stripLineSuffix(raw)
         let resolved = resolvePreviewPath(stripped)
@@ -238,6 +244,16 @@ struct AppShell: View {
             }
         }
         setFilePreviewPath(final)
+    }
+
+    func openWebPreview(_ url: URL) {
+        if rightPane.webPreviewURL == nil {
+            sidebarWasOpenBeforePreview = showSidebar
+            if showSidebar {
+                setSidebarVisible(false)
+            }
+        }
+        setWebPreviewURL(url)
     }
 
     private func resolvePreviewPath(_ stripped: String) -> String {
@@ -397,14 +413,13 @@ struct AppShell: View {
                 if let thread { branchFrom(thread, to: provider) }
             }
         )
-        .environment(\.openFilePreview) { raw in
-            openPreviewPath(raw)
-        }
-        .onChange(of: rightPane.filePreviewPath) { _, new in
-            if new == nil, sidebarWasOpenBeforePreview, !showSidebar {
-                setSidebarVisible(true)
-            }
-        }
+        .previewRouting(
+            filePreviewPath: rightPane.filePreviewPath,
+            webPreviewURL: rightPane.webPreviewURL,
+            openFile: { raw in openPreviewPath(raw) },
+            openWeb: { url in openWebPreview(url) },
+            restoreSidebarIfNeeded: { restoreSidebarAfterPreviewClose() }
+        )
         .toolbar { mainToolbarContent }
         // SOUL-249: hide the unified toolbar's glass bezel so our own
         // capsule chips render flat instead of being double-wrapped in
@@ -501,6 +516,12 @@ struct AppShell: View {
         }
         .onChange(of: showTerminal) { _, isOpen in
             if !isOpen { devServerRunning = false }
+        }
+    }
+
+    private func restoreSidebarAfterPreviewClose() {
+        if sidebarWasOpenBeforePreview, !showSidebar {
+            setSidebarVisible(true)
         }
     }
 }

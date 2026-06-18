@@ -34,6 +34,7 @@ struct FilePreviewPanel: View {
     @State private var loadError: String? = nil
     @State private var truncated: Bool = false
     @State private var binary: Bool = false
+    @State private var showingSource: Bool = false
 
     private var url: URL { URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
     private var filename: String { url.lastPathComponent }
@@ -56,6 +57,7 @@ struct FilePreviewPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(SoulColor.bg)
         .task(id: path) { await loadAsync() }
+        .onChange(of: path) { _, _ in showingSource = false }
     }
 
     @ViewBuilder
@@ -124,6 +126,8 @@ struct FilePreviewPanel: View {
                 Button("Open externally") { NSWorkspace.shared.open(url) }
             }
             .padding(20)
+        } else if isHTML(ext) {
+            htmlPreview
         } else if ext == "md" || ext == "markdown" {
             ScrollView {
                 MarkdownView(text: content, lazy: true)
@@ -136,6 +140,77 @@ struct FilePreviewPanel: View {
             CodePreview(attributed: SwiftHighlighter.highlight(content))
         } else if let lang = HighlightrBridge.language(for: ext),
                   let attributed = HighlightrBridge.highlight(content, as: lang) {
+            CodePreview(attributed: attributed)
+        } else {
+            CodePreview(plain: content)
+        }
+    }
+
+    private func isHTML(_ ext: String) -> Bool {
+        ext == "html" || ext == "htm"
+    }
+
+    private var htmlPreview: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Button {
+                    showingSource = false
+                } label: {
+                    Image(systemName: "globe")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.soulHover)
+                .foregroundStyle(!showingSource ? SoulColor.fg : SoulColor.fgMuted)
+                .background(
+                    !showingSource ? SoulColor.surface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+                .help("Rendered preview")
+
+                Button {
+                    showingSource = true
+                } label: {
+                    Image(systemName: "curlybraces")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.soulHover)
+                .foregroundStyle(showingSource ? SoulColor.fg : SoulColor.fgMuted)
+                .background(
+                    showingSource ? SoulColor.surface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+                .help("View source")
+
+                Spacer()
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12))
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.soulHover)
+                .foregroundStyle(SoulColor.fgMuted)
+                .help("Open externally")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(SoulColor.bg)
+
+            Divider().background(SoulColor.border.opacity(0.4))
+            if showingSource {
+                htmlSourcePreview
+            } else {
+                WebPreviewPanel(source: .file(url))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var htmlSourcePreview: some View {
+        if let attributed = HighlightrBridge.highlight(content, as: "xml") {
             CodePreview(attributed: attributed)
         } else {
             CodePreview(plain: content)
