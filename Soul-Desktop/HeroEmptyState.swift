@@ -13,6 +13,7 @@ struct HeroEmptyState: View {
     var devURL: String? = nil
     var devRunning: Bool = false
     var onRunLocal: (String, String?) -> Void = { _, _ in }
+    var onAddReminder: () -> Void = {}
     @Binding var pendingPermissionMode: PermissionMode
     var provider: Provider = .geminiCLI
     var onPickHarness: (Provider) -> Void = { _ in }
@@ -42,6 +43,7 @@ struct HeroEmptyState: View {
                 devURL: devURL,
                 devRunning: devRunning,
                 onRunLocal: onRunLocal,
+                onAddReminder: onAddReminder,
                 permissionMode: $pendingPermissionMode,
                 provider: provider,
                 onPickHarness: onPickHarness,

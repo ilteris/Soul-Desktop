@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 struct AppShell: View {
     var registryStore: SoulRegistryStore = LiveSoulRegistryStore.shared
@@ -96,6 +97,8 @@ struct AppShell: View {
     @State var isImageDropTargeted: Bool = false
     @State var cachedContextUsage: ContextUsage? = nil
     @State var cachedContextUsageRequestID: String? = nil
+    @State var reminderStore = ReminderStore.shared
+    @State var pendingReminderContext: SoulReminderContext? = nil
 
     var contextUsage: ContextUsage? {
         if let replay = replay.controller {
@@ -160,6 +163,33 @@ struct AppShell: View {
 
     func currentProject() -> SoulProject? {
         projectWithPathOverride(workspace.selectedProject)
+    }
+
+    func openReminderSheet(thread: ThreadController?) {
+        guard let context = reminderContext(thread: thread) else { return }
+        pendingReminderContext = context
+    }
+
+    private func reminderContext(thread: ThreadController?) -> SoulReminderContext? {
+        if let thread {
+            return SoulReminderContext(
+                projectId: thread.project.id,
+                projectName: thread.project.name,
+                projectPath: thread.project.path,
+                threadId: thread.sessionId,
+                threadTitle: thread.displayTitle,
+                provider: thread.provider.rawValue
+            )
+        }
+        guard let project = currentProject() else { return nil }
+        return SoulReminderContext(
+            projectId: project.id,
+            projectName: project.name,
+            projectPath: project.path,
+            threadId: nil,
+            threadTitle: nil,
+            provider: harness.rawValue
+        )
     }
 
 
@@ -386,6 +416,9 @@ struct AppShell: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             Task { await workspace.refreshProjects() }
         }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now in
+            reminderStore.now = now
+        }
         // Top-center toast banner (lifted from SidebarView). Renders here
         // so it spans the whole window — visible regardless of which pane
         // the action was triggered from.
@@ -402,6 +435,15 @@ struct AppShell: View {
                     .padding(.top, 14)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            DueReminderBanner(
+                reminders: reminderStore.dueReminders,
+                onComplete: { reminderStore.complete($0) },
+                onDismiss: { reminderStore.dismiss($0) }
+            )
+            .padding(.top, 54)
+            .padding(.trailing, 24)
         }
         .animation(.easeInOut(duration: 0.18), value: repairToast)
         .autoCompactBridge(
@@ -460,6 +502,23 @@ struct AppShell: View {
                 },
                 onCancel: { showNewProject = false }
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { pendingReminderContext != nil },
+                set: { if !$0 { pendingReminderContext = nil } }
+            )
+        ) {
+            if let context = pendingReminderContext {
+                ReminderSheet(
+                    context: context,
+                    onSave: { draft in
+                        _ = reminderStore.create(draft)
+                        pendingReminderContext = nil
+                    },
+                    onCancel: { pendingReminderContext = nil }
+                )
+            }
         }
         .sheet(item: $externalLiveSession) { session in
             externalLiveSessionSheet(session)

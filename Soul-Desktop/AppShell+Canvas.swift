@@ -157,7 +157,8 @@ extension AppShell {
                     onBranchFromDisabled: { provider in branchFrom(ctrl, to: provider) },
                     branchSeedLoading: branchSeedLoading,
                     terminalActive: showTerminal,
-                    onToggleTerminal: toggleTerminal
+                    onToggleTerminal: toggleTerminal,
+                    onAddReminder: { openReminderSheet(thread: ctrl) }
                 )
                 .environment(\.autoCompactController, autoCompact)
                 .id(ctrl.id)
@@ -186,6 +187,7 @@ extension AppShell {
                         devURL: project?.devURL,
                         devRunning: devServerRunning,
                         onRunLocal: runLocal,
+                        onAddReminder: { openReminderSheet(thread: nil) },
                         pendingPermissionMode: $pendingPermissionMode,
                         provider: harness,
                         onPickHarness: onPickHarness,

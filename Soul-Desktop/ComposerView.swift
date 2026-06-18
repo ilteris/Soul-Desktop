@@ -39,6 +39,7 @@ struct ComposerView: View {
     var devURL: String? = nil
     var devRunning: Bool = false
     var onRunLocal: (String, String?) -> Void = { _, _ in }
+    var onAddReminder: () -> Void = {}
     /// Terminal toggle, surfaced in the composer footer alongside the
     /// project/branch chips. SOUL-200.
     var terminalActive: Bool = false
@@ -438,6 +439,11 @@ struct ComposerView: View {
                         action: openFilePicker
                     )
                     .disabled(!isSendEnabled)
+                    HoverableToolbarButton(
+                        icon: "bell",
+                        help: "Add a reminder for this project or thread",
+                        action: onAddReminder
+                    )
                     HarnessPicker(selection: provider, onSelect: onPickHarness)
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
