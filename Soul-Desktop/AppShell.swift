@@ -220,6 +220,17 @@ struct AppShell: View {
         var final = resolveEllipsisPath(resolved)
         final = resolveProjectPrefixedPreviewPath(final, stripped: stripped)
         final = resolveBarePreviewPath(final, stripped: stripped)
+        switch PreviewPathTarget.resolve(final) {
+        case .directory(let path):
+            if let preview = rightPane.filePreviewPath,
+               Self.sameFilesystemPath(preview, path) {
+                setFilePreviewPath(nil)
+            }
+            NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+            return
+        case .file(let path):
+            final = path
+        }
         if rightPane.filePreviewPath == nil {
             sidebarWasOpenBeforePreview = showSidebar
             if showSidebar {
@@ -257,6 +268,29 @@ struct AppShell: View {
               let match = findFileInKnownProjects(filename: stripped)
         else { return current }
         return match
+    }
+
+    static func sameFilesystemPath(_ lhs: String, _ rhs: String) -> Bool {
+        let left = URL(fileURLWithPath: (lhs as NSString).expandingTildeInPath)
+            .standardizedFileURL
+        let right = URL(fileURLWithPath: (rhs as NSString).expandingTildeInPath)
+            .standardizedFileURL
+        return left == right
+    }
+
+    enum PreviewPathTarget: Equatable {
+        case file(String)
+        case directory(String)
+
+        static func resolve(_ path: String, fileManager: FileManager = .default) -> PreviewPathTarget {
+            let expanded = (path as NSString).expandingTildeInPath
+            var isDirectory = ObjCBool(false)
+            if fileManager.fileExists(atPath: expanded, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return .directory(expanded)
+            }
+            return .file(expanded)
+        }
     }
 
     var body: some View {
