@@ -15,6 +15,7 @@ extension AppShellV2 {
         guard let project else { return }
         activeTask.bind(projectKey: project.id)
         taskQueue.bind(projectKey: project.id)
+        runStore.bind(projectKey: project.id)
         specialistStore.bind(projectKey: project.id, selected: pulseModel.delegateSpecialist) { specialist in
             pulseModel.delegateSpecialist = specialist
         }
@@ -130,8 +131,18 @@ extension AppShellV2 {
     }
 
     func inspectLatestOperation() {
+        if let run = runStore.activeRuns.first {
+            openRunRecord(run)
+            return
+        }
         let latest = pulseModel.operations.first(where: { $0.status == .running }) ?? pulseModel.operations.first
-        inspectedOperationID = latest?.id
+        if let latest {
+            inspectedOperationID = latest.id
+            return
+        }
+        if let run = runStore.recentRuns.first {
+            openRunRecord(run)
+        }
     }
 
     func openTimelineEntry(_ entry: SoulTimelineEntry) {
@@ -141,6 +152,10 @@ extension AppShellV2 {
         }
         if let taskID = entry.taskID, let project {
             openTaskRecord(project: project.id, taskId: taskID)
+            return
+        }
+        if let runID = entry.runID, let run = runStore.runs.first(where: { $0.runID == runID }) {
+            openRunRecord(run)
             return
         }
         if entry.kind == .session {
@@ -162,5 +177,9 @@ extension AppShellV2 {
             .appendingPathComponent("soul-operation-\(operation.id.uuidString.prefix(8)).log")
         try? body.write(to: url, atomically: true, encoding: .utf8)
         NSWorkspace.shared.open(url)
+    }
+
+    func openRunRecord(_ run: SoulRunRecord) {
+        NSWorkspace.shared.open(run.fileURL)
     }
 }

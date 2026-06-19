@@ -256,6 +256,7 @@ struct SoulOperationEvent: Identifiable, Hashable {
 
 struct SoulTimelineEntry: Identifiable, Hashable {
     enum Kind: Hashable {
+        case run
         case operation
         case task
         case session
@@ -271,6 +272,7 @@ struct SoulTimelineEntry: Identifiable, Hashable {
     var badge: String
     var operationID: UUID?
     var taskID: String?
+    var runID: String?
 }
 
 struct SoulTaskRecord: Identifiable, Hashable, Sendable {

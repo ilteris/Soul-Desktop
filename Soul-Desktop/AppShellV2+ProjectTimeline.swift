@@ -70,14 +70,19 @@ extension AppShellV2 {
     }
 
     var liveWorkTitle: String {
+        let activeRuns = runStore.activeRuns.count
         let running = pulseModel.runningOperationCount
         let live = recentSessions.filter(\.isLive).count
+        if activeRuns > 0 { return "\(activeRuns) durable run\(activeRuns == 1 ? "" : "s")" }
         if running > 0 { return "\(running) operation\(running == 1 ? "" : "s") running" }
         if live > 0 { return "\(live) live session\(live == 1 ? "" : "s")" }
         return "No active run"
     }
 
     var liveWorkDetail: String {
+        if let run = runStore.activeRuns.first {
+            return "\(run.runID): \(run.displayDetail)"
+        }
         if let op = pulseModel.operations.first(where: { $0.status == .running }) {
             return "\(op.title): \(op.summary)"
         }
@@ -139,6 +144,19 @@ extension AppShellV2 {
 
     var projectTimelineEntries: [SoulTimelineEntry] {
         var entries: [SoulTimelineEntry] = []
+
+        for run in runStore.recentRuns.prefix(6) {
+            entries.append(SoulTimelineEntry(
+                kind: .run,
+                icon: run.isActive ? "record.circle" : "checkmark.seal",
+                tint: run.statusTint,
+                title: run.displayTitle,
+                detail: run.displayDetail,
+                timestamp: run.timestamp,
+                badge: run.status,
+                runID: run.runID
+            ))
+        }
 
         for operation in pulseModel.operations {
             entries.append(SoulTimelineEntry(

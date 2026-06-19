@@ -16,6 +16,7 @@ struct AppShellV2: View {
     @State var selectedProvider: Provider = .geminiCLI
     @StateObject var activeTask = ActiveTaskStore()
     @StateObject var taskQueue = SoulTaskQueueStore()
+    @StateObject var runStore = SoulRunStore()
     @StateObject var specialistStore = SoulSpecialistStore()
     @StateObject var pulseModel = SoulControlPanelModel()
     @State var showAllTasks: Bool = false
