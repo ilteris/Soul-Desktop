@@ -49,13 +49,16 @@ extension AppShellV2 {
 
     func runPulse() {
         guard let project else { return }
-        pulseModel.run(kind: .pulse, title: "Pulse", args: ["pulse", "--output", "text", project.path], project: project.id)
+        pulseModel.run(kind: .pulse, title: "Pulse", args: ["pulse", "--output", "text", project.path], project: project.id) {
+            refreshRuns()
+        }
     }
 
     func runVerify() {
         guard let project else { return }
         pulseModel.run(kind: .verify, title: "Verify Project", args: ["verify", "--project", project.id], project: project.id) {
             refreshProjectState()
+            refreshRuns()
         }
     }
 
@@ -64,11 +67,14 @@ extension AppShellV2 {
         let kind: SoulOperation.Kind = command == "compact" ? .compact : .finalize
         pulseModel.run(kind: kind, title: command.capitalized, args: [command, "--project", project.id], project: project.id) {
             refreshProjectState()
+            refreshRuns()
         }
     }
 
     func runAppServerDoctor() {
-        pulseModel.run(kind: .appServerDoctor, title: "App-server Doctor", args: ["app-server", "doctor"], project: project?.id)
+        pulseModel.run(kind: .appServerDoctor, title: "App-server Doctor", args: ["app-server", "doctor"], project: project?.id) {
+            refreshRuns()
+        }
     }
 
     func runDelegate(dryRun: Bool) {
@@ -90,14 +96,14 @@ extension AppShellV2 {
     }
 
     func selectTask(_ task: SoulTaskRecord) {
-        pulseModel.run(kind: .task, title: "Focus Task", args: ["task", "select", task.id, "--project", task.project], project: task.project) {
+        pulseModel.run(kind: .task, title: "Focus Task", args: ["task", "select", task.id, "--project", task.project], project: task.project, durable: false) {
             taskQueue.refresh()
             activeTask.bind(projectKey: task.project)
         }
     }
 
     func startTask(_ task: SoulTaskRecord) {
-        pulseModel.run(kind: .task, title: "Start Task", args: ["task", "status", "in_progress", "--task_id", task.id, "--project", task.project], project: task.project) {
+        pulseModel.run(kind: .task, title: "Start Task", args: ["task", "status", "in_progress", "--task_id", task.id, "--project", task.project], project: task.project, durable: false) {
             refreshTaskQueue()
         }
     }
@@ -109,6 +115,10 @@ extension AppShellV2 {
     func refreshTaskQueue() {
         taskQueue.refresh()
         activeTask.bind(projectKey: project?.id)
+    }
+
+    func refreshRuns() {
+        Task { await runStore.refresh() }
     }
 
     func openActiveTaskRecord() {

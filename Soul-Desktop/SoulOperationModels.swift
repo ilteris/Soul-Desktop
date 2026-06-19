@@ -58,6 +58,9 @@ struct SoulOperation: Identifiable, Hashable {
     var lastUpdatedAt: Date
     var processID: Int32?
     var endedAt: Date?
+    var durableRunID: String?
+    var durableStepID: String?
+    var durableStepOwnedByDesktop: Bool
     var summary: String
     var logs: String
 }
