@@ -60,7 +60,7 @@ struct SessionWorktreeProvisionerTests {
     @Test
     func autoProvisionResolutionChain() {
         // 1. Explicit per-session policy in PROJECTS.json
-        let pSession = SoulProject(id: "soul", name: "Soul OS", path: "~/dotfiles/soul", worktreePolicy: "per-session")
+        let pSession = SoulProject(id: "soul", name: "Soul OS", path: "~/soul-cli/soul", worktreePolicy: "per-session")
         #expect(SessionWorktreeProvisioner.autoProvisionEnabled(for: pSession) == true)
 
         // 2. Explicit off policy in PROJECTS.json

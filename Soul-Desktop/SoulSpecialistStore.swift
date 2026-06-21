@@ -44,7 +44,7 @@ final class SoulSpecialistStore: ObservableObject {
     nonisolated private static func projectTeam(projectKey: String?) -> [String] {
         guard let projectKey, !projectKey.isEmpty else { return [] }
         // Single source of truth: `soul project show <key>` (kernel CLI).
-        // The legacy dual-path read of ~/dotfiles/soul/config/PROJECTS.json
+        // The legacy dual-path read of ~/soul-cli/soul/config/PROJECTS.json
         // + ~/soul_registry/PROJECTS.json was retired in
         // SOUL-SOUL_DESKTOP-261 — the CLI now handles project-key lookup
         // and harness_config resolution. Returns [] on CLI failure or when
@@ -68,7 +68,7 @@ final class SoulSpecialistStore: ObservableObject {
     nonisolated private static func agentFileSpecialists() -> [String] {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let directories = [
-            home.appendingPathComponent("dotfiles/soul/agents"),
+            home.appendingPathComponent("soul-cli/soul/agents"),
             home.appendingPathComponent("dotfiles/gemini/agents"),
             home.appendingPathComponent(".gemini/agents")
         ]

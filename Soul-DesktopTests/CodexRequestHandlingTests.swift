@@ -111,7 +111,7 @@ struct CodexRequestHandlingTests {
         let oldSoulHome = SoulRegistry.soulHomePath
         let oldRegistry = SoulRegistry.registryPath
         SoulRegistry.homePath = tempDir.path
-        SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulPath = tempDir.appendingPathComponent("soul-cli/soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
         SoulRegistry.soulHomePath = SoulRegistry.registryPath
         defer {
@@ -185,7 +185,7 @@ struct CodexRequestHandlingTests {
         let oldSoulHome = SoulRegistry.soulHomePath
         let oldRegistry = SoulRegistry.registryPath
         SoulRegistry.homePath = tempDir.path
-        SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulPath = tempDir.appendingPathComponent("soul-cli/soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
         SoulRegistry.soulHomePath = SoulRegistry.registryPath
         defer {

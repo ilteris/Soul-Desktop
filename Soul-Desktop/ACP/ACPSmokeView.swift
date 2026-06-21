@@ -8,7 +8,7 @@ final class ACPSmokeViewModel {
     var provider: Provider = .geminiCLI
     var prompt: String = "what soul project are you working in? answer in one sentence."
     var projectKey: String = "soul"
-    var projectPath: String = NSHomeDirectory() + "/dotfiles/soul"
+    var projectPath: String = NSHomeDirectory() + "/soul-cli/soul"
     var hydrate: Bool = true
     var autoAllow: Bool = true
     var logs: [String] = []

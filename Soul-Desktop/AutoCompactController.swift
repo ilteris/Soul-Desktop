@@ -176,7 +176,7 @@ final class AutoCompactController {
         usagePct: Double,
         force: Bool
     ) async -> Directive? {
-        let soulBin = ("~/dotfiles/soul/bin/soul" as NSString).expandingTildeInPath
+        let soulBin = ("~/soul-cli/soul/bin/soul" as NSString).expandingTildeInPath
         guard FileManager.default.isExecutableFile(atPath: soulBin) else {
             NSLog("[autocompact] missing or non-exec kernel binary at \(soulBin)")
             return nil
@@ -313,7 +313,7 @@ extension AutoCompactController {
 
 // MARK: - Policy
 
-/// Mirror of `~/dotfiles/soul/config/compact_policy.json` (SPEC-126).
+/// Mirror of `~/soul-cli/soul/config/compact_policy.json` (SPEC-126).
 /// Loaded once at controller init. Kernel reads the same file via
 /// `kernel/commands/soul_autocompact.py::_load_policy`, so threshold
 /// changes propagate to both halves without recompiling.
@@ -339,7 +339,7 @@ struct CompactPolicy {
     }
 
     static func load() -> CompactPolicy {
-        let path = ("~/dotfiles/soul/config/compact_policy.json" as NSString).expandingTildeInPath
+        let path = ("~/soul-cli/soul/config/compact_policy.json" as NSString).expandingTildeInPath
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {

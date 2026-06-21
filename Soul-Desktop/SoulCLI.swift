@@ -12,7 +12,7 @@ enum SoulCLIError: LocalizedError {
             let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return message.isEmpty ? "soul CLI failed." : message
         case .executableNotFound:
-            return "Could not find the soul CLI at ~/dotfiles/soul/bin/soul."
+            return "Could not find the soul CLI at ~/soul-cli/soul/bin/soul."
         case .decodeFailed:
             return "Could not decode soul CLI output."
         }
@@ -304,7 +304,7 @@ enum SoulCLI {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         let candidates = [
-            "\(home)/dotfiles/soul/bin/soul",
+            "\(home)/soul-cli/soul/bin/soul",
             "\(home)/.local/bin/soul",
             "\(home)/bin/soul",
             "/opt/homebrew/bin/soul",
@@ -329,7 +329,7 @@ enum SoulCLI {
     private static func cliEnvironment() -> [String: String] {
         let home = NSHomeDirectory()
         let extras = [
-            "\(home)/dotfiles/soul/bin",
+            "\(home)/soul-cli/soul/bin",
             "\(home)/dotfiles/bin",
             "\(home)/bin",
             "\(home)/.local/bin",
@@ -353,7 +353,7 @@ enum SoulCLI {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = dirs.joined(separator: ":")
         env["HOME"] = home
-        env["SOUL_PATH"] = "\(home)/dotfiles/soul"
+        env["SOUL_PATH"] = "\(home)/soul-cli/soul"
         // ProcessInfo.environment is a launch-time snapshot. Tests and some
         // embedding paths swizzle these with setenv() before invoking the
         // kernel CLI, so read the live process environment explicitly.

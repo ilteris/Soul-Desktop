@@ -6,7 +6,7 @@ struct HydrationResult {
 }
 
 enum SoulHydration {
-    static let defaultSoulPath = NSHomeDirectory() + "/dotfiles/soul"
+    static let defaultSoulPath = NSHomeDirectory() + "/soul-cli/soul"
 
     static func prepare(provider: Provider,
                         projectKey: String,

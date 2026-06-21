@@ -175,7 +175,7 @@ enum SoulRegistry {
     private static let diskCacheSchemaVersion = 2
 
     nonisolated(unsafe) static var homePath: String = NSHomeDirectory()
-    nonisolated(unsafe) static var soulPath: String = homePath + "/dotfiles/soul"
+    nonisolated(unsafe) static var soulPath: String = homePath + "/soul-cli/soul"
     /// SOUL-265 (2026-05-23): SOUL_HOME default reverted from `~/.soul` to
     /// `~/soul_registry`. The kernel middleware (gemini-cli's Soul hooks
     /// bundle, version 8.6.27-fidelity) still writes exclusively to
@@ -406,7 +406,7 @@ enum SoulRegistry {
 
     static func projects() -> [SoulProject] {
         // Source of truth: `soul project list` (kernel CLI). Direct read of
-        // ~/dotfiles/soul/config/PROJECTS.json was retired in
+        // ~/soul-cli/soul/config/PROJECTS.json was retired in
         // SOUL-SOUL_DESKTOP-261 so the desktop and kernel can't drift on the
         // project-manifest schema. The CLI emits JSONL (one project per
         // line). On failure (CLI missing, non-zero exit) we return [] so

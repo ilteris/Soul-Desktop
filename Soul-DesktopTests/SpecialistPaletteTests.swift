@@ -16,7 +16,7 @@ struct SpecialistPaletteTests {
     @Test
     func parsesPythonWrappedSoulDelegateCommand() {
         let parsed = SpecialistPalette.parseDelegateCommand(
-            #".venv/bin/python /Users/ilteris/dotfiles/soul/bin/soul delegate adversarial_judge "Second opinion" --project soul --provider claude"#
+            #".venv/bin/python /Users/ilteris/soul-cli/soul/bin/soul delegate adversarial_judge "Second opinion" --project soul --provider claude"#
         )
 
         #expect(parsed?.specialist == "adversarial_judge")

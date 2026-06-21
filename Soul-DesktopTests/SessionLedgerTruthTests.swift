@@ -554,7 +554,7 @@ struct SessionLedgerTruthTests {
     @Test func environmentContextDoesNotBecomeResolvedTitle() {
         let environment = """
         <environment_context>
-          <cwd>/Users/ilteris/dotfiles/soul</cwd>
+          <cwd>/Users/ilteris/soul-cli/soul</cwd>
           <approval_policy>never</approval_policy>
         </environment_context>
         """
@@ -678,7 +678,7 @@ struct SessionLedgerTruthTests {
 
         1. **Execution**:
            - Call the kernel:
-             `python3 ~/dotfiles/soul/kernel/commands/pulse.py`
+             `python3 ~/soul-cli/soul/kernel/commands/pulse.py`
 
         2. **Report**:
            - Summarize the active task, pending tasks, and recent session activity shown in the output.
@@ -1292,7 +1292,7 @@ struct SessionLedgerTruthTests {
         SoulRegistry.invalidateCache()
 
         SoulRegistry.homePath = tempDir.path
-        SoulRegistry.soulPath = tempDir.appendingPathComponent("dotfiles/soul").path
+        SoulRegistry.soulPath = tempDir.appendingPathComponent("soul-cli/soul").path
         SoulRegistry.registryPath = tempDir.appendingPathComponent("soul_registry").path
         SoulRegistry.soulHomePath = SoulRegistry.registryPath
         // The Swift-side `SoulRegistry.*Path` swizzle only steers in-process

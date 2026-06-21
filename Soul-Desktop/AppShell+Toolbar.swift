@@ -444,20 +444,20 @@ func stripLineSuffix(_ path: String) -> String {
 }
 
 /// Searches the top level of every active project's root directory plus a
-/// short list of implicit kernel roots (`~/dotfiles/soul`) for a file
+/// short list of implicit kernel roots (`~/soul-cli/soul`) for a file
 /// matching `filename` exactly. Returns the absolute path when exactly one
 /// match exists across all roots — anything ambiguous (zero / multi) returns
 /// nil so the caller falls through to its "not found" path.
 ///
 /// The kernel roots cover bare references to PROJECTS.json / SOUL.md / etc.
-/// — files that live under ~/dotfiles/soul/ but get name-dropped in prose
+/// — files that live under ~/soul-cli/soul/ but get name-dropped in prose
 /// without an explicit project context. Same bounded BFS + skip-dirs as the
 /// project search so a deep dependency tree can't make link clicks hitch.
 func findFileInKnownProjects(filename: String) -> String? {
     // SOUL-SOUL_DESKTOP-185: widened from activeProjects() to all projects
     // and added ~/Code, ~/dotfiles roots. Agents frequently reference
     // files in archived projects (the search before missed those) or in
-    // the dotfiles tree outside `~/dotfiles/soul/` (where UPSTREAM_PRS.md,
+    // the dotfiles tree outside `~/soul-cli/soul/` (where UPSTREAM_PRS.md,
     // README.md etc. live). The path resolver used to dead-end into
     // "couldn't read file" for any of those cases.
     // SOUL-SOUL_DESKTOP-161: read cached project list rather than calling
@@ -468,7 +468,7 @@ func findFileInKnownProjects(filename: String) -> String? {
         .filter { !$0.isEmpty }
     let home = NSHomeDirectory()
     let extraRoots = [
-        "\(home)/dotfiles/soul",
+        "\(home)/soul-cli/soul",
         "\(home)/dotfiles",
         "\(home)/Code",
     ]
@@ -477,7 +477,7 @@ func findFileInKnownProjects(filename: String) -> String? {
     })
     // First-match wins. Project roots come before kernel roots, so when an
     // agent says `README.md` and the active project has one at its root
-    // that's what opens — only fall through to `~/dotfiles/soul` when no
+    // that's what opens — only fall through to `~/soul-cli/soul` when no
     // project has it. Previous "exactly one match" guard returned nil on
     // collisions and silently failed; first-match is more useful in
     // practice and the bias matches user expectation.

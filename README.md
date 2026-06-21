@@ -74,7 +74,7 @@ Each provider has a different resume story; the desktop normalizes them through 
 
 - **`~/soul_registry/sessions/<project>/<sid>/hooks.jsonl`** — the kernel ledger. Every prompt, every assistant turn, every tool call. Replay reads from this.
 - **`~/soul_registry/sessions/<project>/<sid>.json`** — finalize summary written by `/finalize`.
-- **`~/dotfiles/soul/config/PROJECTS.json`** — the project manifest. Adds a path/name/pillar entry for every project the sidebar should know about.
+- **`~/soul-cli/soul/config/PROJECTS.json`** — the project manifest. Adds a path/name/pillar entry for every project the sidebar should know about.
 
 Provider-specific transcripts (`~/.claude/projects/...`, `~/.gemini/tmp/...`, `~/.pi/agent/sessions/...`) are treated as caches. If they're missing or corrupt, the kernel ledger is enough to render a Replay.
 

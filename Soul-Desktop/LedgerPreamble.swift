@@ -16,7 +16,7 @@ import SoulCore
 /// session) or skip and start fresh (with a status row explaining why).
 /// SPEC-245-K step 4. Where in the provider's session/new wire format
 /// the preamble lands. Raw values match the kernel's channel strings
-/// (see `~/dotfiles/soul/kernel/preamble/providers.py`).
+/// (see `~/soul-cli/soul/kernel/preamble/providers.py`).
 enum PreambleChannel: String {
     /// Claude (claude-agent-acp): pack into `_meta.systemPrompt` on
     /// session/new. Agent consumes as native system prompt.
@@ -28,7 +28,7 @@ enum PreambleChannel: String {
 
 /// SPEC-245-K Phase A step 2. JSON payload returned by
 /// `soul preamble --format json`. Mirrored from
-/// `~/dotfiles/soul/kernel/commands/soul_preamble.py::_emit`.
+/// `~/soul-cli/soul/kernel/commands/soul_preamble.py::_emit`.
 struct PreamblePayload: Decodable {
     let preamble: String
     let channel: String

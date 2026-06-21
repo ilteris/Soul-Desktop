@@ -147,8 +147,8 @@ private func geminiACPArguments() -> [String] {
     let includeDirs = [
         // Agents are routinely instructed to inspect Soul kernel scripts from
         // project sessions. Without these include dirs Gemini's read/edit
-        // tools reject paths like ~/dotfiles/soul/bin/soul as out-of-workspace.
-        "\(home)/dotfiles/soul",
+        // tools reject paths like ~/soul-cli/soul/bin/soul as out-of-workspace.
+        "\(home)/soul-cli/soul",
         "\(home)/dotfiles",
     ].filter { FileManager.default.fileExists(atPath: $0) }
 
@@ -164,7 +164,7 @@ private func enrichedEnvironment() -> [String: String] {
         "\(home)/.bun/bin",
         // Soul OS kernel CLI — lets spawned agents call `soul pulse`,
         // `soul task ...`, and friends without a PATH miss.
-        "\(home)/dotfiles/soul/bin",
+        "\(home)/soul-cli/soul/bin",
         // User's personal bin in dotfiles. Hosts the `gemini` wrapper that
         // execs `node $HOME/Code/gemini-cli/.../index.js`, plus other
         // per-user binaries. Spawned kernel scripts (`soul delegate

@@ -47,7 +47,7 @@ extension ThreadController {
         // agent allowed empty-display sends to write hollow UserPrompt
         // rows to hooks.jsonl. soul/35d273e1 had 10 empties between two
         // real prompts. Mirrors event_mapper.substantive() in
-        // ~/dotfiles/soul/app_server/event_mapper.py:71.
+        // ~/soul-cli/soul/app_server/event_mapper.py:71.
         guard !trimmedDisplay.isEmpty, (!trimmedAgent.isEmpty || !extraBlocks.isEmpty) else { return nil }
         if sessionId == nil {
             sessionId = id
