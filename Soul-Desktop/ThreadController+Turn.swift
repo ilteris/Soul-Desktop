@@ -304,8 +304,16 @@ extension ThreadController {
                     attachments: turn.extraBlocks
                 )
                 guard promptRequest.canDispatch else { return }
+                logLifecycle(
+                    "prompt.dispatch",
+                    note: "rpcSessionId=\(promptRequest.session.rpcSessionID ?? "nil") textChars=\(agentText.count) attachments=\(turn.extraBlocks.count) queued=\(queuedPrompts.count)"
+                )
                 do {
                     try await runtime.prompt(promptRequest)
+                    logLifecycle(
+                        "prompt.complete",
+                        note: "rpcSessionId=\(promptRequest.session.rpcSessionID ?? "nil")"
+                    )
                 } catch ACPClientError.rpcError(let rpc) where Self.isInvalidSessionRPC(rpc) {
                     // SOUL-SOUL_DESKTOP-103: Gemini-CLI rotates / drops the
                     // session mid-conversation (observed: session loaded fine,
@@ -341,6 +349,10 @@ extension ThreadController {
                     // was already cleared above. Re-sending agentText
                     // makes the recovery idempotent.
                     try await runtime.prompt(promptRequest)
+                    logLifecycle(
+                        "prompt.complete",
+                        note: "rpcSessionId=\(promptRequest.session.rpcSessionID ?? "nil") retry=true"
+                    )
                 }
 
                 // SOUL-SOUL_DESKTOP-379 (A): the prompt has resolved, so the

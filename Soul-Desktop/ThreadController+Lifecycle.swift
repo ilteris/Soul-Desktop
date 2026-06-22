@@ -16,6 +16,25 @@ import SoulRuntime
 /// ergonomics: shrink ThreadController.swift below the threshold where
 /// a coding agent can hold it in context.
 extension ThreadController {
+    enum SessionEstablishmentRoute: Equatable {
+        case pendingFirstSendResume
+        case stopOrStallRecovery
+        case freshSession
+    }
+
+    static func sessionEstablishmentRoute(
+        pendingResumeOnFirstSend: Bool,
+        sessionId: String?,
+        nativeSessionId: String?
+    ) -> SessionEstablishmentRoute {
+        if pendingResumeOnFirstSend, sessionId != nil {
+            return .pendingFirstSendResume
+        }
+        if sessionId != nil, nativeSessionId != nil {
+            return .stopOrStallRecovery
+        }
+        return .freshSession
+    }
 
     func loadSession(id sid: String) async {
         guard !hasInitialized else { return }
@@ -326,15 +345,52 @@ extension ThreadController {
             preambleStagingTask = nil
         }
 
-        // SOUL-SOUL_DESKTOP-245 (Phase B): stop / stall recovery. Manual
-        // cancel tears down the child process; on the next send we used
-        // to call session/load to re-register the prior native sid with
-        // the agent. That worked but re-fed the entire transcript to the
-        // model — same overflow class as the archive-open path. Now we
-        // mint a fresh native sid and stage a preamble built from the
-        // current in-canvas items so the agent picks up where it left off
-        // without re-reading every prior turn. Kernel sid preserved.
-        if let sid = sessionId, nativeSessionId != nil {
+        // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. We
+        // hydrated the canvas from the kernel ledger; rather than asking
+        // the agent to `session/load` and replay the full transcript
+        // (which overflows the context window on long sessions and forces
+        // the user to watch an AI recap they didn't ask for), mint a
+        // fresh native session and let the preamble we staged in hydrate
+        // carry the prior conversation as inline context on first send.
+        // Kernel sid is preserved by mintFreshNativeSession — same row,
+        // same ledger, new agent process.
+        switch Self.sessionEstablishmentRoute(
+            pendingResumeOnFirstSend: pendingResumeOnFirstSend,
+            sessionId: sessionId,
+            nativeSessionId: nativeSessionId
+        ) {
+        case .pendingFirstSendResume:
+            guard let sid = sessionId else { return }
+            pendingResumeOnFirstSend = false
+            try await spawnAndInitialize(skipNewSession: true)
+            guard runtimes.acp != nil else { return }
+            try await mintFreshNativeSession(
+                kernelSid: sid,
+                reason: pendingContextPreamble != nil
+                    ? "Phase B bypass — preamble carries prior context"
+                    : "Phase B bypass — no preamble (empty / too large)",
+                variant: .phaseBBypass
+            )
+            return
+        case .stopOrStallRecovery:
+            break
+        case .freshSession:
+            break
+        }
+
+        // SOUL-SOUL_DESKTOP-423: this branch must run only for real
+        // stop/stall recovery, after the first-send resume case above has had
+        // priority. Rehydrated sessions commonly have both `sessionId` and an
+        // old `nativeSessionId`; treating that as stop recovery rebuilt the
+        // preamble from `items` after the new user bubble was already appended,
+        // duplicating the just-sent prompt into the resume context and leaving
+        // `pendingResumeOnFirstSend` stuck true.
+        if Self.sessionEstablishmentRoute(
+            pendingResumeOnFirstSend: pendingResumeOnFirstSend,
+            sessionId: sessionId,
+            nativeSessionId: nativeSessionId
+        ) == .stopOrStallRecovery, let sid = sessionId {
+            pendingResumeOnFirstSend = false
             try await spawnAndInitialize(skipNewSession: true)
             guard runtimes.acp != nil else { return }
             // Stop-recovery path: we already have a live session AND a
@@ -346,29 +402,6 @@ extension ThreadController {
             try await mintFreshNativeSession(
                 kernelSid: sid,
                 reason: "stop/stall recovery — Phase B fresh-session bypass",
-                variant: .phaseBBypass
-            )
-            return
-        }
-
-        // SOUL-SOUL_DESKTOP-245 (Phase B): bypass-first resume. We
-        // hydrated the canvas from the kernel ledger; rather than asking
-        // the agent to `session/load` and replay the full transcript
-        // (which overflows the context window on long sessions and forces
-        // the user to watch an AI recap they didn't ask for), mint a
-        // fresh native session and let the preamble we staged in hydrate
-        // carry the prior conversation as inline context on first send.
-        // Kernel sid is preserved by mintFreshNativeSession — same row,
-        // same ledger, new agent process.
-        if pendingResumeOnFirstSend, let sid = sessionId {
-            pendingResumeOnFirstSend = false
-            try await spawnAndInitialize(skipNewSession: true)
-            guard runtimes.acp != nil else { return }
-            try await mintFreshNativeSession(
-                kernelSid: sid,
-                reason: pendingContextPreamble != nil
-                    ? "Phase B bypass — preamble carries prior context"
-                    : "Phase B bypass — no preamble (empty / too large)",
                 variant: .phaseBBypass
             )
             return

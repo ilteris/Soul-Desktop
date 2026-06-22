@@ -210,6 +210,26 @@ struct ThreadControllerTests {
         #expect(controller.sessionId == "kernel-session")
     }
 
+    @Test func firstSendResumeTakesPrecedenceOverExistingNativeSessionId() {
+        let route = ThreadController.sessionEstablishmentRoute(
+            pendingResumeOnFirstSend: true,
+            sessionId: "kernel-session",
+            nativeSessionId: "stale-native-session"
+        )
+
+        #expect(route == .pendingFirstSendResume)
+    }
+
+    @Test func existingNativeSessionIdWithoutPendingResumeUsesRecoveryRoute() {
+        let route = ThreadController.sessionEstablishmentRoute(
+            pendingResumeOnFirstSend: false,
+            sessionId: "kernel-session",
+            nativeSessionId: "stale-native-session"
+        )
+
+        #expect(route == .stopOrStallRecovery)
+    }
+
     @Test func testSetActiveThreadBumpsActivationNonceOnlyForSelectedThread() async throws {
         let project = Self.testProject()
         let first = ThreadController(provider: .geminiCLI, project: project)
