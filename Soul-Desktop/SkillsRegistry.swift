@@ -1,6 +1,26 @@
 import Foundation
 
 enum SkillsRegistry {
+    static func builtInCommand(named name: String) -> SlashCommand? {
+        if name.caseInsensitiveCompare(SlashCommand.compact.name) == .orderedSame {
+            return .compact
+        }
+        let skillName = name.lowercased()
+        let skillPath = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".claude/skills/\(skillName)")
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: skillPath, isDirectory: &isDir),
+              isDir.boolValue
+        else { return nil }
+
+        let command = SlashCommand(
+            name: skillName,
+            description: parseFrontmatterDescription(at: "\(skillPath)/SKILL.md"),
+            inputHint: nil
+        )
+        return command.isSoulSlashCommand ? command : nil
+    }
+
     static func builtInCommands() -> [SlashCommand] {
         let fm = FileManager.default
         let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/skills")

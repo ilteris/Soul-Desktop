@@ -376,6 +376,41 @@ struct Soul_DesktopTests {
         #expect(SlashCommandParse.parse("compact the code please").commandName == nil)
     }
 
+    @Test func composerResolvesBareFinalizeOnSubmit() throws {
+        let finalize = SlashCommand(name: "finalize", description: nil, inputHint: nil)
+        let resolved = ComposerSlashCommandResolver.resolve(
+            activeCommand: nil,
+            text: "/finalize",
+            commands: [finalize]
+        )
+
+        #expect(resolved?.command.name == "finalize")
+        #expect(resolved?.arguments == "")
+    }
+
+    @Test func composerResolvesFinalizeArgumentsOnSubmit() throws {
+        let finalize = SlashCommand(name: "finalize", description: nil, inputHint: nil)
+        let resolved = ComposerSlashCommandResolver.resolve(
+            activeCommand: nil,
+            text: "/finalize write the handoff",
+            commands: [finalize]
+        )
+
+        #expect(resolved?.command.name == "finalize")
+        #expect(resolved?.arguments == "write the handoff")
+    }
+
+    @Test func composerDoesNotResolveProseAsSlashCommand() throws {
+        let finalize = SlashCommand(name: "finalize", description: nil, inputHint: nil)
+        let resolved = ComposerSlashCommandResolver.resolve(
+            activeCommand: nil,
+            text: "please finalize this explanation",
+            commands: [finalize]
+        )
+
+        #expect(resolved == nil)
+    }
+
     @Test func addProjectPlannerReusesRegisteredProject() throws {
         let resolution = ProjectFolderResolution(
             status: "registered",

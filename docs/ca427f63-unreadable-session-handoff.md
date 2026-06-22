@@ -3,7 +3,7 @@
 **Author:** Teddy (systems_architect), 2026-05-16
 **Audience:** Whichever agent picks this up next.
 **Tasks in play:**
-- `SOUL-SOUL-010` — Restore `dotfiles/soul` to canonical gemini-cli slug `soul` (completed locally 2026-05-16)
+- `SOUL-SOUL-010` — Restore the then-current `dotfiles/soul` kernel checkout to canonical gemini-cli slug `soul` (completed locally 2026-05-16)
 - `SOUL-SOUL-011` — Reconstruct ca427f63 Gemini chat into canonical soul bucket (completed locally 2026-05-16)
 - `SOUL-SOUL-012` — Distinguish header-only transcript repair from NativeSessionID backfill (kernel diagnostic landed locally 2026-05-16)
 - `SOUL-SOUL_DESKTOP-060` — Detect concurrent-writer terminal Gemini sessions (filed earlier; tangentially related)
@@ -18,8 +18,8 @@ The user has a Gemini-CLI session that Soul-Desktop refuses to open as a live ca
 
 Local repair completed:
 
-- `~/.gemini/projects.json` now maps `/Users/ilteris/dotfiles/soul` to `"soul"`; `/Users/ilteris/Code/Soul-Desktop` remains `"soul-desktop"`.
-- `~/dotfiles/soul/kernel/soul_gemini_repair.py` diagnoses `missing`, `header-only-stub`, `parseable-transcript`, and `wrong-slug-*` states separately from NativeSessionID backfill.
+- Historical repair state: `~/.gemini/projects.json` mapped `/Users/ilteris/dotfiles/soul` to `"soul"`; `/Users/ilteris/Code/Soul-Desktop` remained `"soul-desktop"`. The current Soul kernel checkout is `/Users/ilteris/soul-cli/soul`.
+- `~/soul-cli/soul/kernel/commands/soul_gemini_repair.py` diagnoses `missing`, `header-only-stub`, `parseable-transcript`, and `wrong-slug-*` states separately from NativeSessionID backfill.
 - Reconstructed transcript written to `~/.gemini/tmp/soul/chats/session-2026-05-16T05-11-ca427f63.jsonl` from hooks ledger user/model rows.
 - The old `soul-1` ca427f63 stub was backed up as `.bak-20260516T051133Z` and replaced with the reconstructed transcript so no header-only ca427f63 copy remains.
 
@@ -57,7 +57,7 @@ SESSION_START event from hooks.jsonl (first line):
 }
 ```
 
-cwd `/Users/ilteris/dotfiles/soul` → Soul OS kernel project (registry project key `soul`).
+cwd `/Users/ilteris/dotfiles/soul` was the historical Soul OS kernel checkout when this ledger row was written. The current equivalent project root is `/Users/ilteris/soul-cli/soul` (registry project key `soul`).
 
 ---
 
@@ -117,7 +117,8 @@ That's what the user is seeing.
 **File:** `~/.gemini/projects.json` after local repair:
 
 ```
-/Users/ilteris/dotfiles/soul   → "soul"
+/Users/ilteris/dotfiles/soul   → "soul"  # historical checkout path
+/Users/ilteris/soul-cli/soul    → "soul"  # current checkout path
 /Users/ilteris/Code/Soul-Desktop → "soul-desktop"
 ```
 
@@ -127,16 +128,16 @@ Gemini-CLI consults this on every spawn. The value here dictates which `~/.gemin
 
 1. The user has two project paths with basename `soul`:
    - `~/Code/Soul-Desktop` (parent or sibling — unimportant)
-   - `~/dotfiles/soul` (Soul OS kernel)
-2. Gemini-CLI's slug resolver checks basename collisions against existing `~/.gemini/tmp/<slug>/` directories. There's an orphan `tmp/soul/` (May 14 mtime, no current projects.json mapping). When Gemini spawned in `dotfiles/soul`, it saw the `soul` slug "occupied" and suffixed to `soul-1`.
-3. A previous cleanup at 2026-05-15T22:58 merged `tmp/soul-1/chats/` contents into `tmp/soul/chats/` and rewrote projects.json. But the orphan `tmp/soul/` dir's internal metadata wasn't updated, so when a fresh Gemini spawn happened at 23:35 in dotfiles/soul (this very ca427f63 session), the basename-collision logic fired again and re-wrote `dotfiles/soul → "soul-1"` in projects.json.
+   - historically `~/dotfiles/soul`, now `~/soul-cli/soul` (Soul OS kernel)
+2. Gemini-CLI's slug resolver checks basename collisions against existing `~/.gemini/tmp/<slug>/` directories. There's an orphan `tmp/soul/` (May 14 mtime, no current projects.json mapping). When Gemini spawned in the historical `dotfiles/soul` checkout, it saw the `soul` slug "occupied" and suffixed to `soul-1`.
+3. A previous cleanup at 2026-05-15T22:58 merged `tmp/soul-1/chats/` contents into `tmp/soul/chats/` and rewrote projects.json. But the orphan `tmp/soul/` dir's internal metadata wasn't updated, so when a fresh Gemini spawn happened at 23:35 in the historical dotfiles checkout (this very ca427f63 session), the basename-collision logic fired again and re-wrote that project path to `"soul-1"` in projects.json.
 4. The ca427f63 terminal session itself never persisted a chat file in `tmp/soul-1/chats/` — it died (closed, crashed, or got killed) before flushing. Only `tool-outputs/` traces survived.
 
 ---
 
 ## 5. Why SOUL-SOUL-010 alone did not help ca427f63
 
-SOUL-SOUL-010 restores the canonical slug so future `dotfiles/soul` spawns write under `~/.gemini/tmp/soul`. It does not by itself inflate a header-only chat stub into a usable transcript. SOUL-SOUL-011 was required to reconstruct ca427f63 from `hooks.jsonl`.
+SOUL-SOUL-010 restored the canonical slug so future Soul kernel spawns wrote under `~/.gemini/tmp/soul`. It did not by itself inflate a header-only chat stub into a usable transcript. SOUL-SOUL-011 was required to reconstruct ca427f63 from `hooks.jsonl`.
 
 The earlier `soul-kernel` recommendation was wrong for this registry. The intended canonical bucket for the Soul kernel project is `~/.gemini/tmp/soul`.
 
@@ -145,7 +146,7 @@ The earlier `soul-kernel` recommendation was wrong for this registry. The intend
 ## 6. The reconstruction command used
 
 ```sh
-python3 ~/dotfiles/soul/kernel/soul_gemini_repair.py \
+python3 ~/soul-cli/soul/kernel/commands/soul_gemini_repair.py \
   --project soul \
   --session-id ca427f63-c29c-4968-b897-c6861f5a801b \
   --repair
@@ -162,7 +163,7 @@ The script reads `UserPrompt` and non-empty `AfterAgent` rows from `hooks.jsonl`
 ## 7. Recommended execution order for the next agent
 
 1. **Verify state:** run the `find` and `cat ~/.gemini/projects.json` checks from §1 to confirm nothing has changed since this handoff was written (2026-05-16, ~01:00 ET).
-2. **Execute SOUL-SOUL-010 first:** rewrite projects.json (`dotfiles/soul → "soul-kernel"`), `mv ~/.gemini/tmp/soul-1 ~/.gemini/tmp/soul-kernel`. This prevents the slug from drifting under you mid-reconstruction.
+2. **Verify the current Soul kernel mapping:** ensure `~/.gemini/projects.json` maps `/Users/ilteris/soul-cli/soul` to `"soul"`. The older `dotfiles/soul → "soul-kernel"` recommendation is obsolete for the post-extraction layout.
 3. **Read a healthy Gemini chat file as a shape template:** something like `~/.gemini/tmp/soul-desktop/chats/<some-recent-uuid>.json`. Confirm the JSON shape — message-list with role/parts/timestamp fields. Don't guess; copy.
 4. **Build a small Python script** `scripts/reconstruct_gemini_chat.py` that:
    - Takes `--sid`, `--project` args.
@@ -180,7 +181,7 @@ The script reads `UserPrompt` and non-empty `AfterAgent` rows from `hooks.jsonl`
 - **Don't trash `~/.gemini/tmp/soul/`** without auditing the chats inside. It's an orphan from a prior project mapping; some sessions under it might still matter to the user.
 - **Don't edit `hooks.jsonl`** to make it look like a Gemini chat file — they have different schemas, and Soul-Desktop's replay path reads `hooks.jsonl` and will choke on a malformed one.
 - **Don't run a second cleanup like the 22:58 one** — it merged contents without fixing the basename-collision trigger and produced this exact mess. The slug rename is the structural fix; content merging without an explicit mapping change is a band-aid that gets re-suffixed on the next spawn.
-- **Don't quit the running actor-orchestrator daemon** (`zmx run supervisor ... gemini orchestrate`, PID 49405). It's in `/Users/ilteris/Code/actor-orchestrator`, totally unrelated to dotfiles/soul, and not touching projects.json for this slug.
+- **Don't quit the running actor-orchestrator daemon** (`zmx run supervisor ... gemini orchestrate`, PID 49405). It's in `/Users/ilteris/Code/actor-orchestrator`, totally unrelated to the Soul kernel checkout, and not touching projects.json for this slug.
 
 ---
 

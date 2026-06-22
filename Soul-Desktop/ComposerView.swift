@@ -3,6 +3,30 @@ import AppKit
 import UniformTypeIdentifiers
 import SoulACP
 
+struct ComposerSlashCommandResolution: Equatable {
+    let command: SlashCommand
+    let arguments: String
+}
+
+enum ComposerSlashCommandResolver {
+    static func resolve(activeCommand: SlashCommand?, text: String, commands: [SlashCommand]) -> ComposerSlashCommandResolution? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let activeCommand {
+            return ComposerSlashCommandResolution(command: activeCommand, arguments: trimmed)
+        }
+
+        let parsed = SlashCommandParse.parse(trimmed)
+        guard let name = parsed.commandName else { return nil }
+        if let command = commands.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            return ComposerSlashCommandResolution(command: command, arguments: parsed.rest)
+        }
+        if let command = SkillsRegistry.builtInCommand(named: name) {
+            return ComposerSlashCommandResolution(command: command, arguments: parsed.rest)
+        }
+        return nil
+    }
+}
+
 struct ComposerView: View {
     @Binding var prompt: String
     let projectName: String
@@ -104,8 +128,10 @@ struct ComposerView: View {
         let trimmedArgs = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         let display: String
         let agent: String
-        if let cmd = activeCommand {
-            display = trimmedArgs.isEmpty ? "/\(cmd.name)" : "/\(cmd.name) \(trimmedArgs)"
+        if let resolved = ComposerSlashCommandResolver.resolve(activeCommand: activeCommand, text: sourceText, commands: commands) {
+            let cmd = resolved.command
+            let commandArgs = resolved.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+            display = commandArgs.isEmpty ? "/\(cmd.name)" : "/\(cmd.name) \(commandArgs)"
             // Claude reads ~/.claude/skills/<name>/SKILL.md natively when it
             // sees the bare `/cmd` literal — don't double-inject.
             if provider == .claude {
@@ -118,8 +144,8 @@ struct ComposerView: View {
 
                 The user invoked /\(cmd.name).
                 """
-                if !trimmedArgs.isEmpty {
-                    enriched += "\nArguments: \(trimmedArgs)"
+                if !commandArgs.isEmpty {
+                    enriched += "\nArguments: \(commandArgs)"
                 }
                 agent = enriched
             } else {

@@ -18,10 +18,12 @@ finalizable, and resumable across surfaces (terminal ↔ desktop).
 It is **not** a wrapper around the agent CLIs' interactive TUIs. It spawns the
 agent's ACP server mode and drives it directly.
 
-The companion system is **Soul OS** — a personal architecture layer that lives
-in `~/dotfiles/soul/` (config) and `~/soul_registry/` (state). Soul-Desktop is
-one Soul OS surface; the other is the terminal harness (Gemini/Claude CLI with
-Soul middleware hooks). Both write to the same registry.
+The companion system is **Soul OS** — a personal architecture layer whose
+kernel/config tree lives in `~/soul-cli/soul/` and whose durable runtime state
+lives in `~/soul_registry/`. Soul-Desktop is one Soul OS surface; the other is
+the terminal harness (Gemini/Claude CLI with Soul middleware hooks). Both write
+to the same registry. `~/dotfiles/` still owns shell/editor/app dotfiles, but it
+is no longer the Soul kernel root.
 
 ---
 
@@ -147,8 +149,9 @@ ACP is JSON-RPC 2.0 over line-delimited stdio. Notable shapes: `session/new`,
 identifier" (triggers backfill).
 
 ### 4.2 Filesystem registry
-- `~/soul_registry/PROJECTS.json` (legacy) → `~/dotfiles/soul/config/PROJECTS.json`
-  (authoritative since 2026-05-03 per SOUL-AUDIT-002).
+- `~/soul-cli/soul/config/PROJECTS.json` — project manifest owned by the Soul
+  CLI/kernel tree. Soul-Desktop should read it through `soul project list`, not
+  by parsing the file directly.
 - `~/soul_registry/sessions/<project>/<uuid>/hooks.jsonl` — live ledger.
 - `~/soul_registry/sessions/<project>/<uuid>.json` — finalized record sibling.
 - `~/soul_registry/tasks/<project>/<TASK-ID>.json` — task definitions.
@@ -159,8 +162,8 @@ identifier" (triggers backfill).
 - Pi: `~/.pi/pi-acp/session-map.json` (direct kernel↔agent map).
 
 ### 4.4 Soul harness (Python)
-- `~/dotfiles/soul/harnesses/soul_gemini_harness.py`
-- `~/dotfiles/soul/harnesses/soul_claude_harness.py`
+- `~/soul-cli/soul/kernel/soul_gemini_harness.py`
+- `~/soul-cli/soul/kernel/soul_claude_harness.py`
 - Pi: via `soul-orchestrator` extension.
 
 Invoked from `SoulHydration.swift`; output is injected into the agent's
@@ -345,7 +348,7 @@ problem in your own words.
 ## 11. Out-of-scope for this audit
 
 - Soul OS kernel (Python) — separate review, separate repo
-  (`~/dotfiles/soul/kernel/`).
+  (`~/soul-cli/soul/kernel/`).
 - Agent CLIs themselves (Gemini, Claude, Pi).
 - Registry data correctness (the user's actual chats).
 - ACP protocol design — it's an external standard.
@@ -407,7 +410,7 @@ grep -rn "rpcError\|-32602\|Invalid session" Soul-Desktop/
 
 - `docs/session-lifecycle-matrix.md` — definitive resume/load state machine.
 - `docs/session-model-redesign.md` — historical UUID-namespace context.
-- `~/dotfiles/soul/docs/PLAYBOOK.md` — Soul OS operational playbook
+- `~/soul-cli/soul/docs/PLAYBOOK.md` — Soul OS operational playbook
   (mostly orthogonal to this audit but useful for context).
 - `CLAUDE.md` (repo root) — auto-managed Soul session context;
   treat as input metadata, not source of truth.
