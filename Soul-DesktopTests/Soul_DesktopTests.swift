@@ -238,6 +238,8 @@ struct Soul_DesktopTests {
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.requiresInteractionBeforeCapture == true)
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.navigationURL == "https://trusslabs.org")
         #expect(ComputerUsePromptIntent.detect(in: "open https://trusslabs.org in Chrome and take a screenshot")?.navigationURL == "https://trusslabs.org")
+        #expect(ComputerUsePromptIntent.detect(in: "open localhost:8080/examples/demo.html in Chrome and take a screenshot")?.navigationURL == "http://localhost:8080/examples/demo.html")
+        #expect(ComputerUsePromptIntent.detect(in: "inspect 127.0.0.1:3000 in the browser and tell me what is visible")?.navigationURL == "http://127.0.0.1:3000")
         #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
     }
 

@@ -36,7 +36,10 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
     public func start(_ request: ProviderRuntimeStartRequest) async throws -> ProviderRuntimeStartResult {
         if let client {
             let threadID = try await client.threadStart(cwd: request.session.projectPath)
-            return ProviderRuntimeStartResult(nativeSessionID: threadID)
+            return ProviderRuntimeStartResult(
+                nativeSessionID: threadID,
+                capabilities: ProviderRuntimeCapabilities(supportsImageAttachments: true)
+            )
         }
         guard var spawn = spawnResolver(.codex, nil) else {
             throw NSError(domain: "Soul-Desktop", code: 1,
@@ -69,7 +72,10 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
         try await client.start()
         _ = try await client.initializeAndAck()
         let threadID = try await client.threadStart(cwd: request.session.projectPath)
-        return ProviderRuntimeStartResult(nativeSessionID: threadID)
+        return ProviderRuntimeStartResult(
+            nativeSessionID: threadID,
+            capabilities: ProviderRuntimeCapabilities(supportsImageAttachments: true)
+        )
     }
 
     public func loadSession(_ request: ProviderRuntimeLoadRequest) async throws {
@@ -93,7 +99,11 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
             throw NSError(domain: "Soul-Desktop", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "codex client not initialized"])
         }
-        let turnID = try await client.turnStart(threadId: threadID, text: request.text)
+        let turnID = try await client.turnStart(
+            threadId: threadID,
+            text: request.text,
+            attachments: request.attachments
+        )
         currentTurnID = turnID
     }
 

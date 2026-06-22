@@ -85,6 +85,26 @@ struct CodexClientEnvelopeTests {
         #expect(envelope.result?["decision"]?.stringValue == "approved")
     }
 
+    @Test("turn input preserves image attachments")
+    func turnInputPreservesImageAttachments() throws {
+        let input = CodexClient.codexTurnInput(
+            text: "inspect this",
+            attachments: [.image(mimeType: "image/png", base64: "abc123")]
+        )
+
+        #expect(input.count == 2)
+        guard case .object(let text)? = input.first,
+              case .object(let image)? = input.last else {
+            Issue.record("Expected text and image input objects")
+            return
+        }
+        #expect(text["type"]?.stringValue == "text")
+        #expect(text["text"]?.stringValue == "inspect this")
+        #expect(text["text_elements"] == .array([]))
+        #expect(image["type"]?.stringValue == "image")
+        #expect(image["url"]?.stringValue == "data:image/png;base64,abc123")
+    }
+
     private func decodeObject(_ data: Data) throws -> [String: Any] {
         let value = try JSONSerialization.jsonObject(with: data)
         return try #require(value as? [String: Any])

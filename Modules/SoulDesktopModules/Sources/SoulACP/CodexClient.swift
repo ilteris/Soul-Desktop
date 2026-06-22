@@ -119,24 +119,50 @@ public actor CodexClient {
         return id
     }
 
-    /// Start a turn on `threadId` with a single user text input. Returns the
-    /// turn id; streamed events arrive on `events`.
+    /// Start a turn on `threadId` with user text plus any image attachments.
+    /// Returns the turn id; streamed events arrive on `events`.
     @discardableResult
-    public func turnStart(threadId: String, text: String) async throws -> String {
+    public func turnStart(threadId: String, text: String, attachments: [ContentBlock] = []) async throws -> String {
         guard initialized else { throw CodexClientError.notInitialized }
-        let params: [String: Any] = [
-            "threadId": threadId,
-            "input": [
-                ["type": "text", "text": text]
-            ]
-        ]
-        let result = try await call(method: "turn/start", params: toJSONValue(params))
+        let params: JSONValue = .object([
+            "threadId": .string(threadId),
+            "input": .array(Self.codexTurnInput(text: text, attachments: attachments))
+        ])
+        let result = try await call(method: "turn/start", params: params)
         guard case .object(let r) = result,
               case .object(let turn)? = r["turn"],
               case .string(let id)? = turn["id"] else {
             throw CodexClientError.decodeFailed("turn/start: missing turn.id")
         }
         return id
+    }
+
+    public static func codexTurnInput(text: String, attachments: [ContentBlock] = []) -> [JSONValue] {
+        var input: [JSONValue] = []
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            input.append(codexTextInput(text))
+        }
+        for attachment in attachments {
+            switch attachment {
+            case .text(let value):
+                input.append(codexTextInput(value))
+            case .image(let mimeType, let base64):
+                input.append(.object([
+                    "type": .string("image"),
+                    "url": .string("data:\(mimeType);base64,\(base64)")
+                ]))
+            }
+        }
+        return input
+    }
+
+    private static func codexTextInput(_ text: String) -> JSONValue {
+        .object([
+            "type": .string("text"),
+            "text": .string(text),
+            "text_elements": .array([])
+        ])
     }
 
     public func turnInterrupt(threadId: String, turnId: String) async throws {

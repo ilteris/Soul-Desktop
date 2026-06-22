@@ -451,13 +451,14 @@ extension ThreadController {
             let server = stringField(item, "server") ?? "mcp"
             let tool = stringField(item, "tool") ?? "?"
             let status = stringField(item, "status") ?? "pending"
+            let details = codexMCPToolCallDetails(from: item)
             items.append(.toolCall(
                 id: uuid,
                 kind: "mcp:\(server)",
                 title: tool,
                 status: status,
                 locationHint: nil,
-                details: nil
+                details: details
             ))
             observePotentialComputerUseArtifact(kind: "mcp:\(server)", title: tool)
         case "webSearch":
@@ -882,6 +883,48 @@ extension ThreadController {
               case .object(let change) = first
         else { return nil }
         return stringField(change, "path")
+    }
+
+    private func codexMCPToolCallDetails(from item: [String: JSONValue]) -> ToolCallDetails? {
+        if let message = codexMCPErrorMessage(from: item) {
+            return ToolCallDetails(kind: .output(text: message))
+        }
+        guard case .object(let result)? = item["result"] else { return nil }
+        if let text = stringField(result, "text"), !text.isEmpty {
+            return ToolCallDetails(kind: .output(text: text))
+        }
+        if case .array(let content)? = result["content"] {
+            let text = content.compactMap { value -> String? in
+                guard case .object(let object) = value else { return nil }
+                return stringField(object, "text")
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            if !text.isEmpty {
+                return ToolCallDetails(kind: .output(text: text))
+            }
+        }
+        let rendered = compactJSONString(.object(result))
+        return rendered.isEmpty ? nil : ToolCallDetails(kind: .output(text: rendered))
+    }
+
+    private func codexMCPErrorMessage(from item: [String: JSONValue]) -> String? {
+        guard let error = item["error"] else { return nil }
+        if case .string(let message) = error, !message.isEmpty {
+            return message
+        }
+        if case .object(let object) = error {
+            if let message = stringField(object, "message"), !message.isEmpty {
+                return message
+            }
+            if let reason = stringField(object, "reason"), !reason.isEmpty {
+                return reason
+            }
+            if let text = stringField(object, "text"), !text.isEmpty {
+                return text
+            }
+        }
+        return compactJSONString(error)
     }
 
     private func codexRequestCommand(from params: JSONValue?) -> String {

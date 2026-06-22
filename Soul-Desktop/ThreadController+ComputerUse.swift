@@ -98,6 +98,7 @@ struct ComputerUsePromptIntent {
             "opening ",
             "open up",
             "navigate",
+            "inspect ",
             "go to ",
             "load ",
             "visit "
@@ -107,6 +108,10 @@ struct ComputerUsePromptIntent {
     private static func containsWebDestination(in lower: String) -> Bool {
         lower.contains("http://")
             || lower.contains("https://")
+            || lower.contains("localhost")
+            || lower.contains("127.0.0.1")
+            || lower.contains("[::1]")
+            || lower.contains("::1")
             || lower.contains("www.")
             || lower.contains(".com")
             || lower.contains(".org")
@@ -143,6 +148,10 @@ struct ComputerUsePromptIntent {
     private static func looksLikeWebAddress(_ token: String) -> Bool {
         token.hasPrefix("http://")
             || token.hasPrefix("https://")
+            || token.hasPrefix("localhost")
+            || token.hasPrefix("127.0.0.1")
+            || token.hasPrefix("[::1]")
+            || token.hasPrefix("::1")
             || token.hasPrefix("www.")
             || token.contains(".com")
             || token.contains(".org")
@@ -152,6 +161,12 @@ struct ComputerUsePromptIntent {
     private static func normalizeWebAddress(_ token: String) -> String {
         if token.hasPrefix("http://") || token.hasPrefix("https://") {
             return token
+        }
+        if token.hasPrefix("localhost") || token.hasPrefix("127.0.0.1") || token.hasPrefix("[::1]") {
+            return "http://\(token)"
+        }
+        if token.hasPrefix("::1") {
+            return "http://[\(token)]"
         }
         return "https://\(token)"
     }
