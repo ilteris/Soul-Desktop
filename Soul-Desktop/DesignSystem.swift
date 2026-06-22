@@ -50,9 +50,9 @@ enum SoulColor {
     static let sidebar       = dynamic(light: 0xE6E5E2, dark: 0x1F1F1F, alpha: 0.6)
     static let surface       = dynamic(light: 0xE6E5E2, dark: 0x2A2A2A)
     static let border        = dynamic(light: 0xD2D1CD, dark: 0x333333)
-    static let fg            = dynamic(light: 0x1E1E2E, dark: 0xE6E6E6)
-    static let fgMuted       = dynamic(light: 0x5C5F77, dark: 0xA6A6A6)
-    static let fgSubtle      = dynamic(light: 0x8C8FA1, dark: 0x6E6E6E)
+    static let fg            = dynamic(light: 0x1E1E2E, dark: 0xD0D0D0)
+    static let fgMuted       = dynamic(light: 0x5C5F77, dark: 0x909090)
+    static let fgSubtle      = dynamic(light: 0x8C8FA1, dark: 0x686868)
 
     /// Default Catppuccin purple — used when the user hasn't picked one.
     static let defaultAccentHex: UInt32 = 0x8839EF
