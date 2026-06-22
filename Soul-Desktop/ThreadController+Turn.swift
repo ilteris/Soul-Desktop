@@ -304,6 +304,7 @@ extension ThreadController {
                     attachments: turn.extraBlocks
                 )
                 guard promptRequest.canDispatch else { return }
+                let turnOutputStartIndex = items.count
                 logLifecycle(
                     "prompt.dispatch",
                     note: "rpcSessionId=\(promptRequest.session.rpcSessionID ?? "nil") textChars=\(agentText.count) attachments=\(turn.extraBlocks.count) queued=\(queuedPrompts.count)"
@@ -388,6 +389,14 @@ extension ThreadController {
                     // reply text; the per-chunk file can retire so it doesn't
                     // grow unbounded across a long session.
                     ledger.retireAgentChunks(projectKey: project.id, sessionId: sid)
+                } else if !hasProviderOutputSince(turnOutputStartIndex) {
+                    let msg = "\(provider.label) ended the turn without returning assistant text, thoughts, or tool updates. Check ~/Library/Logs/Soul-Desktop/acp-protocol.jsonl for the session/prompt stopReason."
+                    logLifecycle(
+                        "prompt.empty",
+                        note: "rpcSessionId=\(promptRequest.session.rpcSessionID ?? "nil")"
+                    )
+                    items.append(.error(id: UUID(), text: msg))
+                    lastError = msg
                 }
 
                 // If this turn was a `/finalize` (the agent just wrote a
@@ -419,6 +428,18 @@ extension ThreadController {
         // flipped false. Draining while this send still owns the active turn
         // can re-enter `send()` and re-queue the same prompt, or worse, open
         // a second provider prompt on the same child process after recovery.
+    }
+
+    private func hasProviderOutputSince(_ index: Int) -> Bool {
+        guard index < items.count else { return false }
+        return items[index...].contains { item in
+            switch item {
+            case .agentMessage, .agentThought, .toolCall, .plan, .finalize, .toolCallGroup:
+                return true
+            case .userMessage, .branchSummary, .status, .error:
+                return false
+            }
+        }
     }
 
     private func generateTitleAfterFirstSubstantiveTurnIfNeeded() {

@@ -217,8 +217,21 @@ public actor ACPClient {
 
     public func prompt(sessionId: String, text: String, extraBlocks: [ContentBlock] = []) async throws -> String {
         let req = PromptRequest(sessionId: sessionId, prompt: [.text(text)] + extraBlocks)
+        recordACPProtocolFrame(
+            direction: "call",
+            method: "session/prompt",
+            params: promptDiagnosticParams(sessionId: sessionId, text: text, extraBlocks: extraBlocks)
+        )
         let result = try await call(method: "session/prompt", params: req)
         let resp = try decode(PromptResponse.self, from: result)
+        recordACPProtocolFrame(
+            direction: "result",
+            method: "session/prompt",
+            params: .object([
+                "sessionId": .string(sessionId),
+                "stopReason": .string(resp.stopReason)
+            ])
+        )
         return resp.stopReason
     }
 
@@ -461,4 +474,23 @@ private func recordACPProtocolFrame(direction: String, method: String, params: J
 #else
     ACPProtocolLog.record(direction: direction, method: method, params: params)
 #endif
+}
+
+private func promptDiagnosticParams(sessionId: String, text: String, extraBlocks: [ContentBlock]) -> JSONValue {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return .object([
+        "sessionId": .string(sessionId),
+        "textChars": .int(text.count),
+        "textPreview": .string(boundedPreview(trimmed, limit: 240)),
+        "startsWithSlash": .bool(trimmed.hasPrefix("/")),
+        "startsWithDollar": .bool(trimmed.hasPrefix("$")),
+        "hasSessionContext": .bool(text.contains("<session_context>")),
+        "hasComputerUseContext": .bool(text.contains("<computer_use>")),
+        "extraBlocks": .int(extraBlocks.count)
+    ])
+}
+
+private func boundedPreview(_ text: String, limit: Int) -> String {
+    guard text.count > limit else { return text }
+    return String(text.prefix(limit)) + "..."
 }
