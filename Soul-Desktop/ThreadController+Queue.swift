@@ -35,7 +35,9 @@ func drainQueuedPromptAfterTurn() {
     }
 
     func beginQueuedTurnDispatch(_ turn: QueuedPrompt) {
-        turnStartedAt = Date()
+        let now = Date()
+        turnStartedAt = now
+        lastActivityAt = now
         relocateQueuedBubbleToEnd(turn)
         consumeSteerPendingIfNeeded(for: turn)
     }

@@ -126,6 +126,7 @@ extension ThreadController {
                     codexPostCompactAgentTextSeen = false
                 }
                 lastActivityAt = Date()
+                finishNativeCompact()
                 return
             }
             let action = CodexRuntimeRenderingAction(method: method, params: params)
@@ -537,6 +538,7 @@ extension ThreadController {
                 codexPostCompactAgentTextSeen = false
                 items.append(.status(id: uuid, text: "⤵ context compacted"))
             }
+            finishNativeCompact()
         default:
             // Unknown codex item types used to render as `· <itemType>`
             // status rows, leaking implementation names like `· userMessage`
@@ -1006,20 +1008,61 @@ extension ThreadController {
             return
         }
 
-        let ownsWorkingState = !isWorking
-        if ownsWorkingState {
-            isWorking = true
-        }
-        defer {
-            if ownsWorkingState {
-                isWorking = false
-            }
-        }
+        beginNativeCompact()
 
         do {
             try await runtime.compact(threadID: threadID)
         } catch {
             NSLog("[ThreadController] native codex compaction failed: \(error)")
+            finishNativeCompact(reason: "failed")
+        }
+    }
+
+    func beginNativeCompact() {
+        guard !nativeCompactInFlight else { return }
+        nativeCompactInFlight = true
+        nativeCompactOwnsWorkingState = !isWorking
+        let now = Date()
+        lastActivityAt = now
+        if nativeCompactOwnsWorkingState {
+            isWorking = true
+            turnStartedAt = now
+        }
+
+        nativeCompactTimeoutTask?.cancel()
+        let delaySeconds = Self.nativeCompactFallbackSeconds
+        nativeCompactTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+            } catch {
+                return
+            }
+            await MainActor.run {
+                self?.finishNativeCompact(reason: "timeout")
+            }
+        }
+    }
+
+    func finishNativeCompact(reason: String? = nil) {
+        guard nativeCompactInFlight else { return }
+        nativeCompactInFlight = false
+        nativeCompactTimeoutTask?.cancel()
+        nativeCompactTimeoutTask = nil
+        lastActivityAt = Date()
+
+        let shouldDrainQueue = nativeCompactOwnsWorkingState
+        if nativeCompactOwnsWorkingState {
+            isWorking = false
+            turnStartedAt = nil
+        }
+        nativeCompactOwnsWorkingState = false
+
+        if reason == "timeout" {
+            items.append(.status(id: UUID(), text: "⚠ context compact timed out; continuing"))
+        }
+
+        if shouldDrainQueue {
+            drainQueuedPromptAfterTurn()
         }
     }
 

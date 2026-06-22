@@ -19,13 +19,33 @@ import SoulCore
 /// Full ThreadController integration (read-first hydrate, approvals,
 /// session resume via `thread/resume`, AGENTS.md harness) is out of scope
 /// for this phase — see the design doc.
-public enum CodexClientError: Error {
+public enum CodexClientError: Error, LocalizedError {
     case spawnFailed(String)
     case decodeFailed(String)
     case rpcError(JSONRPCError)
     case childTerminated(cause: String)
     case writeFailed(String)
     case notInitialized
+    case requestTimedOut(method: String, timeoutSeconds: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .spawnFailed(let message):
+            return "Codex spawn failed: \(message)"
+        case .decodeFailed(let message):
+            return "Codex decode failed: \(message)"
+        case .rpcError(let error):
+            return "Codex RPC error \(error.code): \(error.message)"
+        case .childTerminated(let cause):
+            return "Codex process terminated: \(cause)"
+        case .writeFailed(let message):
+            return "Codex write failed: \(message)"
+        case .notInitialized:
+            return "Codex client is not initialized"
+        case .requestTimedOut(let method, let timeoutSeconds):
+            return "Codex request timed out: \(method) after \(timeoutSeconds)s"
+        }
+    }
 }
 
 public actor CodexClient {
@@ -49,11 +69,15 @@ public actor CodexClient {
 
     private var nextId = 1
     private var pending: [JSONRPCID: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pendingTimeouts: [JSONRPCID: Task<Void, Never>] = [:]
     private var didTerminate = false
     private var initialized = false
 
     public let events: AsyncStream<Event>
     private var eventCont: AsyncStream<Event>.Continuation?
+
+    private static let turnStartTimeoutSeconds = 30
+    private static let compactStartTimeoutSeconds = 30
 
     public init(spawn: ACPProviderSpawn) throws {
         let url = URL(fileURLWithPath: spawn.executablePath)
@@ -128,7 +152,11 @@ public actor CodexClient {
             "threadId": .string(threadId),
             "input": .array(Self.codexTurnInput(text: text, attachments: attachments))
         ])
-        let result = try await call(method: "turn/start", params: params)
+        let result = try await call(
+            method: "turn/start",
+            params: params,
+            timeoutSeconds: Self.turnStartTimeoutSeconds
+        )
         guard case .object(let r) = result,
               case .object(let turn)? = r["turn"],
               case .string(let id)? = turn["id"] else {
@@ -178,7 +206,11 @@ public actor CodexClient {
         let params: [String: Any] = [
             "threadId": threadId
         ]
-        _ = try await call(method: "thread/compact/start", params: toJSONValue(params))
+        _ = try await call(
+            method: "thread/compact/start",
+            params: toJSONValue(params),
+            timeoutSeconds: Self.compactStartTimeoutSeconds
+        )
     }
 
     public func respond(id: JSONRPCID, result: JSONValue) async throws {
@@ -188,7 +220,7 @@ public actor CodexClient {
 
     // MARK: - Low-level
 
-    private func call(method: String, params: JSONValue) async throws -> JSONValue {
+    private func call(method: String, params: JSONValue, timeoutSeconds: Int? = nil) async throws -> JSONValue {
         if didTerminate {
             throw CodexClientError.childTerminated(cause: "transport already terminated")
         }
@@ -196,6 +228,22 @@ public actor CodexClient {
         let envelope = try makeEnvelope(id: id, method: method, params: params)
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
+            if let timeoutSeconds, timeoutSeconds > 0 {
+                pendingTimeouts[id] = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
+                    } catch {
+                        return
+                    }
+                    await self?.resolvePending(
+                        id: id,
+                        result: .failure(CodexClientError.requestTimedOut(
+                            method: method,
+                            timeoutSeconds: timeoutSeconds
+                        ))
+                    )
+                }
+            }
             Task { await self.sendOrFail(id: id, envelope: envelope) }
         }
     }
@@ -216,8 +264,7 @@ public actor CodexClient {
         do {
             try await transport.send(envelope)
         } catch {
-            pending.removeValue(forKey: id)?
-                .resume(throwing: CodexClientError.writeFailed("\(error)"))
+            resolvePending(id: id, result: .failure(CodexClientError.writeFailed("\(error)")))
         }
     }
 
@@ -314,8 +361,22 @@ public actor CodexClient {
     private func drainPending(cause: String) {
         let snapshot = pending
         pending.removeAll()
+        let timeoutSnapshot = pendingTimeouts
+        pendingTimeouts.removeAll()
+        timeoutSnapshot.values.forEach { $0.cancel() }
         for (_, cont) in snapshot {
             cont.resume(throwing: CodexClientError.childTerminated(cause: cause))
+        }
+    }
+
+    private func resolvePending(id: JSONRPCID, result: Result<JSONValue, Error>) {
+        guard let cont = pending.removeValue(forKey: id) else { return }
+        pendingTimeouts.removeValue(forKey: id)?.cancel()
+        switch result {
+        case .success(let value):
+            cont.resume(returning: value)
+        case .failure(let error):
+            cont.resume(throwing: error)
         }
     }
 
@@ -323,11 +384,9 @@ public actor CodexClient {
         // Response (has id, no method): resolve continuation.
         if let id = env.id, env.method == nil {
             if let err = env.error {
-                pending.removeValue(forKey: id)?
-                    .resume(throwing: CodexClientError.rpcError(err))
+                resolvePending(id: id, result: .failure(CodexClientError.rpcError(err)))
             } else {
-                pending.removeValue(forKey: id)?
-                    .resume(returning: env.result ?? .null)
+                resolvePending(id: id, result: .success(env.result ?? .null))
             }
             return
         }

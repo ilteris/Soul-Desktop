@@ -136,6 +136,9 @@ final class ThreadController {
     /// unified drop affordance instead of two different-looking zones.
     var isComposerDropActive: Bool = false
     var isWorking: Bool = false
+    var nativeCompactInFlight: Bool = false
+    @ObservationIgnored var nativeCompactOwnsWorkingState = false
+    @ObservationIgnored var nativeCompactTimeoutTask: Task<Void, Never>?
     @ObservationIgnored var onRuntimeEnded: ((String?) -> Void)?
     var lastError: String?
     var availableCommands: [SlashCommand] = [SlashCommand.compact]
@@ -883,6 +886,7 @@ final class ThreadController {
     /// iteration in `dispatchPending` so queued-drain turns get their own
     /// 0-anchor. WorkingIndicator renders elapsed time off this.
     var turnStartedAt: Date?
+    static let nativeCompactFallbackSeconds: UInt64 = 60
 
     init(provider: Provider, project: SoulProject) {
         self.provider = provider

@@ -449,6 +449,46 @@ struct ThreadControllerTests {
         #expect(controller.groupedItemsSplit.queued.isEmpty)
     }
 
+    @Test func testQueuedTurnDispatchRefreshesActivityClock() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+        let claimed = try #require(controller.popNextQueuedPromptForDispatch())
+        let stale = Date(timeIntervalSince1970: 100)
+        controller.turnStartedAt = stale
+        controller.lastActivityAt = stale
+
+        controller.beginQueuedTurnDispatch(claimed)
+
+        #expect(controller.turnStartedAt != nil)
+        #expect(controller.turnStartedAt! > stale)
+        #expect(controller.lastActivityAt > stale)
+    }
+
+    @Test func testNativeCompactOwnsWorkingStateUntilFinished() async throws {
+        let controller = ThreadController(provider: .codex, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        controller.beginNativeCompact()
+
+        #expect(controller.nativeCompactInFlight)
+        #expect(controller.nativeCompactOwnsWorkingState)
+        #expect(controller.isWorking)
+        #expect(controller.turnStartedAt != nil)
+
+        controller.finishNativeCompact(reason: "timeout")
+
+        #expect(!controller.nativeCompactInFlight)
+        #expect(!controller.nativeCompactOwnsWorkingState)
+        #expect(!controller.isWorking)
+        #expect(controller.turnStartedAt == nil)
+        #expect(controller.items.compactMap(Self.statusText) == ["⚠ context compact timed out; continuing"])
+    }
+
     private static func testProject() -> SoulProject {
         SoulProject(
             id: "test",

@@ -105,6 +105,13 @@ struct CodexClientEnvelopeTests {
         #expect(image["url"]?.stringValue == "data:image/png;base64,abc123")
     }
 
+    @Test("request timeout error is user readable")
+    func requestTimeoutErrorIsUserReadable() throws {
+        let error = CodexClientError.requestTimedOut(method: "turn/start", timeoutSeconds: 30)
+
+        #expect(error.localizedDescription == "Codex request timed out: turn/start after 30s")
+    }
+
     private func decodeObject(_ data: Data) throws -> [String: Any] {
         let value = try JSONSerialization.jsonObject(with: data)
         return try #require(value as? [String: Any])
