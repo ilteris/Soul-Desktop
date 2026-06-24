@@ -841,6 +841,65 @@ struct SessionLedgerTruthTests {
         #expect(row?.intent == "/pulse")
     }
 
+    @Test func codexActiveControllerOverlayPromotesUserRenamedTitleOnExistingDiskRow() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        let disk = SoulSession(
+            id: sid,
+            project: project.id,
+            timestamp: Date(timeIntervalSince1970: 100),
+            title: "Yes. It is a goldmin...",
+            source: Provider.codex.rawValue,
+            promptCount: 10,
+            loadable: true,
+            replayable: true
+        )
+        let controller = ThreadController(provider: .codex, project: project)
+        controller.sessionId = sid
+        controller.customTitle = "Alisa Liu job hunting goldmine"
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [disk],
+            activeControllers: [controller],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        let row = resolved.active.first
+        #expect(row?.title == "Alisa Liu job hunting goldmine")
+        #expect(row?.promptCount == 10)
+    }
+
+    @Test func codexActiveControllerStillDoesNotInjectGhostRowWithoutDiskSession() {
+        let sid = UUID().uuidString
+        let project = SessionLedgerTruthTests.testProject()
+        let controller = ThreadController(provider: .codex, project: project)
+        controller.sessionId = sid
+        controller.items = [
+            .userMessage(
+                id: UUID(),
+                text: "proactive suggestion shell",
+                timestamp: Date(timeIntervalSince1970: 100)
+            )
+        ]
+        controller.customTitle = "Proactive Codex Shell"
+
+        let resolved = SidebarRowResolver.resolve(.init(
+            projectKey: project.id,
+            diskSessions: [],
+            activeControllers: [controller],
+            draft: nil,
+            archivedIds: [],
+            starredIds: [],
+            visibilityContext: Self.defaultCtx
+        ))
+
+        #expect(resolved.active.isEmpty)
+    }
+
     @Test func activeControllerOverlayDoesNotReplaceDiskTitleWithPlaceholder() {
         let sid = UUID().uuidString
         let project = SessionLedgerTruthTests.testProject()
@@ -986,11 +1045,12 @@ struct SessionLedgerTruthTests {
         #expect(resolved.active.isEmpty)
     }
 
-    /// SOUL-SOUL_DESKTOP-346: live Codex controllers must not surface as
+    /// SOUL-SOUL_DESKTOP-346: live Codex controllers must not inject new
     /// sidebar rows — Codex app-server spins up proactive "suggestion"
-    /// sessions that read as confusing ghosts. A live Claude controller in
-    /// the same project still appears.
-    @Test func resolverExcludesLiveCodexControllers() {
+    /// sessions that read as confusing ghosts. Disk-backed Codex rows can
+    /// still receive live overlay state, and a live Claude controller in the
+    /// same project still appears.
+    @Test func resolverExcludesLiveCodexControllersWithoutDiskRows() {
         let project = SessionLedgerTruthTests.testProject()
 
         let codex = ThreadController(provider: .codex, project: project)

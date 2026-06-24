@@ -145,15 +145,6 @@ enum SidebarRowResolver {
             guard ctrl.project.id.lowercased() == inputs.projectKey.lowercased() else {
                 continue
             }
-            // SOUL-SOUL_DESKTOP-346: don't surface live Codex rows. Codex
-            // app-server spins up proactive "suggestion" sessions that read
-            // as confusing ghost rows in the sidebar. Skipping the live
-            // injection here keeps them out while still letting any real,
-            // finalized Codex chat appear through the on-disk path below.
-            guard ctrl.provider != .codex else {
-                _ = traceDrop("8-live-codex-excluded", ctrl.sessionId ?? "thread-\(ctrl.id)")
-                continue
-            }
             guard ctrl.sessionId != nil || !ctrl.items.isEmpty || !ctrl.queuedPrompts.isEmpty else {
                 continue
             }
@@ -189,6 +180,16 @@ enum SidebarRowResolver {
                 }
                 byId[sid] = merged
             } else {
+                // SOUL-SOUL_DESKTOP-346: don't surface new live Codex rows.
+                // Codex app-server can spin up proactive "suggestion"
+                // sessions that read as confusing ghost rows in the sidebar.
+                // Existing disk-backed Codex rows still pass through the live
+                // overlay path above so UI-owned state, like a user rename,
+                // repaints immediately while the registry catches up.
+                guard ctrl.provider != .codex else {
+                    _ = traceDrop("8-live-codex-excluded", sid)
+                    continue
+                }
                 let liveIntent = ctrl.items.compactMap { item -> String? in
                     guard case .userMessage(_, let text, _) = item else { return nil }
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
