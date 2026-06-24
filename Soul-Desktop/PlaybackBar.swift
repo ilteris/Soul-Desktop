@@ -5,10 +5,17 @@ struct PlaybackBar: View {
     @Bindable var controller: ReplayController
     var onExit: () -> Void
     @State private var showWorkingSet: Bool = false
+    @State private var availableWidth: CGFloat = 0
     /// Persisted across launches so a user who lives in reading mode doesn't
     /// re-toggle on every replay open. ReplayView reads the same key via
     /// @AppStorage.
     @AppStorage("soul.replay.readingMode") private var readingMode: Bool = true
+
+    private enum LayoutMode {
+        case regular
+        case compact
+        case minimal
+    }
 
     private var progress: Double {
         guard controller.total > 0 else { return 0 }
@@ -27,8 +34,129 @@ struct PlaybackBar: View {
         return SoulColor.accent
     }
 
+    private var layoutMode: LayoutMode {
+        guard availableWidth > 0 else { return .regular }
+        if availableWidth < 540 { return .minimal }
+        if availableWidth < 1_040 { return .compact }
+        return .regular
+    }
+
     var body: some View {
+        Group {
+            switch layoutMode {
+            case .regular:
+                regularLayout
+            case .compact:
+                compactLayout
+            case .minimal:
+                minimalLayout
+            }
+        }
+        .padding(.horizontal, layoutMode == .minimal ? 10 : 16)
+        .padding(.vertical, 8)
+        .background(SoulColor.bgElevated.opacity(0.85))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
+        }
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { availableWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, width in
+                        availableWidth = width
+                    }
+            }
+        )
+    }
+
+    private var regularLayout: some View {
         HStack(spacing: 12) {
+            playbackControls
+            statusText(width: 56)
+            readingModeTrigger(showTitle: true)
+
+            Scrubber(
+                progress: progress,
+                total: controller.total,
+                onSeek: { idx in controller.seek(to: idx) }
+            )
+            .frame(height: 14)
+            .frame(minWidth: 90)
+            .layoutPriority(1)
+
+            progressText
+            separator
+            replaySummaryText(short: false)
+            separator
+            spaceHintText
+
+            Spacer(minLength: 8)
+
+            workingSetTrigger(showTitle: true)
+
+            SpeedSlider(speed: controller.speed) { controller.setSpeed($0) }
+
+            exitButton(title: "Exit replay")
+        }
+    }
+
+    private var compactLayout: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 10) {
+                playbackControls
+                statusText(width: 54)
+                readingModeTrigger(showTitle: false)
+                replaySummaryText(short: true)
+                Spacer(minLength: 8)
+                workingSetTrigger(showTitle: false)
+                exitButton(title: "Exit")
+            }
+
+            HStack(spacing: 10) {
+                Scrubber(
+                    progress: progress,
+                    total: controller.total,
+                    onSeek: { idx in controller.seek(to: idx) }
+                )
+                .frame(height: 14)
+                .frame(minWidth: 160)
+                .layoutPriority(1)
+
+                progressText
+                SpeedSlider(speed: controller.speed, sliderWidth: 86) { controller.setSpeed($0) }
+            }
+        }
+    }
+
+    private var minimalLayout: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 8) {
+                playbackControls
+                statusText(width: 50)
+                compactProgressText
+                Spacer(minLength: 6)
+                readingModeTrigger(showTitle: false)
+                workingSetTrigger(showTitle: false)
+                exitButton(title: nil)
+            }
+
+            HStack(spacing: 8) {
+                Scrubber(
+                    progress: progress,
+                    total: controller.total,
+                    onSeek: { idx in controller.seek(to: idx) }
+                )
+                .frame(height: 14)
+                .frame(minWidth: 120)
+                .layoutPriority(1)
+
+                SpeedSlider(speed: controller.speed, sliderWidth: 72, showLabel: false) { controller.setSpeed($0) }
+            }
+        }
+    }
+
+    private var playbackControls: some View {
+        HStack(spacing: 8) {
             Button(action: { controller.togglePause() }) {
                 SoulIcon(
                     name: controller.isPaused || controller.finished ? "play.fill" : "pause.fill",
@@ -54,62 +182,63 @@ struct PlaybackBar: View {
             .keyboardShortcut(.rightArrow, modifiers: [.command])
             .help("Jump to end (⌘→)")
             .disabled(controller.finished)
-
-            Text(statusLabel)
-                .font(SoulFont.ui(11, weight: .regular))
-                .foregroundStyle(statusColor)
-                .frame(width: 56, alignment: .leading)
-
-            readingModeTrigger
-
-            Scrubber(
-                progress: progress,
-                total: controller.total,
-                onSeek: { idx in controller.seek(to: idx) }
-            )
-            .frame(height: 14)
-
-            Text("\(controller.index)/\(controller.total)")
-                .font(SoulFont.code(11))
-                .foregroundStyle(SoulColor.fgMuted)
-
-            Text("·")
-                .foregroundStyle(SoulColor.fgSubtle)
-
-            Text("\(controller.promptCount) prompts, \(controller.replyCount) replies")
-                .font(SoulFont.ui(11))
-                .foregroundStyle(SoulColor.fgMuted)
-
-            Text("·")
-                .foregroundStyle(SoulColor.fgSubtle)
-
-            Text("space to \(controller.isPaused ? "resume" : "pause")")
-                .font(SoulFont.ui(11))
-                .foregroundStyle(SoulColor.fgSubtle)
-
-            Spacer(minLength: 8)
-
-            workingSetTrigger
-
-            SpeedSlider(speed: controller.speed) { controller.setSpeed($0) }
-
-            Button(action: onExit) {
-                Text("Exit replay")
-                    .font(SoulFont.ui(11, weight: .regular))
-                    .foregroundStyle(SoulColor.fg)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(SoulColor.surface, in: Capsule())
-            }
-            .buttonStyle(.soulChip)
-            .keyboardShortcut(.escape, modifiers: [])
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(SoulColor.bgElevated.opacity(0.85))
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(SoulColor.border.opacity(0.5)).frame(height: 1)
-        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func statusText(width: CGFloat) -> some View {
+        Text(statusLabel)
+            .font(SoulFont.ui(11, weight: .regular))
+            .foregroundStyle(statusColor)
+            .lineLimit(1)
+            .frame(width: width, alignment: .leading)
+    }
+
+    private var progressText: some View {
+        playbackPositionText(short: false)
+    }
+
+    private var compactProgressText: some View {
+        playbackPositionText(short: true)
+    }
+
+    private func playbackPositionText(short: Bool) -> some View {
+        Text("\(positionLabel(controller.index, short: short))/\(positionLabel(controller.total, short: short))")
+            .font(SoulFont.code(11))
+            .foregroundStyle(SoulColor.fgMuted)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func positionLabel(_ value: Int, short: Bool) -> String {
+        guard short else { return "\(value)" }
+        let n = Double(value)
+        if value >= 1_000_000 { return String(format: "%.1fM", n / 1_000_000).replacingOccurrences(of: ".0", with: "") }
+        if value >= 1_000 { return String(format: "%.1fk", n / 1_000).replacingOccurrences(of: ".0", with: "") }
+        return "\(value)"
+    }
+
+    private func replaySummaryText(short: Bool) -> some View {
+        Text(short ? "\(controller.promptCount)p / \(controller.replyCount)r" : "\(controller.promptCount) prompts, \(controller.replyCount) replies")
+            .font(SoulFont.ui(11))
+            .foregroundStyle(SoulColor.fgMuted)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("\(controller.promptCount) prompts, \(controller.replyCount) replies")
+    }
+
+    private var spaceHintText: some View {
+        Text("space to \(controller.isPaused ? "resume" : "pause")")
+            .font(SoulFont.ui(11))
+            .foregroundStyle(SoulColor.fgSubtle)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var separator: some View {
+        Text("·")
+            .foregroundStyle(SoulColor.fgSubtle)
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     /// Reading-mode toggle. Strips tool calls, plans, status, errors, and
@@ -117,7 +246,7 @@ struct PlaybackBar: View {
     /// (user prompts + assistant prose + finalize quad). Useful for skimming
     /// "what did I decide here" on an old session; the full plumbing is one
     /// click away.
-    private var readingModeTrigger: some View {
+    private func readingModeTrigger(showTitle: Bool) -> some View {
         Button {
             readingMode.toggle()
         } label: {
@@ -125,11 +254,16 @@ struct PlaybackBar: View {
                 Image(systemName: readingMode ? "book.fill" : "book")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(readingMode ? .white : SoulColor.accent)
-                Text(readingMode ? "Reading on" : "Reading")
-                    .font(SoulFont.ui(11, weight: .semibold))
-                    .foregroundStyle(readingMode ? .white : SoulColor.accent)
+                if showTitle {
+                    Text(readingMode ? "Reading on" : "Reading")
+                        .font(SoulFont.ui(11, weight: .semibold))
+                        .foregroundStyle(readingMode ? .white : SoulColor.accent)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
-            .padding(.horizontal, 10)
+            .frame(minWidth: showTitle ? nil : 28)
+            .padding(.horizontal, showTitle ? 10 : 6)
             .padding(.vertical, 4)
             .background(
                 readingMode ? SoulColor.accent : SoulColor.accentMuted,
@@ -143,9 +277,10 @@ struct PlaybackBar: View {
         .help(readingMode
               ? "Reading mode — tool calls hidden. Click for full transcript."
               : "Reading mode — show only prompts, replies, and finalize.")
+        .fixedSize(horizontal: true, vertical: false)
     }
 
-    private var workingSetTrigger: some View {
+    private func workingSetTrigger(showTitle: Bool) -> some View {
         Button {
             showWorkingSet.toggle()
         } label: {
@@ -153,14 +288,19 @@ struct PlaybackBar: View {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 10))
                     .foregroundStyle(SoulColor.fgMuted)
-                Text("\(controller.workingSet.count)")
-                    .font(SoulFont.code(11, weight: .regular))
-                    .foregroundStyle(SoulColor.fg)
-                Text(controller.workingSet.count == 1 ? "file" : "files")
-                    .font(SoulFont.ui(11))
-                    .foregroundStyle(SoulColor.fgMuted)
+                if showTitle {
+                    Text("\(controller.workingSet.count)")
+                        .font(SoulFont.code(11, weight: .regular))
+                        .foregroundStyle(SoulColor.fg)
+                        .lineLimit(1)
+                    Text(controller.workingSet.count == 1 ? "file" : "files")
+                        .font(SoulFont.ui(11))
+                        .foregroundStyle(SoulColor.fgMuted)
+                        .lineLimit(1)
+                }
             }
-            .padding(.horizontal, 8)
+            .frame(minWidth: showTitle ? nil : 28)
+            .padding(.horizontal, showTitle ? 8 : 6)
             .padding(.vertical, 3)
             .background(SoulColor.surface, in: Capsule())
         }
@@ -171,6 +311,33 @@ struct PlaybackBar: View {
         .popover(isPresented: $showWorkingSet, arrowEdge: .top) {
             WorkingSetPanel(entries: controller.workingSet)
         }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func exitButton(title: String?) -> some View {
+        Button(action: onExit) {
+            HStack(spacing: 5) {
+                if let title {
+                    Text(title)
+                        .font(SoulFont.ui(11, weight: .regular))
+                        .foregroundStyle(SoulColor.fg)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                } else {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(SoulColor.fgMuted)
+                }
+            }
+            .frame(minWidth: title == nil ? 28 : nil)
+            .padding(.horizontal, title == nil ? 6 : 8)
+            .padding(.vertical, 4)
+            .background(SoulColor.surface, in: Capsule())
+        }
+        .buttonStyle(.soulChip)
+        .keyboardShortcut(.escape, modifiers: [])
+        .help("Exit replay (Esc)")
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -178,6 +345,8 @@ struct PlaybackBar: View {
 /// center. Display label shows the current speed; cmd-click snaps to 1×.
 private struct SpeedSlider: View {
     let speed: Double
+    var sliderWidth: CGFloat = 110
+    var showLabel: Bool = true
     var onChange: (Double) -> Void
 
     // We treat the slider value as log2(speed): -2 (0.25×) ... 3 (8×).
@@ -196,19 +365,23 @@ private struct SpeedSlider: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(label)
-                .font(SoulFont.code(10, weight: .regular))
-                .foregroundStyle(SoulColor.fgMuted)
-                .frame(width: 36, alignment: .trailing)
-                .contentShape(Rectangle())
-                .onTapGesture { onChange(1.0) }
-                .help("Click to reset to 1×")
+            if showLabel {
+                Text(label)
+                    .font(SoulFont.code(10, weight: .regular))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(1)
+                    .frame(width: 36, alignment: .trailing)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onChange(1.0) }
+                    .help("Click to reset to 1×")
+            }
 
             Slider(value: sliderBinding, in: -2.0...3.0)
                 .controlSize(.mini)
                 .tint(SoulColor.accent)
-                .frame(width: 110)
+                .frame(width: sliderWidth)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
