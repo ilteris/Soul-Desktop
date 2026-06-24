@@ -35,7 +35,9 @@ struct HeroEmptyState: View {
                 projectName: projectName,
                 projectPath: projectPath,
                 commands: builtInCommands,
-                onSend: onSend,
+                onSend: { display, agent, extraBlocks, _ in
+                    onSend(display, agent, extraBlocks)
+                },
                 currentProjectID: currentProjectID,
                 onSelectProject: onSelectProject,
                 onNewProject: onNewProject,

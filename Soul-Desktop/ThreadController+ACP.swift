@@ -731,6 +731,7 @@ extension ThreadController {
             toolCallStartedAt.removeValue(forKey: toolId)
             toolCallLastActivityAt.removeValue(forKey: toolId)
             toolCallTimedOut.remove(toolId)
+            steerCancellingToolCallIds.remove(toolId)
             toolCallPreviousLineCount.removeValue(forKey: toolId)
         } else if !isReplayingLoad {
             if toolCallStartedAt[toolId] == nil {

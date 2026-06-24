@@ -87,6 +87,18 @@ func drainQueuedPromptAfterTurn() {
         }
     }
 
+    func inFlightToolCallIDs() -> Set<String> {
+        Set(seenToolCallIds.compactMap { toolId, itemId in
+            guard let idx = items.firstIndex(where: { $0.id == itemId }),
+                  case .toolCall(_, _, _, let status, _, _) = items[idx],
+                  status == "in_progress" || status == "pending"
+            else {
+                return nil
+            }
+            return toolId
+        })
+    }
+
     func resetProviderProcessAfterInterruptedTurn() async {
         logLifecycle("resetProviderProcessAfterInterruptedTurn", note: "tearing down client; nativeSessionId preserved")
         suppressNextInterruptedTurnError = true
@@ -192,19 +204,33 @@ func drainQueuedPromptAfterTurn() {
     /// whose session file the agent hasn't had time to persist yet.
     /// The teardown is appropriate for Stop (user wants out) and for
     /// recoverStalledTurn (agent is unresponsive). Steer is neither.
-    func steerToNextQueued() async {
+    var canSteerToNextQueued: Bool {
+        TurnQueueState(
+            isWorking: isWorking,
+            queuedCount: queuedPrompts.count,
+            steerPending: steerPending
+        ).canSkipAhead && !steerPending && isWorking
+    }
+
+    @discardableResult
+    func beginSteerToNextQueued() -> Bool {
         var queueState = TurnQueueState(
             isWorking: isWorking,
             queuedCount: queuedPrompts.count,
             steerPending: steerPending
         )
-        guard queueState.requestSteerToNextQueuedPrompt() else { return }
+        guard queueState.requestSteerToNextQueuedPrompt() else { return false }
         if let next = queuedPrompts.first {
             steeredVisiblePromptId = next.itemId
             relocateQueuedBubbleToEnd(next)
         }
         suppressNextInterruptedTurnError = true
         steerPending = queueState.steerPending
+        steerCancellingToolCallIds = inFlightToolCallIDs()
+        return true
+    }
+
+    func finishSteerToNextQueued() async {
         await cancelActiveProviderTurn()
         markInFlightToolCallsStopped()
         ledger.appendHook(
@@ -215,6 +241,11 @@ func drainQueuedPromptAfterTurn() {
                 queuedCount: queuedPrompts.count
             ).hookDictionary
         )
+    }
+
+    func steerToNextQueued() async {
+        guard beginSteerToNextQueued() else { return }
+        await finishSteerToNextQueued()
     }
 
     /// Drop any queued-but-not-yet-sent prompts. Wired into `cancel()` and
