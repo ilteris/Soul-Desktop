@@ -32,10 +32,10 @@ struct ComposerView: View {
     let projectName: String
     var projectPath: String? = nil
     var commands: [SlashCommand] = []
-    /// Two-arg send: (display, agent). Display is what shows in the user
-    /// bubble (typically the bare `/cmd`); agent is the expanded prompt
-    /// shipped over ACP. For free-text turns they're identical.
-    var onSend: (_ display: String, _ agent: String, _ extraBlocks: [ContentBlock]) -> Bool = { _, _, _ in false }
+    /// Send channel: display is what shows in the user bubble (typically the
+    /// bare `/cmd`); agent is the expanded prompt shipped over ACP. The
+    /// follow-up behavior controls whether working-turn sends queue or steer.
+    var onSend: (_ display: String, _ agent: String, _ extraBlocks: [ContentBlock], _ behavior: FollowUpBehavior) -> Bool = { _, _, _, _ in false }
     var supportsImageAttachments: Bool = false
     var onCancel: () -> Void = {}
     var isWorking: Bool = false
@@ -48,6 +48,8 @@ struct ComposerView: View {
     /// into the field and edit it; ⏎ then replaces the queued entry via
     /// `onEditQueued` instead of appending a new one. SOUL-199.
     var queuedTail: (id: UUID, text: String)? = nil
+    var followUpBehavior: FollowUpBehavior = .queue
+    var isSteerEnabled: Bool = true
     var onEditQueued: (UUID, String) -> Bool = { _, _ in false }
     var onClearQueue: () -> Void = {}
     /// Cancel the in-flight ACP turn and dispatch the next queued prompt as
@@ -118,8 +120,17 @@ struct ComposerView: View {
         !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedAttachments.isEmpty
     }
 
+    private var workingSendHelp: String {
+        switch followUpBehavior {
+        case .queue:
+            return "Queue this message — ⌘Enter steers now"
+        case .steer:
+            return "Steer to this message now — ⌘Enter queues instead"
+        }
+    }
+
     @discardableResult
-    private func submit(currentText: String? = nil) -> Bool {
+    private func submit(currentText: String? = nil, invertFollowUpBehavior: Bool = false) -> Bool {
         guard isSendEnabled else { return false }
         if let currentText, currentText != draftText {
             draftText = currentText
@@ -198,7 +209,8 @@ struct ComposerView: View {
                 editingQueuedItemId = nil
             }
         } else {
-            accepted = onSend(finalDisplay, finalAgent, extraBlocks)
+            let behavior = invertFollowUpBehavior ? followUpBehavior.toggled() : followUpBehavior
+            accepted = onSend(finalDisplay, finalAgent, extraBlocks, behavior)
         }
         // Contract: the composer is allowed to clear only after the owner
         // has synchronously accepted the prompt. "Accepted" means the app
@@ -336,6 +348,8 @@ struct ComposerView: View {
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.soulChip)
+                    .disabled(!isSteerEnabled)
+                    .opacity(isSteerEnabled ? 1 : 0.55)
                     .help("Cancel the current turn and send the next queued prompt now")
                     Button(action: onClearQueue) {
                         Image(systemName: "xmark")
@@ -377,7 +391,9 @@ struct ComposerView: View {
                         text: $draftText,
                         forceClearText: $forceClearText,
                         placeholder: activeCommand == nil ? "Ask Soul anything. @ to use plugins or mention files" : "",
-                        onSubmit: { currentText in submit(currentText: currentText) },
+                        onSubmit: { currentText, invertFollowUpBehavior in
+                            submit(currentText: currentText, invertFollowUpBehavior: invertFollowUpBehavior)
+                        },
                         onBackspaceWhenEmpty: {
                             if activeCommand != nil { clearCommand() }
                         },
@@ -484,7 +500,7 @@ struct ComposerView: View {
                         }
                         .buttonStyle(.soulChip)
                         .disabled(!isSendEnabled)
-                        .help(isWorking ? "Queue this message — will send when the current turn finishes" : "Send")
+                        .help(isWorking ? workingSendHelp : "Send")
                     }
                 }
                 .padding(.horizontal, 10)

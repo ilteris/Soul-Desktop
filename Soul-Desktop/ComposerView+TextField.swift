@@ -21,7 +21,7 @@ struct ComposerTextField: NSViewRepresentable {
     @Binding var text: String
     @Binding var forceClearText: Bool
     let placeholder: String
-    let onSubmit: (String) -> Bool
+    let onSubmit: (String, Bool) -> Bool
     let onBackspaceWhenEmpty: () -> Void
     var preservesFocusedDraft: Bool = true
     var onTab: (() -> Bool)? = nil
@@ -189,7 +189,7 @@ final class ClampedComposerScrollView: NSScrollView {
 
 private final class BackspaceInterceptingTextView: NSTextView {
     var onBackspaceWhenEmpty: (() -> Void)?
-    var onCommit: ((String) -> Bool)?
+    var onCommit: ((String, Bool) -> Bool)?
     /// Fired on plain Tab key. Returns true to consume the event, false to
     /// let the default focus-traversal behavior run. Used to commit the
     /// slash command popover's top match without forcing a Space keystroke.
@@ -312,12 +312,13 @@ private final class BackspaceInterceptingTextView: NSTextView {
         if (event.keyCode == 36 || event.keyCode == 76),
             !event.modifierFlags.contains(.shift) {
             let currentText = string
+            let invertFollowUpBehavior = event.modifierFlags.contains(.command)
             allowNextEmptySync = true
             string = ""
             lastDocumentHeight = -1
             invalidateIntrinsicContentSize()
             (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
-            let accepted = onCommit?(currentText) ?? false
+            let accepted = onCommit?(currentText, invertFollowUpBehavior) ?? false
             if !accepted {
                 string = currentText
                 lastDocumentHeight = -1
@@ -342,12 +343,13 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         let currentText = string
+        let invertFollowUpBehavior = NSApp.currentEvent?.modifierFlags.contains(.command) == true
         allowNextEmptySync = true
         string = ""
         lastDocumentHeight = -1
         invalidateIntrinsicContentSize()
         (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
-        let accepted = onCommit?(currentText) ?? false
+        let accepted = onCommit?(currentText, invertFollowUpBehavior) ?? false
         if !accepted {
             string = currentText
             lastDocumentHeight = -1
@@ -362,12 +364,13 @@ private final class BackspaceInterceptingTextView: NSTextView {
             return
         }
         let currentText = string
+        let invertFollowUpBehavior = NSApp.currentEvent?.modifierFlags.contains(.command) == true
         allowNextEmptySync = true
         string = ""
         lastDocumentHeight = -1
         invalidateIntrinsicContentSize()
         (enclosingScrollView as? ClampedComposerScrollView)?.invalidateIntrinsicContentSize()
-        let accepted = onCommit?(currentText) ?? false
+        let accepted = onCommit?(currentText, invertFollowUpBehavior) ?? false
         if !accepted {
             string = currentText
             lastDocumentHeight = -1

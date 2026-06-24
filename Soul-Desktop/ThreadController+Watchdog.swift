@@ -39,6 +39,7 @@ extension ThreadController {
         toolCallStartedAt.removeAll()
         toolCallLastActivityAt.removeAll()
         toolCallTimedOut.removeAll()
+        steerCancellingToolCallIds.removeAll()
         toolCallSignposted.removeAll()
         toolCallPreviousLineCount.removeAll()
     }
@@ -88,7 +89,9 @@ extension ThreadController {
         var expired: [(toolId: String, threshold: Int, complete: Bool)] = []
         var toSignpost: [(toolId: String, quietFor: Int, threshold: Int, autoCancels: Bool)] = []
         // SOUL-SOUL_DESKTOP-079: drive expiry off lastActivityAt, not startedAt.
-        for (toolId, lastSeen) in toolCallLastActivityAt where !toolCallTimedOut.contains(toolId) {
+        for (toolId, lastSeen) in toolCallLastActivityAt
+            where !toolCallTimedOut.contains(toolId)
+                && !steerCancellingToolCallIds.contains(toolId) {
             let quietFor = Int(now.timeIntervalSince(lastSeen))
             let behavior = timeoutBehavior(forToolCall: toolId)
             let toolTimeout = behavior.signpostThresholdSeconds
@@ -297,6 +300,7 @@ extension ThreadController {
     /// via `toolCallTimedOut`.
     func fireToolCallTimeout(toolId: String, threshold: Int) async {
         guard !toolCallTimedOut.contains(toolId) else { return }
+        guard !steerCancellingToolCallIds.contains(toolId) else { return }
         toolCallTimedOut.insert(toolId)
         let startedAt = toolCallStartedAt[toolId] ?? Date()
         let elapsed = Int(Date().timeIntervalSince(startedAt))

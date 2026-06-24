@@ -60,6 +60,21 @@ extension Array where Element == SlashCommand {
     }
 }
 
+enum FollowUpBehavior: String, Sendable {
+    case queue
+    case steer
+
+    init(storageValue: String) {
+        self = FollowUpBehavior(rawValue: storageValue) ?? .queue
+    }
+
+    func toggled() -> FollowUpBehavior {
+        switch self {
+        case .queue: return .steer
+        case .steer: return .queue
+        }
+    }
+}
 
 /// Owns the live state of a single chat thread: the ordered ThreadItem list,
 /// streaming agent message coalescing, tool-call lifecycle, and the bridge to
@@ -217,6 +232,10 @@ final class ThreadController {
         var ledgerEvent: LedgerEvent = .userPrompt
         var sourceProvider: Provider? = nil
         var targetProvider: Provider? = nil
+    }
+    struct AcceptedPrompt {
+        let pending: QueuedPrompt?
+        let shouldSteerQueuedPrompt: Bool
     }
     var queuedPrompts: [QueuedPrompt] = [] {
         didSet { queuedVersion &+= 1 }
@@ -803,6 +822,10 @@ final class ThreadController {
     /// IDs we've already fired a timeout for so the watchdog doesn't keep
     /// hammering cancel + writing duplicate hooks every tick after expiry.
     var toolCallTimedOut: Set<String> = []
+    /// Tool calls whose active turn is already being cancelled by Steer. The
+    /// per-tool watchdog must not race that path and append a timeout warning
+    /// for the same tool while the queued prompt is being promoted.
+    var steerCancellingToolCallIds: Set<String> = []
     /// SOUL-SOUL_DESKTOP-110: IDs we've already emitted a "still working"
     /// signpost for, so the watchdog tick doesn't keep spamming the canvas
     /// with the same warning. Cleared at end-of-turn alongside the other

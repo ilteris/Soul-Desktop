@@ -409,6 +409,87 @@ struct ThreadControllerTests {
         #expect(controller.groupedItemsSplit.main.compactMap(Self.userMessageText) == ["active", "queued"])
     }
 
+    @Test func testFrozenThreadPresentationPromotesSteeredPromptAsUserMessage() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+        let frozenMain = controller.groupedItemsSplit.main
+        let frozenQueued = controller.groupedItemsSplit.queued
+
+        await controller.steerToNextQueued()
+
+        let presentation = ThreadQueuePresentation.frozenPresentation(
+            frozenQueuedItems: frozenQueued,
+            liveItems: controller.groupedItems,
+            frozenMainIDs: Set(frozenMain.map(\.id)),
+            queuedItemIDs: controller.queuedItemIDs,
+            steeredVisiblePromptId: controller.steeredVisiblePromptId
+        )
+
+        #expect(presentation.promoted.compactMap(Self.userMessageText) == ["queued"])
+        #expect(presentation.queued.isEmpty)
+    }
+
+    @Test func testFollowUpBehaviorControlsQueuedPromptSteerSignal() async throws {
+        #expect(FollowUpBehavior(storageValue: "lost") == .queue)
+        #expect(FollowUpBehavior.queue.toggled() == .steer)
+        #expect(FollowUpBehavior.steer.toggled() == .queue)
+
+        let queueController = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        queueController.isHydrating = false
+        queueController.ledger = NoopLedger()
+        _ = queueController.acceptUserPrompt(display: "active", agent: "active")
+
+        let queued = try #require(queueController.acceptUserPrompt(
+            display: "queued",
+            agent: "queued",
+            followUpBehavior: .queue
+        ))
+
+        #expect(queued.pending == nil)
+        #expect(!queued.shouldSteerQueuedPrompt)
+        #expect(queueController.queuedPrompts.count == 1)
+
+        let steerController = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        steerController.isHydrating = false
+        steerController.ledger = NoopLedger()
+        _ = steerController.acceptUserPrompt(display: "active", agent: "active")
+
+        let steered = try #require(steerController.acceptUserPrompt(
+            display: "queued",
+            agent: "queued",
+            followUpBehavior: .steer
+        ))
+
+        #expect(steered.pending == nil)
+        #expect(steered.shouldSteerQueuedPrompt)
+        #expect(steerController.queuedPrompts.count == 1)
+    }
+
+    @Test func testSteerAvailabilityDisablesDuringPendingSteer() async throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.isHydrating = false
+        controller.ledger = NoopLedger()
+        _ = controller.acceptUserPrompt(display: "active", agent: "active")
+        _ = controller.acceptUserPrompt(display: "queued", agent: "queued")
+
+        #expect(controller.canSteerToNextQueued)
+        #expect(controller.beginSteerToNextQueued())
+        #expect(!controller.canSteerToNextQueued)
+        #expect(!controller.beginSteerToNextQueued())
+        #expect(controller.steerPending)
+        #expect(controller.items.compactMap(Self.userMessageText) == ["active", "queued"])
+
+        let claimed = try #require(controller.popNextQueuedPromptForDispatch())
+        controller.beginQueuedRedispatch(claimed)
+
+        #expect(!controller.steerPending)
+        #expect(controller.items.compactMap(Self.statusText) == ["↪ steered to next prompt"])
+    }
+
     @Test func testQueuedRedispatchConsumesSteerPending() async throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
         controller.isHydrating = false

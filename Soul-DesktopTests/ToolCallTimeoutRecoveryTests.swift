@@ -140,4 +140,23 @@ struct ToolCallTimeoutRecoveryTests {
         #expect(!Self.hasStatusRow(controller, containing: "recovered without cancelling"))
         #expect(ledger.eventCount("ToolCallTimeout") == 1)
     }
+
+    @Test("a steer-cancelling tool call does not also timeout")
+    func steerCancellingToolSkipsTimeoutRace() async {
+        let ledger = CapturingLedger()
+        let controller = Self.controllerWithQuietTool(
+            kind: "execute",
+            title: "tail -f server.log",
+            toolId: "bash__xyz",
+            quietSeconds: 901,
+            ledger: ledger
+        )
+        controller.steerCancellingToolCallIds.insert("bash__xyz")
+
+        await controller.tickStallWatchdog(budget: 300, ceiling: 1_000_000)
+
+        #expect(Self.firstToolRowStatus(controller) == "in_progress")
+        #expect(!Self.hasStatusRow(controller, containing: "cancelling turn"))
+        #expect(ledger.eventCount("ToolCallTimeout") == 0)
+    }
 }

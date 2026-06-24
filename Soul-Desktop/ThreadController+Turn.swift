@@ -88,6 +88,29 @@ extension ThreadController {
         return prompt
     }
 
+    func acceptUserPrompt(
+        display: String,
+        agent: String,
+        extraBlocks: [ContentBlock] = [],
+        followUpBehavior: FollowUpBehavior
+    ) -> AcceptedPrompt? {
+        let wasWorking = isWorking
+        let wasSteerPending = steerPending
+        let itemCountBefore = items.count
+        let queuedCountBefore = queuedPrompts.count
+        let pending = acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks)
+        let queuedPromptAccepted = pending == nil && queuedPrompts.count > queuedCountBefore
+        let accepted = pending != nil || queuedPromptAccepted || items.count > itemCountBefore
+        guard accepted else { return nil }
+        return AcceptedPrompt(
+            pending: pending,
+            shouldSteerQueuedPrompt: wasWorking
+                && queuedPromptAccepted
+                && followUpBehavior == .steer
+                && !wasSteerPending
+        )
+    }
+
     func acceptBranchSummaryPrompt(
         summary: String,
         sourceProvider: Provider,

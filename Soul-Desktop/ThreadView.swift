@@ -39,6 +39,7 @@ struct ThreadView: View {
     @State private var scrollRestorePending = false
     @AppStorage(SoulColor.accentStorageKey) private var _accentObserver: Int = 0
     @AppStorage("soul.uiShowThoughts") private var showThoughts: Bool = false
+    @AppStorage("soul.followUpBehavior") private var storedFollowUpBehavior: String = FollowUpBehavior.queue.rawValue
 
     /// SOUL-SOUL_DESKTOP-094 + -096: scroll-anchor state lives in a
     /// reference-type holder so per-row writes during scroll do NOT
@@ -91,19 +92,31 @@ struct ThreadView: View {
         autoCompactCtrl?.banner
     }
 
+    private var followUpBehavior: FollowUpBehavior {
+        FollowUpBehavior(storageValue: storedFollowUpBehavior)
+    }
+
     // Extracted to keep `body` under the Swift type-checker's budget.
     // The LazyVStack ForEach + per-row anchor closures was the heaviest
     // chunk of work inside the ScrollView; pulling it out drops the
     // surrounding ScrollViewReader / ZStack expression back under budget.
     @ViewBuilder
     private var transcriptList: some View {
-        if let frozenTranscriptRows, controller.steeredVisiblePromptId == nil {
+        if let frozenTranscriptRows {
+            let queuePresentation = ThreadQueuePresentation.frozenPresentation(
+                frozenQueuedItems: frozenQueuedItems,
+                liveItems: controller.groupedItems,
+                frozenMainIDs: Set(frozenTranscriptRows.map(\.item.id)),
+                queuedItemIDs: controller.queuedItemIDs,
+                steeredVisiblePromptId: controller.steeredVisiblePromptId
+            )
             transcriptStack(
                 projectPath: controller.project.path,
                 projectKey: controller.project.id,
                 rows: frozenTranscriptRows,
                 hiddenMainCount: frozenHiddenMainCount,
-                queuedItems: frozenQueuedItems.filter { controller.queuedItemIDs.contains($0.id) },
+                promotedQueuedItems: queuePresentation.promoted,
+                queuedItems: queuePresentation.queued,
                 showWorkingIndicator: controller.isWorking,
                 onRevealEarlier: { revealEarlierLiveRows() }
             )
@@ -148,6 +161,7 @@ struct ThreadView: View {
             projectKey: controller.project.id,
             rows: rows,
             hiddenMainCount: hiddenMainCount,
+            promotedQueuedItems: [],
             queuedItems: queuedItems,
             showWorkingIndicator: isWorking,
             onRevealEarlier: { revealEarlierLiveRows() }
@@ -160,6 +174,7 @@ struct ThreadView: View {
         projectKey: String,
         rows: [TranscriptRowSnapshot],
         hiddenMainCount: Int,
+        promotedQueuedItems: [ThreadItem],
         queuedItems: [ThreadItem],
         showWorkingIndicator: Bool,
         onRevealEarlier: (() -> Void)? = nil
@@ -211,6 +226,17 @@ struct ThreadView: View {
                     anchor.visibleIds.remove(row.id)
                     updateAnchor(in: rows.map(\.item))
                 }
+            }
+            ForEach(promotedQueuedItems, id: \.id) { item in
+                ThreadItemRow(
+                    projectPath: projectPath,
+                    projectKey: projectKey,
+                    item: item,
+                    isHistorical: false,
+                    isQueued: false
+                )
+                .padding(.top, 18)
+                .id(item.id)
             }
             if branchSeedLoading {
                 BranchSeedIndicator().padding(.top, 18)
@@ -288,7 +314,7 @@ struct ThreadView: View {
                 projectName: controller.project.name,
                 projectPath: controller.project.path,
                 commands: controller.availableCommands,
-                onSend: { display, agent, extraBlocks in
+                onSend: { display, agent, extraBlocks, behavior in
                     // SOUL-SOUL_DESKTOP-359: `/compact` is client-intercepted.
                     // Route it to the kernel forced-compact dispatch (same path
                     // as ⌘⇧K) instead of sending it to the provider. Sending a
@@ -310,30 +336,45 @@ struct ThreadView: View {
                     guard !display.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                           !agent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !extraBlocks.isEmpty
                     else { return false }
-                    let itemCountBefore = controller.items.count
-                    if let pending = controller.acceptUserPrompt(display: display, agent: agent, extraBlocks: extraBlocks) {
+                    guard let acceptedPrompt = controller.acceptUserPrompt(
+                        display: display,
+                        agent: agent,
+                        extraBlocks: extraBlocks,
+                        followUpBehavior: behavior
+                    ) else {
+                        return false
+                    }
+                    if let pending = acceptedPrompt.pending {
                         DispatchQueue.main.async {
                             freezeLiveTranscript()
                             Task { await controller.dispatchPending(pending) }
                         }
                     }
-                    let accepted = controller.items.count > itemCountBefore
-                    if accepted {
-                        frozenQueuedItems = controller.groupedItemsSplit.queued
-                        viewportPolicy.promptAccepted()
+                    if acceptedPrompt.shouldSteerQueuedPrompt {
+                        if controller.beginSteerToNextQueued() {
+                            Task { await controller.finishSteerToNextQueued() }
+                        }
                     }
-                    return accepted
+                    frozenQueuedItems = controller.groupedItemsSplit.queued
+                    viewportPolicy.promptAccepted()
+                    return true
                 },
                   supportsImageAttachments: controller.supportsImageAttachments,
                 onCancel: onCancel,
                 isWorking: controller.isWorking,
                 queuedCount: visibleQueuedPrompts.count,
                 queuedTail: visibleQueuedPrompts.last.map { (id: $0.itemId, text: $0.display) },
+                followUpBehavior: followUpBehavior,
+                isSteerEnabled: controller.canSteerToNextQueued,
                 onEditQueued: { id, newText in
                     controller.editQueuedPrompt(itemId: id, newText: newText)
                 },
                 onClearQueue: { controller.clearQueue() },
-                onSteer: { Task { await controller.steerToNextQueued() } },
+                onSteer: {
+                    if controller.beginSteerToNextQueued() {
+                        Task { await controller.finishSteerToNextQueued() }
+                    }
+                },
                 onAddReminder: onAddReminder,
                 terminalActive: terminalActive,
                 onToggleTerminal: onToggleTerminal,
@@ -1215,6 +1256,32 @@ private struct ThreadBottomSentinelPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+enum ThreadQueuePresentation {
+    static func frozenPresentation(
+        frozenQueuedItems: [ThreadItem],
+        liveItems: [ThreadItem],
+        frozenMainIDs: Set<UUID>,
+        queuedItemIDs: Set<UUID>,
+        steeredVisiblePromptId: UUID?
+    ) -> (promoted: [ThreadItem], queued: [ThreadItem]) {
+        let queued = frozenQueuedItems.filter { item in
+            queuedItemIDs.contains(item.id) && item.id != steeredVisiblePromptId
+        }
+        guard let steeredVisiblePromptId,
+              !frozenMainIDs.contains(steeredVisiblePromptId)
+        else {
+            return ([], queued)
+        }
+        if let frozen = frozenQueuedItems.first(where: { $0.id == steeredVisiblePromptId }) {
+            return ([frozen], queued)
+        }
+        if let live = liveItems.first(where: { $0.id == steeredVisiblePromptId }) {
+            return ([live], queued)
+        }
+        return ([], queued)
     }
 }
 
