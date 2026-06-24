@@ -53,15 +53,20 @@ extension ThreadController {
         }
     }
 
-    func materializeBufferedAgentStreams() {
+    func materializeBufferedAgentStreams(messageSegmentsAsThoughts: Bool = false) {
         let completed = agentStreamBuffer.drainAll(sanitizeMessage: sanitizeLiveAgentText)
         streamPreviewPublishScheduled = false
         guard !completed.isEmpty else { return }
         for segment in completed {
             switch segment.kind {
             case .message:
-                items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
-                openAgentMessageId = nil
+                if messageSegmentsAsThoughts {
+                    items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+                    openAgentThoughtId = nil
+                } else {
+                    items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+                    openAgentMessageId = nil
+                }
             case .thought:
                 items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
                 openAgentThoughtId = nil
@@ -156,7 +161,7 @@ extension ThreadController {
             }
         case .renderToolCall(let payload, isUpdate: false):
             if silentCapture != nil { break }
-            materializeBufferedAgentStreams()
+            materializeBufferedAgentStreams(messageSegmentsAsThoughts: provider == .geminiCLI)
             insertToolCall(payload, isUpdate: false)
         case .renderToolCall(let payload, isUpdate: true):
             if silentCapture != nil { break }

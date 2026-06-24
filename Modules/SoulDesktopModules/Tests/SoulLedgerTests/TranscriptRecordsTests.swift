@@ -52,4 +52,54 @@ struct TranscriptRecordsTests {
 
         #expect(stripLedgerGeminiReferencedFileBlock(raw) == "summarize @README.md")
     }
+
+    @Test("Gemini transcript preserves thoughts and tool preludes separately from final response")
+    func geminiTranscriptSeparatesThoughtsAndFinalResponse() throws {
+        let projectKey = "soul-ledger-gemini-\(UUID().uuidString.lowercased())"
+        let sessionId = UUID().uuidString.lowercased()
+        let chats = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".gemini/tmp/\(projectKey)/chats")
+        try FileManager.default.createDirectory(at: chats, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".gemini/tmp/\(projectKey)")
+            )
+        }
+
+        let transcript = chats.appendingPathComponent("session-\(String(sessionId.prefix(8))).jsonl")
+        let lines = [
+            #"{"sessionId":"\#(sessionId)","projectHash":"test","startTime":"2026-06-24T20:00:00Z","kind":"main"}"#,
+            #"{"id":"u1","timestamp":"2026-06-24T20:00:01Z","type":"user","content":[{"text":"check status"}]}"#,
+            #"{"id":"g1","timestamp":"2026-06-24T20:00:02Z","type":"gemini","content":"I will inspect git status.","thoughts":[{"subject":"Plan","description":"Need to inspect before answering.","timestamp":"2026-06-24T20:00:02Z"}],"toolCalls":[{"name":"run_shell_command","args":{"command":"git status"}}]}"#,
+            #"{"id":"g2","timestamp":"2026-06-24T20:00:03Z","type":"gemini","content":"Workspace is clean.","thoughts":[]}"#,
+        ]
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let result = try #require(readGeminiTranscriptTurns(sessionId: sessionId, projectKey: projectKey))
+        #expect(result.turns.count == 5)
+
+        guard case .message(.user, "check status", _) = result.turns[0].content else {
+            Issue.record("Expected user prompt")
+            return
+        }
+        guard case .thought(let thought, _) = result.turns[1].content else {
+            Issue.record("Expected structured Gemini thought")
+            return
+        }
+        #expect(thought.contains("Plan"))
+        #expect(thought.contains("Need to inspect before answering."))
+        guard case .thought("I will inspect git status.", _) = result.turns[2].content else {
+            Issue.record("Expected tool prelude as thought")
+            return
+        }
+        guard case .tool(let tool, _) = result.turns[3].content else {
+            Issue.record("Expected tool call")
+            return
+        }
+        #expect(tool.name == "run_shell_command")
+        guard case .message(.assistant, "Workspace is clean.", _) = result.turns[4].content else {
+            Issue.record("Expected final Gemini response")
+            return
+        }
+    }
 }

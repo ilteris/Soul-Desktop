@@ -15,10 +15,11 @@ import SoulCore
 ///   - user:   `{ id, timestamp, type: "user", content: [{text}] }`
 ///   - gemini: `{ id, timestamp, type: "gemini", content: "<string>", toolCalls?: [{id, name, args, result}] }`
 ///
-/// We surface user text → `.userMessage`, gemini text → `.agentMessage`, and
-/// each `toolCalls` entry → `.toolCall`. The `result` field on a toolCall is
-/// the file content / shell output Gemini received back; we don't render it
-/// inline (matches ClaudeTranscriptReader which also skips tool_result).
+/// We surface user text -> `.userMessage`, final gemini text -> `.agentMessage`,
+/// gemini thoughts/tool preludes -> `.agentThought`, and each `toolCalls` entry
+/// -> `.toolCall`. The `result` field on a toolCall is the file content / shell
+/// output Gemini received back; we don't render it inline (matches
+/// ClaudeTranscriptReader which also skips tool_result).
 public enum GeminiTranscriptReader {
     /// Resolve to a ThreadItem list, or nil if we couldn't find / parse the
     /// transcript. We scan the project's chats dir for the file whose first-
@@ -55,8 +56,8 @@ public enum GeminiTranscriptReader {
             )
         case .status(let text):
             return .status(id: UUID(), text: text)
-        case .thought:
-            return nil
+        case .thought(let text, let ts):
+            return .agentThought(id: UUID(), text: text, complete: true, timestamp: ts)
         }
     }
 

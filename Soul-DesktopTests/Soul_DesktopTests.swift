@@ -699,6 +699,21 @@ struct Soul_DesktopTests {
     }
 
     @MainActor
+    @Test func geminiToolPreludeMaterializesAsThoughtInsteadOfAssistantReply() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.codexTestProject())
+
+        controller.agentStreamBuffer.appendACPMessage("I will inspect git status.")
+        controller.materializeBufferedAgentStreams(messageSegmentsAsThoughts: true)
+
+        guard case .agentThought(_, let text, let complete, _) = controller.items.first else {
+            Issue.record("expected Gemini tool prelude to render as thought")
+            return
+        }
+        #expect(text == "I will inspect git status.")
+        #expect(complete == true)
+    }
+
+    @MainActor
     @Test func codexCoalesceKeepsPerItemTextAndIsIdempotent() throws {
         let controller = ThreadController(provider: .codex, project: Self.codexTestProject())
         let a = UUID(); let b = UUID()

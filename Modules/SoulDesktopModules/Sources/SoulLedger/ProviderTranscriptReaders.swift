@@ -84,13 +84,19 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
             }
 
         case "gemini":
+            turns.append(contentsOf: geminiThoughtTurns(from: rec, fallbackTimestamp: ts))
+            let toolCalls = rec["toolCalls"] as? [[String: Any]]
             if let content = rec["content"] as? String {
                 let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    turns.append(LedgerTranscriptTurn(content: .message(role: .assistant, text: trimmed, timestamp: ts)))
+                    if toolCalls?.isEmpty == false {
+                        turns.append(LedgerTranscriptTurn(content: .thought(text: trimmed, timestamp: ts)))
+                    } else {
+                        turns.append(LedgerTranscriptTurn(content: .message(role: .assistant, text: trimmed, timestamp: ts)))
+                    }
                 }
             }
-            if let toolCalls = rec["toolCalls"] as? [[String: Any]] {
+            if let toolCalls {
                 for call in toolCalls {
                     let name = call["name"] as? String ?? "tool"
                     let args = call["args"] as? [String: Any] ?? [:]
@@ -122,6 +128,23 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
     }
 
     return turns.isEmpty ? nil : LedgerTranscriptReadResult(turns: turns, stats: stats)
+}
+
+private func geminiThoughtTurns(from record: [String: Any], fallbackTimestamp: Date) -> [LedgerTranscriptTurn] {
+    guard let thoughts = record["thoughts"] as? [[String: Any]] else { return [] }
+    return thoughts.compactMap { thought in
+        let subject = (thought["subject"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = (thought["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = [subject, description]
+            .compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: "\n\n")
+        guard !text.isEmpty else { return nil }
+        let timestamp = parseLedgerTimestamp(thought["timestamp"] as? String) ?? fallbackTimestamp
+        return LedgerTranscriptTurn(content: .thought(text: text, timestamp: timestamp))
+    }
 }
 
 public func readPiTranscriptTurns(sessionId: String, cwd: String) -> LedgerTranscriptReadResult? {
