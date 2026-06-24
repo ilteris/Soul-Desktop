@@ -822,6 +822,13 @@ final class ThreadController {
     /// IDs we've already fired a timeout for so the watchdog doesn't keep
     /// hammering cancel + writing duplicate hooks every tick after expiry.
     var toolCallTimedOut: Set<String> = []
+    /// Live registry-backed subagent affordance for Gemini. Gemini can spend
+    /// several minutes inside `soul delegate` without emitting ACP updates;
+    /// this task polls the Soul registry and injects an inline SubagentCard so
+    /// the user sees the specialist is alive.
+    var registrySubagentMonitorTask: Task<Void, Never>?
+    var registrySubagentMonitorStartedAt: Date?
+    var registryInjectedSubagentIDs: Set<String> = []
     /// Tool calls whose active turn is already being cancelled by Steer. The
     /// per-tool watchdog must not race that path and append a timeout warning
     /// for the same tool while the queued prompt is being promoted.

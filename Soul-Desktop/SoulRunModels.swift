@@ -390,6 +390,7 @@ struct SoulSubagentRecord: Identifiable, Hashable, Sendable, Decodable {
     var updatedAt: String?
     var startedAt: Double?
     var completedAt: String?
+    var parentSessionID: String?
     var liveLog: String?
     var liveLogBytes: Int?
     var findingPath: String?
@@ -445,6 +446,7 @@ struct SoulSubagentRecord: Identifiable, Hashable, Sendable, Decodable {
         case updatedAt = "updated_at"
         case startedAt = "started_at"
         case completedAt = "completed_at"
+        case parentSessionID = "parent_session_id"
         case liveLog = "live_log"
         case liveLogBytes = "live_log_bytes"
         case findingPath = "finding_path"
@@ -466,6 +468,7 @@ struct SoulSubagentRecord: Identifiable, Hashable, Sendable, Decodable {
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         startedAt = try container.decodeIfPresent(Double.self, forKey: .startedAt)
         completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
+        parentSessionID = try container.decodeIfPresent(String.self, forKey: .parentSessionID)
         liveLog = try container.decodeIfPresent(String.self, forKey: .liveLog)
         liveLogBytes = try container.decodeIfPresent(Int.self, forKey: .liveLogBytes)
         findingPath = try container.decodeIfPresent(String.self, forKey: .findingPath)

@@ -181,6 +181,7 @@ extension ThreadController {
             agentStreamBuffer.clear()
             turnStartedAt = nil
             stopStallWatchdog()
+            stopRegistrySubagentMonitor()
             endComputerUseArtifactTracking()
             drainQueuedPromptAfterTurn()
             suppressNextInterruptedTurnError = false
@@ -213,6 +214,7 @@ extension ThreadController {
         var isFirstTurn = true
         do {
             try await ensureSessionResilient()
+            startRegistrySubagentMonitorIfNeeded()
             beginComputerUseArtifactTracking()
             // Codex path: parallel client + event semantics, see sendCodex.
             if provider == .codex {
@@ -564,6 +566,7 @@ extension ThreadController {
         appendCancelStatusIfNeeded()
         isWorking = queueState.isWorking
         stopStallWatchdog()
+        stopRegistrySubagentMonitor()
         // Suppress the upcoming "prompt turn interrupted" error that the
         // in-flight `client.prompt` will throw once the transport tears
         // down — the user already saw "■ cancel sent".
@@ -615,6 +618,7 @@ extension ThreadController {
         // here would overlap a new prompt with the still-awaiting old turn.
         await resetProviderProcessAfterInterruptedTurn()
         stopStallWatchdog()
+        stopRegistrySubagentMonitor()
     }
 
     /// Compat shim — older call sites still reference the previous name. The

@@ -745,6 +745,19 @@ extension ThreadController {
             toolCallLastActivityAt[toolId] = Date()
         }
 
+        if let structuredDetails,
+           structuredDetails.isSubagent,
+           upsertSubagentToolCallIfAlreadyRendered(
+               toolId: toolId,
+               kind: kind,
+               title: title,
+               status: status,
+               location: location,
+               details: structuredDetails
+           ) {
+            return
+        }
+
         if let existingId = seenToolCallIds[toolId],
            let idx = items.firstIndex(where: { $0.id == existingId }),
            case .toolCall(let id, let oldKind, let oldTitle, _, let oldLoc, let oldDetails) = items[idx] {

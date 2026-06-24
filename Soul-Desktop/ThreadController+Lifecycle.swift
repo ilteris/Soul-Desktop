@@ -253,6 +253,7 @@ extension ThreadController {
         preambleStagingTask = nil
         ensureSessionTask = nil
         eventTask?.cancel()
+        stopRegistrySubagentMonitor()
         await runtimes.stopAll()
         if let cont = codexTurnContinuation {
             codexTurnContinuation = nil

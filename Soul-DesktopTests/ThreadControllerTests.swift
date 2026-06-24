@@ -89,6 +89,140 @@ struct ThreadControllerTests {
         #expect(SessionTitleResolver.titleCandidateText(fromPrompt: envelope) == "why do I get this when I try to resume?")
     }
 
+    @Test func registryActiveSubagentInjectsWorkingCard() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let record = try Self.registrySubagentRecord(
+            id: "abc123",
+            status: "running",
+            startedAt: 105,
+            liveLog: try Self.liveLogPath(firstLine: "--- Subagent @registry_guardian (ID: abc123, Provider: gemini) Started ---")
+        )
+
+        controller.applyRegistrySubagentRecords(
+            [record],
+            monitorStartedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        #expect(controller.items.count == 1)
+        guard case .toolCall(_, let kind, let title, let status, _, let details) = controller.items[0],
+              case .subagent(let specialist, _, let subagentId, _, _) = details?.kind else {
+            Issue.record("Expected registry subagent tool row")
+            return
+        }
+        #expect(kind == "delegate")
+        #expect(title == "@registry_guardian")
+        #expect(status == "in_progress")
+        #expect(specialist == "registry_guardian")
+        #expect(subagentId == "abc123")
+
+        controller.applyRegistrySubagentRecords(
+            [record],
+            monitorStartedAt: Date(timeIntervalSince1970: 100)
+        )
+        #expect(controller.items.count == 1)
+    }
+
+    @Test func registrySubagentFilteringUsesCurrentSessionDelegations() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let allowed = try Self.registrySubagentRecord(
+            id: "abc123",
+            status: "running",
+            startedAt: 105,
+            liveLog: try Self.liveLogPath(firstLine: "--- Subagent @registry_guardian (ID: abc123, Provider: gemini) Started ---")
+        )
+        let foreign = try Self.registrySubagentRecord(
+            id: "foreign456",
+            status: "running",
+            startedAt: 106,
+            liveLog: try Self.liveLogPath(firstLine: "--- Subagent @code_archaeologist (ID: foreign456, Provider: gemini) Started ---")
+        )
+
+        controller.applyRegistrySubagentRecords(
+            [allowed, foreign],
+            monitorStartedAt: Date(timeIntervalSince1970: 100),
+            allowedSubagentIDs: ["abc123"],
+            sessionId: "session-1"
+        )
+
+        #expect(controller.items.count == 1)
+        guard case .toolCall(_, _, let title, _, _, let details) = controller.items[0],
+              case .subagent(_, _, let subagentId, _, _) = details?.kind else {
+            Issue.record("Expected allowed registry subagent row")
+            return
+        }
+        #expect(title == "@registry_guardian")
+        #expect(subagentId == "abc123")
+    }
+
+    @Test func acpSubagentUpdateMergesWithRegistryInjectedCard() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let record = try Self.registrySubagentRecord(
+            id: "abc123",
+            status: "running",
+            startedAt: 105,
+            liveLog: try Self.liveLogPath(firstLine: "--- Subagent @registry_guardian (ID: abc123, Provider: gemini) Started ---")
+        )
+        controller.applyRegistrySubagentRecords(
+            [record],
+            monitorStartedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        controller._testApplyUpdate(.toolCall(.object([
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("gemini-delegate-tool"),
+            "kind": .string("delegate_to_specialist"),
+            "name": .string("delegate_to_specialist"),
+            "title": .string("delegate_to_specialist"),
+            "status": .string("in_progress"),
+            "rawInput": .object([
+                "specialist": .string("registry_guardian"),
+                "task": .string("Review the layout stabilization change"),
+            ]),
+        ])))
+
+        #expect(controller.items.count == 1)
+        guard case .toolCall(_, _, _, let earlyStatus, _, let earlyDetails) = controller.items[0],
+              case .subagent(_, let earlyObjective, let earlySubagentId, _, _) = earlyDetails?.kind else {
+            Issue.record("Expected early ACP update to merge into registry row")
+            return
+        }
+        #expect(earlyStatus == "in_progress")
+        #expect(earlyObjective == "Review the layout stabilization change")
+        #expect(earlySubagentId == "abc123")
+
+        controller._testApplyUpdate(.toolCall(.object([
+            "sessionUpdate": .string("tool_call_update"),
+            "toolCallId": .string("gemini-delegate-tool"),
+            "kind": .string("delegate_to_specialist"),
+            "name": .string("delegate_to_specialist"),
+            "title": .string("delegate_to_specialist"),
+            "status": .string("completed"),
+            "rawInput": .object([
+                "specialist": .string("registry_guardian"),
+                "task": .string("Review the layout stabilization change"),
+            ]),
+            "content": .array([
+                .object([
+                    "type": .string("text"),
+                    "text": .string(#"{"delegation_id":"abc123"}"#),
+                ]),
+            ]),
+            "finding_path": .string("/tmp/finding.json"),
+        ])))
+
+        #expect(controller.items.count == 1)
+        guard case .toolCall(_, _, _, let status, _, let details) = controller.items[0],
+              case .subagent(let specialist, let objective, let subagentId, _, let findingPath) = details?.kind else {
+            Issue.record("Expected merged subagent row")
+            return
+        }
+        #expect(status == "completed")
+        #expect(specialist == "registry_guardian")
+        #expect(objective == "Review the layout stabilization change")
+        #expect(subagentId == "abc123")
+        #expect(findingPath == "/tmp/finding.json")
+    }
+
     @Test func testPiReplayToolCallsDoNotArmTimeoutWatchdog() async throws {
         let controller = ThreadController(provider: .pi, project: Self.testProject())
 
@@ -582,6 +716,39 @@ struct ThreadControllerTests {
             devCommand: nil,
             devURL: nil
         )
+    }
+
+    private static func registrySubagentRecord(
+        id: String,
+        status: String,
+        startedAt: Double,
+        liveLog: String? = nil
+    ) throws -> SoulSubagentRecord {
+        var subagent: [String: Any] = [
+            "subagent_id": id,
+            "project": "test",
+            "status": status,
+            "started_at": startedAt,
+        ]
+        if let liveLog {
+            subagent["live_log"] = liveLog
+        }
+
+        let payload: [String: Any] = [
+            "project": "test",
+            "subagents": [subagent],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let decoded = try JSONDecoder().decode(SoulSubagentListPayload.self, from: data)
+        return try #require(decoded.subagents.first)
+    }
+
+    private static func liveLogPath(firstLine: String) throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("soul-desktop-subagent-\(UUID().uuidString)")
+            .appendingPathExtension("log")
+        try "\(firstLine)\n".write(to: url, atomically: true, encoding: .utf8)
+        return url.path
     }
 
     private static func userMessageText(_ item: ThreadItem) -> String? {
