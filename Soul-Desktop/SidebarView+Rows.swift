@@ -355,10 +355,10 @@ struct ProjectSidebarRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            SoulIcon(name: isExpanded ? "folder.fill" : "folder", color: SoulColor.fgMuted)
+            SoulIcon(name: isExpanded ? "folder.fill" : "folder", color: isSelected ? SoulColor.accent : SoulColor.fgMuted)
             Text(project.name)
-                .font(SoulFont.ui(16))
-                .foregroundStyle(SoulColor.fg)
+                .font(SoulFont.ui(16, weight: isSelected ? .medium : .regular))
+                .foregroundStyle(isSelected ? SoulColor.accent : SoulColor.fg)
                 .lineLimit(1)
                 .truncationMode(.tail)
             if chatCount > 0 {
@@ -370,20 +370,21 @@ struct ProjectSidebarRow: View {
                     .background(SoulColor.surface, in: Capsule())
             }
             Spacer(minLength: 0)
-            if hovering {
-                Button(action: onNewChat) {
-                    SoulIcon(name: "square.and.pencil", color: SoulColor.accent)
-                }
-                .buttonStyle(.soulHover)
-                .help("Start new chat in \(project.name)")
+            Button(action: onNewChat) {
+                SoulIcon(name: "square.and.pencil", color: SoulColor.accent)
             }
+            .buttonStyle(.soulHover)
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+            .animation(.easeInOut(duration: 0.12), value: hovering)
+            .help("Start new chat in \(project.name)")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(
-            hovering
-                ? AnyShapeStyle(SoulColor.fg.opacity(0.06))
-                : AnyShapeStyle(Color.clear),
+            isSelected
+                ? AnyShapeStyle(SoulColor.accentMuted)
+                : (hovering ? AnyShapeStyle(SoulColor.fg.opacity(0.06)) : AnyShapeStyle(Color.clear)),
             in: RoundedRectangle(cornerRadius: SoulMetric.radiusS)
         )
         .contentShape(Rectangle())
