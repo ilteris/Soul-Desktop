@@ -844,6 +844,7 @@ extension ThreadController {
         case .userMessage(_, _, let ts): return ts
         case .agentMessage(_, _, _, let ts): return ts
         case .agentThought(_, _, _, let ts): return ts
+        case .agentProgress(_, _, _, let ts): return ts
         case .branchSummary(_, _, _, _, let ts): return ts
         case .finalize(_, _, _, _, _, _, let ts): return ts
         case .toolCall, .plan, .status, .error, .toolCallGroup: return nil

@@ -699,14 +699,14 @@ struct Soul_DesktopTests {
     }
 
     @MainActor
-    @Test func geminiToolPreludeMaterializesAsThoughtInsteadOfAssistantReply() throws {
+    @Test func geminiToolPreludeMaterializesAsProgressInsteadOfAssistantReply() throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.codexTestProject())
 
         controller.agentStreamBuffer.appendACPMessage("I will inspect git status.")
         controller.materializeBufferedAgentStreams(messageSegmentsAsThoughts: true)
 
-        guard case .agentThought(_, let text, let complete, _) = controller.items.first else {
-            Issue.record("expected Gemini tool prelude to render as thought")
+        guard case .agentProgress(_, let text, let complete, _) = controller.items.first else {
+            Issue.record("expected Gemini tool prelude to render as visible progress")
             return
         }
         #expect(text == "I will inspect git status.")

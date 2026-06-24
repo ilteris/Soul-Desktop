@@ -459,7 +459,7 @@ extension ThreadController {
         guard index < items.count else { return false }
         return items[index...].contains { item in
             switch item {
-            case .agentMessage, .agentThought, .toolCall, .plan, .finalize, .toolCallGroup:
+            case .agentMessage, .agentThought, .agentProgress, .toolCall, .plan, .finalize, .toolCallGroup:
                 return true
             case .userMessage, .branchSummary, .status, .error:
                 return false

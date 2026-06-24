@@ -51,6 +51,8 @@ public enum PiTranscriptReader {
             )
         case .thought(let text, let ts):
             return .agentThought(id: UUID(), text: text, complete: true, timestamp: ts)
+        case .progress(let text, let ts):
+            return .agentProgress(id: UUID(), text: text, complete: true, timestamp: ts)
         case .status(let text):
             return .status(id: UUID(), text: text)
         }

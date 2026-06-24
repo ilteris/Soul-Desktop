@@ -202,6 +202,8 @@ public enum LedgerReplayMerge {
                 return ReplayEvent(id: UUID(), timestamp: ts, item: item)
             case .agentMessage(_, _, _, let ts):
                 return ReplayEvent(id: UUID(), timestamp: ts, item: item)
+            case .agentProgress(_, _, _, let ts):
+                return ReplayEvent(id: UUID(), timestamp: ts, item: item)
             case .toolCall:
                 // Tool calls from the chat file carry no kernel timestamp; they'd
                 // land at distantPast and pollute chapter ordering. Drop them.

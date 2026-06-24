@@ -88,8 +88,8 @@ struct TranscriptRecordsTests {
         }
         #expect(thought.contains("Plan"))
         #expect(thought.contains("Need to inspect before answering."))
-        guard case .thought("I will inspect git status.", _) = result.turns[2].content else {
-            Issue.record("Expected tool prelude as thought")
+        guard case .progress("I will inspect git status.", _) = result.turns[2].content else {
+            Issue.record("Expected tool prelude as visible progress")
             return
         }
         guard case .tool(let tool, _) = result.turns[3].content else {
@@ -104,7 +104,7 @@ struct TranscriptRecordsTests {
     }
 
     @Test("Gemini transcript treats content followed by updateToolCall as progress")
-    func geminiTranscriptClassifiesSeparatedToolPreludeAsThought() throws {
+    func geminiTranscriptClassifiesSeparatedToolPreludeAsProgress() throws {
         let projectKey = "soul-ledger-gemini-\(UUID().uuidString.lowercased())"
         let sessionId = UUID().uuidString.lowercased()
         let chats = URL(fileURLWithPath: NSHomeDirectory())
@@ -133,8 +133,8 @@ struct TranscriptRecordsTests {
             Issue.record("Expected user prompt")
             return
         }
-        guard case .thought("I will write the complete cover_letter.html file.", _) = result.turns[1].content else {
-            Issue.record("Expected separated tool prelude to become thought")
+        guard case .progress("I will write the complete cover_letter.html file.", _) = result.turns[1].content else {
+            Issue.record("Expected separated tool prelude to become visible progress")
             return
         }
         guard case .tool(let tool, _) = result.turns[2].content else {

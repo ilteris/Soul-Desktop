@@ -50,7 +50,7 @@ public enum ClaudeTranscriptReader {
                 locationHint: location,
                 details: details(from: tool)
             )
-        case .thought, .status:
+        case .thought, .progress, .status:
             return nil
         }
     }

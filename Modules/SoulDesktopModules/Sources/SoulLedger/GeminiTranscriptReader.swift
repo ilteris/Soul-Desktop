@@ -16,8 +16,8 @@ import SoulCore
 ///   - gemini: `{ id, timestamp, type: "gemini", content: "<string>", toolCalls?: [{id, name, args, result}] }`
 ///
 /// We surface user text -> `.userMessage`, final gemini text -> `.agentMessage`,
-/// gemini thoughts/tool preludes -> `.agentThought`, and each `toolCalls` entry
-/// -> `.toolCall`. The `result` field on a toolCall is the file content / shell
+/// gemini thoughts -> `.agentThought`, tool preludes -> `.agentProgress`, and
+/// each `toolCalls` entry -> `.toolCall`. The `result` field on a toolCall is the file content / shell
 /// output Gemini received back; we don't render it inline (matches
 /// ClaudeTranscriptReader which also skips tool_result).
 public enum GeminiTranscriptReader {
@@ -58,6 +58,8 @@ public enum GeminiTranscriptReader {
             return .status(id: UUID(), text: text)
         case .thought(let text, let ts):
             return .agentThought(id: UUID(), text: text, complete: true, timestamp: ts)
+        case .progress(let text, let ts):
+            return .agentProgress(id: UUID(), text: text, complete: true, timestamp: ts)
         }
     }
 

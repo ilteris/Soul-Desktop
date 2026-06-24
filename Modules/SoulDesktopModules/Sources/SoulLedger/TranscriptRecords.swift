@@ -8,6 +8,7 @@ public enum LedgerTranscriptRole: String, Codable, Hashable, Sendable {
 public enum LedgerTranscriptContent: Equatable, Hashable, Sendable {
     case message(role: LedgerTranscriptRole, text: String, timestamp: Date)
     case thought(text: String, timestamp: Date)
+    case progress(text: String, timestamp: Date)
     case tool(LedgerToolRecord, timestamp: Date)
     case status(text: String)
 }

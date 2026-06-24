@@ -117,6 +117,11 @@ public indirect enum ThreadItem: Identifiable, Hashable {
     /// what the agent is thinking through during long turns instead of
     /// staring at a "Thinking…" spinner.
     case agentThought(id: UUID, text: String, complete: Bool, timestamp: Date)
+    /// Provider progress/prelude text that explains the next tool action.
+    /// Unlike hidden reasoning thoughts, this is part of the visible transcript
+    /// and should remain as a compact thinking card after the final response
+    /// arrives.
+    case agentProgress(id: UUID, text: String, complete: Bool, timestamp: Date)
     case toolCall(id: UUID, kind: String, title: String, status: String, locationHint: String?, details: ToolCallDetails?)
     case plan(id: UUID, entries: [PlanEntry])
     case status(id: UUID, text: String)
@@ -135,6 +140,7 @@ public indirect enum ThreadItem: Identifiable, Hashable {
         case .branchSummary(let id, _, _, _, _): return id
         case .agentMessage(let id, _, _, _): return id
         case .agentThought(let id, _, _, _): return id
+        case .agentProgress(let id, _, _, _): return id
         case .toolCall(let id, _, _, _, _, _): return id
         case .plan(let id, _): return id
         case .status(let id, _): return id

@@ -1344,6 +1344,8 @@ struct ThreadItemRow: View {
                 .equatable()
         case .agentThought(_, let text, let complete, _):
             AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
+        case .agentProgress(_, let text, let complete, _):
+            AgentThoughtRow(text: text, isStreaming: !complete, isHistorical: isHistorical)
         case .toolCall(_, let kind, let title, let status, let loc, let details):
             // SOUL-SOUL_DESKTOP-111: delegate_to_specialist tool calls route to
             // the dedicated SubagentCard instead of the generic ToolCallRow.
@@ -1446,7 +1448,7 @@ struct ThreadItemRow: View {
 private extension ThreadItem {
     var isToolOrNoise: Bool {
         switch self {
-        case .toolCall, .toolCallGroup, .plan, .agentThought, .status, .error:
+        case .toolCall, .toolCallGroup, .plan, .agentThought, .agentProgress, .status, .error:
             return true
         default:
             return false

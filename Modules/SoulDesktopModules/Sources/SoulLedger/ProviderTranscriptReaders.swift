@@ -70,7 +70,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
     let stats = enumerateJSONLines(atPath: url.path) { data in
         guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if let update = rec["$updateToolCall"] as? [String: Any] {
-            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: true)
+            flushGeminiText(&turns, pending: &pendingGeminiText, asProgress: true)
             if let tool = geminiToolRecord(from: update) {
                 turns.append(LedgerTranscriptTurn(content: .tool(tool.record, timestamp: tool.timestamp)))
             }
@@ -82,7 +82,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
 
         switch type {
         case "user":
-            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
+            flushGeminiText(&turns, pending: &pendingGeminiText, asProgress: false)
             let blocks = rec["content"] as? [[String: Any]] ?? []
             let raw = blocks
                 .compactMap { $0["text"] as? String }
@@ -94,14 +94,14 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
             }
 
         case "gemini":
-            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
+            flushGeminiText(&turns, pending: &pendingGeminiText, asProgress: false)
             turns.append(contentsOf: geminiThoughtTurns(from: rec, fallbackTimestamp: ts))
             let toolCalls = rec["toolCalls"] as? [[String: Any]]
             if let content = rec["content"] as? String {
                 let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     if toolCalls?.isEmpty == false {
-                        turns.append(LedgerTranscriptTurn(content: .thought(text: trimmed, timestamp: ts)))
+                        turns.append(LedgerTranscriptTurn(content: .progress(text: trimmed, timestamp: ts)))
                     } else {
                         pendingGeminiText = (trimmed, ts)
                     }
@@ -121,7 +121,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
             return
         }
     }
-    flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
+    flushGeminiText(&turns, pending: &pendingGeminiText, asProgress: false)
 
     if stats.warnedCount > 0 || stats.skippedCount > 0 {
         let mb = Double(stats.largestLineBytes) / 1_048_576.0
@@ -145,11 +145,11 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
 private func flushGeminiText(
     _ turns: inout [LedgerTranscriptTurn],
     pending: inout (text: String, timestamp: Date)?,
-    asThought: Bool
+    asProgress: Bool
 ) {
     guard let value = pending else { return }
-    if asThought {
-        turns.append(LedgerTranscriptTurn(content: .thought(text: value.text, timestamp: value.timestamp)))
+    if asProgress {
+        turns.append(LedgerTranscriptTurn(content: .progress(text: value.text, timestamp: value.timestamp)))
     } else {
         turns.append(LedgerTranscriptTurn(content: .message(role: .assistant, text: value.text, timestamp: value.timestamp)))
     }

@@ -594,6 +594,8 @@ final class ThreadController {
                 // Thoughts go into the markdown export as a quoted block so
                 // a copy-paste preserves the reasoning context the user saw.
                 out += "> 💭 \(text)\n\n"
+            case .agentProgress(_, let text, _, _):
+                out += "> 💭 \(text)\n\n"
             case .toolCall(_, let kind, let title, let status, let loc, _):
                 out += "_\(kind): \(title)_ — \(status)\(loc.map { " (\($0))" } ?? "")\n\n"
             case .toolCallGroup(_, let kind, let title, let loc, let inner):

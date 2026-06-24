@@ -107,7 +107,7 @@ enum LedgerPreamble {
                 if let next, !next.isEmpty { bits.append("Next: \(next)") }
                 lines.append(bits.joined(separator: " "))
 
-            case .agentThought, .plan, .status, .error:
+            case .agentThought, .agentProgress, .plan, .status, .error:
                 continue
             }
         }

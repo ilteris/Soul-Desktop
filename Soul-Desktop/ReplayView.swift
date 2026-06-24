@@ -224,7 +224,7 @@ struct ReplayView: View {
             // userMessage never reaches here (handled as a chapter header
             // upstream), but include for switch exhaustiveness.
             return true
-        case .agentThought, .toolCall, .toolCallGroup, .plan, .status, .error:
+        case .agentThought, .agentProgress, .toolCall, .toolCallGroup, .plan, .status, .error:
             return false
         }
     }

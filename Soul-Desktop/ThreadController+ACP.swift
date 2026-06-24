@@ -61,7 +61,7 @@ extension ThreadController {
             switch segment.kind {
             case .message:
                 if messageSegmentsAsThoughts {
-                    items.append(.agentThought(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
+                    items.append(.agentProgress(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
                     openAgentThoughtId = nil
                 } else {
                     items.append(.agentMessage(id: segment.id, text: segment.text, complete: true, timestamp: segment.timestamp))
