@@ -188,6 +188,47 @@ struct SoulRunStepRecord: Identifiable, Hashable, Sendable, Decodable {
     }
 }
 
+struct SoulRunEventRecord: Identifiable, Hashable, Sendable, Decodable {
+    var event: String
+    var timestamp: String?
+    var runID: String?
+    var taskID: String?
+    var stepID: String?
+    var kind: String?
+    var status: String?
+    var attemptCount: Int?
+    var outputRef: String?
+    var artifactRef: String?
+
+    var id: String {
+        [
+            event,
+            timestamp,
+            runID,
+            stepID,
+            status
+        ]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: ":")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case event
+        case timestamp
+        case runID = "run_id"
+        case taskID = "task_id"
+        case stepID = "step_id"
+        case kind
+        case status
+        case attemptCount = "attempt_count"
+        case outputRef = "output_ref"
+        case artifactRef = "artifact_ref"
+    }
+}
+
 struct SoulRunHistoryPayload: Decodable, Sendable {
     var project: String
     var runs: [SoulRunRecord]
@@ -207,6 +248,18 @@ struct SoulRunStepListPayload: Decodable, Sendable {
         case project
         case runID = "run_id"
         case steps
+    }
+}
+
+struct SoulRunEventsPayload: Decodable, Sendable {
+    var project: String
+    var runID: String
+    var events: [SoulRunEventRecord]
+
+    enum CodingKeys: String, CodingKey {
+        case project
+        case runID = "run_id"
+        case events
     }
 }
 
@@ -248,4 +301,218 @@ struct SoulRunReviewPayload: Decodable, Sendable {
     var project: String
     var summary: Summary
     var runs: [SoulRunRecord]
+}
+
+struct SoulWorkStatusPayload: Decodable, Sendable {
+    var project: String
+    var task: SoulTaskStatusRecord?
+    var runs: [SoulRunRecord]
+}
+
+struct SoulTaskStatusRecord: Identifiable, Hashable, Sendable, Decodable {
+    var taskID: String
+    var project: String
+    var subject: String?
+    var status: String?
+    var rawStatus: String?
+    var priority: String?
+    var category: String?
+    var doneCriteria: [String]
+    var completedCriteria: [String]
+    var file: String?
+    var isActive: Bool?
+
+    var id: String { taskID }
+
+    enum CodingKeys: String, CodingKey {
+        case taskID = "task_id"
+        case fallbackID = "id"
+        case project
+        case subject
+        case status
+        case rawStatus = "raw_status"
+        case priority
+        case category
+        case doneCriteria = "done_criteria"
+        case completedCriteria = "completed_criteria"
+        case file
+        case isActive = "is_active"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        taskID = try container.decodeIfPresent(String.self, forKey: .taskID)
+            ?? container.decode(String.self, forKey: .fallbackID)
+        project = try container.decode(String.self, forKey: .project)
+        subject = try container.decodeIfPresent(String.self, forKey: .subject)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        rawStatus = try container.decodeIfPresent(String.self, forKey: .rawStatus)
+        priority = try container.decodeIfPresent(String.self, forKey: .priority)
+        category = try container.decodeIfPresent(String.self, forKey: .category)
+        doneCriteria = (try container.decodeIfPresent([String].self, forKey: .doneCriteria)) ?? []
+        completedCriteria = (try container.decodeIfPresent([String].self, forKey: .completedCriteria)) ?? []
+        file = try container.decodeIfPresent(String.self, forKey: .file)
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive)
+    }
+}
+
+struct SoulSubagentRecord: Identifiable, Hashable, Sendable, Decodable {
+    struct Finding: Hashable, Sendable, Decodable {
+        var specialist: String?
+        var provider: String?
+        var task: String?
+        var objective: String?
+        var status: String?
+        var summary: String?
+        var timestamp: String?
+        var completedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case specialist
+            case provider
+            case task
+            case objective
+            case status
+            case summary
+            case timestamp
+            case completedAt = "completed_at"
+        }
+    }
+
+    var subagentID: String
+    var project: String?
+    var specialist: String?
+    var provider: String?
+    var task: String?
+    var status: String?
+    var summary: String?
+    var createdAt: String?
+    var updatedAt: String?
+    var startedAt: Double?
+    var completedAt: String?
+    var liveLog: String?
+    var liveLogBytes: Int?
+    var findingPath: String?
+    var finding: Finding?
+    var file: String?
+
+    var id: String { subagentID }
+
+    var isActive: Bool {
+        guard let status = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !status.isEmpty
+        else { return false }
+        return ["initialized", "running", "waiting", "pending", "in_progress"].contains(status)
+    }
+
+    var displayTitle: String {
+        if let specialist = specialist ?? finding?.specialist, !specialist.isEmpty {
+            return "@\(specialist)"
+        }
+        return subagentID
+    }
+
+    var displayDetail: String {
+        if let summary, !summary.isEmpty { return summary }
+        if let summary = finding?.summary, !summary.isEmpty { return summary }
+        if let task, !task.isEmpty { return task }
+        if let task = finding?.task ?? finding?.objective, !task.isEmpty { return task }
+        if let provider, !provider.isEmpty { return provider }
+        if let provider = finding?.provider, !provider.isEmpty { return provider }
+        if let liveLogBytes, liveLogBytes > 0 { return "\(liveLogBytes) bytes in live log" }
+        return subagentID
+    }
+
+    var timestamp: Date? {
+        SoulRunRecord.date(from: updatedAt)
+            ?? SoulRunRecord.date(from: completedAt)
+            ?? SoulRunRecord.date(from: finding?.completedAt)
+            ?? SoulRunRecord.date(from: finding?.timestamp)
+            ?? SoulRunRecord.date(from: createdAt)
+            ?? startedAt.map { Date(timeIntervalSince1970: $0) }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case subagentID = "subagent_id"
+        case fallbackID = "id"
+        case project
+        case specialist
+        case provider
+        case task
+        case status
+        case summary
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case startedAt = "started_at"
+        case completedAt = "completed_at"
+        case liveLog = "live_log"
+        case liveLogBytes = "live_log_bytes"
+        case findingPath = "finding_path"
+        case finding
+        case file
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        subagentID = try container.decodeIfPresent(String.self, forKey: .subagentID)
+            ?? container.decode(String.self, forKey: .fallbackID)
+        project = try container.decodeIfPresent(String.self, forKey: .project)
+        specialist = try container.decodeIfPresent(String.self, forKey: .specialist)
+        provider = try container.decodeIfPresent(String.self, forKey: .provider)
+        task = try container.decodeIfPresent(String.self, forKey: .task)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        startedAt = try container.decodeIfPresent(Double.self, forKey: .startedAt)
+        completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
+        liveLog = try container.decodeIfPresent(String.self, forKey: .liveLog)
+        liveLogBytes = try container.decodeIfPresent(Int.self, forKey: .liveLogBytes)
+        findingPath = try container.decodeIfPresent(String.self, forKey: .findingPath)
+        finding = try container.decodeIfPresent(Finding.self, forKey: .finding)
+        file = try container.decodeIfPresent(String.self, forKey: .file)
+    }
+}
+
+struct SoulSubagentListPayload: Decodable, Sendable {
+    var project: String?
+    var subagents: [SoulSubagentRecord]
+}
+
+struct SoulOrchestrationStatusResult: Decodable, Sendable {
+    var projectKey: String
+    var snapshot: SoulOrchestrationSnapshot
+
+    enum CodingKeys: String, CodingKey {
+        case projectKey = "project_key"
+        case snapshot
+    }
+}
+
+struct SoulOrchestrationSnapshot: Decodable, Sendable {
+    var schema: String
+    var project: String
+    var projectKey: String?
+    var version: String?
+    var updatedAt: String?
+    var workStatus: SoulWorkStatusPayload
+    var runReview: SoulRunReviewPayload
+    var subagentList: SoulSubagentListPayload
+    var activeTask: SoulTaskStatusRecord?
+    var runs: [SoulRunRecord]
+    var subagents: [SoulSubagentRecord]
+
+    enum CodingKeys: String, CodingKey {
+        case schema
+        case project
+        case projectKey = "project_key"
+        case version
+        case updatedAt = "updated_at"
+        case workStatus = "work_status"
+        case runReview = "run_review"
+        case subagentList = "subagent_list"
+        case activeTask = "active_task"
+        case runs
+        case subagents
+    }
 }

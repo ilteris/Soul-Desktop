@@ -103,7 +103,7 @@ extension AppShellV2 {
     }
 
     func startTask(_ task: SoulTaskRecord) {
-        pulseModel.run(kind: .task, title: "Start Task", args: ["task", "status", "in_progress", "--task_id", task.id, "--project", task.project], project: task.project, durable: false) {
+        pulseModel.run(kind: .task, title: "Start Task", args: ["task", "set-status", "--task-id", task.id, "in_progress", "--project", task.project], project: task.project, durable: false) {
             refreshTaskQueue()
         }
     }

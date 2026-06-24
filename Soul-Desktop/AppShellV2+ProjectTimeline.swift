@@ -71,9 +71,11 @@ extension AppShellV2 {
 
     var liveWorkTitle: String {
         let activeRuns = runStore.activeRuns.count
+        let activeSubagents = runStore.activeSubagents.count
         let running = pulseModel.runningOperationCount
         let live = recentSessions.filter(\.isLive).count
         if activeRuns > 0 { return "\(activeRuns) durable run\(activeRuns == 1 ? "" : "s")" }
+        if activeSubagents > 0 { return "\(activeSubagents) subagent\(activeSubagents == 1 ? "" : "s")" }
         if running > 0 { return "\(running) operation\(running == 1 ? "" : "s") running" }
         if live > 0 { return "\(live) live session\(live == 1 ? "" : "s")" }
         return "No active run"
@@ -82,6 +84,9 @@ extension AppShellV2 {
     var liveWorkDetail: String {
         if let run = runStore.activeRuns.first {
             return "\(run.runID): \(run.displayDetail)"
+        }
+        if let subagent = runStore.activeSubagents.first {
+            return "\(subagent.displayTitle): \(subagent.displayDetail)"
         }
         if let op = pulseModel.operations.first(where: { $0.status == .running }) {
             return "\(op.title): \(op.summary)"
@@ -155,6 +160,18 @@ extension AppShellV2 {
                 timestamp: run.timestamp,
                 badge: run.status,
                 runID: run.runID
+            ))
+        }
+
+        for subagent in runStore.subagents.prefix(4) {
+            entries.append(SoulTimelineEntry(
+                kind: .operation,
+                icon: subagent.isActive ? "person.2.wave.2" : "person.crop.circle.badge.checkmark",
+                tint: subagent.isActive ? SoulColor.accent : SoulColor.fgMuted,
+                title: subagent.displayTitle,
+                detail: subagent.displayDetail,
+                timestamp: subagent.timestamp,
+                badge: subagent.status ?? "subagent"
             ))
         }
 
