@@ -66,13 +66,23 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
     guard let url = locateGeminiTranscript(sessionId: sessionId, projectKey: projectKey) else { return nil }
 
     var turns: [LedgerTranscriptTurn] = []
+    var pendingGeminiText: (text: String, timestamp: Date)?
     let stats = enumerateJSONLines(atPath: url.path) { data in
-        guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = rec["type"] as? String else { return }
+        guard let rec = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        if let update = rec["$updateToolCall"] as? [String: Any] {
+            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: true)
+            if let tool = geminiToolRecord(from: update) {
+                turns.append(LedgerTranscriptTurn(content: .tool(tool.record, timestamp: tool.timestamp)))
+            }
+            return
+        }
+
+        guard let type = rec["type"] as? String else { return }
         let ts = parseLedgerTimestamp(rec["timestamp"] as? String) ?? Date.distantPast
 
         switch type {
         case "user":
+            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
             let blocks = rec["content"] as? [[String: Any]] ?? []
             let raw = blocks
                 .compactMap { $0["text"] as? String }
@@ -84,6 +94,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
             }
 
         case "gemini":
+            flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
             turns.append(contentsOf: geminiThoughtTurns(from: rec, fallbackTimestamp: ts))
             let toolCalls = rec["toolCalls"] as? [[String: Any]]
             if let content = rec["content"] as? String {
@@ -92,7 +103,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
                     if toolCalls?.isEmpty == false {
                         turns.append(LedgerTranscriptTurn(content: .thought(text: trimmed, timestamp: ts)))
                     } else {
-                        turns.append(LedgerTranscriptTurn(content: .message(role: .assistant, text: trimmed, timestamp: ts)))
+                        pendingGeminiText = (trimmed, ts)
                     }
                 }
             }
@@ -110,6 +121,7 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
             return
         }
     }
+    flushGeminiText(&turns, pending: &pendingGeminiText, asThought: false)
 
     if stats.warnedCount > 0 || stats.skippedCount > 0 {
         let mb = Double(stats.largestLineBytes) / 1_048_576.0
@@ -130,6 +142,20 @@ public func readGeminiTranscriptTurns(sessionId: String, projectKey: String) -> 
     return turns.isEmpty ? nil : LedgerTranscriptReadResult(turns: turns, stats: stats)
 }
 
+private func flushGeminiText(
+    _ turns: inout [LedgerTranscriptTurn],
+    pending: inout (text: String, timestamp: Date)?,
+    asThought: Bool
+) {
+    guard let value = pending else { return }
+    if asThought {
+        turns.append(LedgerTranscriptTurn(content: .thought(text: value.text, timestamp: value.timestamp)))
+    } else {
+        turns.append(LedgerTranscriptTurn(content: .message(role: .assistant, text: value.text, timestamp: value.timestamp)))
+    }
+    pending = nil
+}
+
 private func geminiThoughtTurns(from record: [String: Any], fallbackTimestamp: Date) -> [LedgerTranscriptTurn] {
     guard let thoughts = record["thoughts"] as? [[String: Any]] else { return [] }
     return thoughts.compactMap { thought in
@@ -145,6 +171,19 @@ private func geminiThoughtTurns(from record: [String: Any], fallbackTimestamp: D
         let timestamp = parseLedgerTimestamp(thought["timestamp"] as? String) ?? fallbackTimestamp
         return LedgerTranscriptTurn(content: .thought(text: text, timestamp: timestamp))
     }
+}
+
+private func geminiToolRecord(from update: [String: Any]) -> (record: LedgerToolRecord, timestamp: Date)? {
+    guard let toolCall = update["toolCall"] as? [String: Any] else { return nil }
+    let name = toolCall["name"] as? String ?? "tool"
+    let args = toolCall["args"] as? [String: Any] ?? [:]
+    let timestamp = parseLedgerTimestamp(update["timestamp"] as? String)
+        ?? parseLedgerTimestamp(toolCall["timestamp"] as? String)
+        ?? Date.distantPast
+    return (
+        LedgerToolRecord(name: name, arguments: args.mapValues(LedgerJSONValue.init(any:))),
+        timestamp
+    )
 }
 
 public func readPiTranscriptTurns(sessionId: String, cwd: String) -> LedgerTranscriptReadResult? {

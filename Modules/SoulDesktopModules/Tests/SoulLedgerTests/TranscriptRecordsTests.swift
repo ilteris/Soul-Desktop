@@ -102,4 +102,50 @@ struct TranscriptRecordsTests {
             return
         }
     }
+
+    @Test("Gemini transcript treats content followed by updateToolCall as progress")
+    func geminiTranscriptClassifiesSeparatedToolPreludeAsThought() throws {
+        let projectKey = "soul-ledger-gemini-\(UUID().uuidString.lowercased())"
+        let sessionId = UUID().uuidString.lowercased()
+        let chats = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".gemini/tmp/\(projectKey)/chats")
+        try FileManager.default.createDirectory(at: chats, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".gemini/tmp/\(projectKey)")
+            )
+        }
+
+        let transcript = chats.appendingPathComponent("session-\(String(sessionId.prefix(8))).jsonl")
+        let lines = [
+            #"{"sessionId":"\#(sessionId)","projectHash":"test","startTime":"2026-06-24T22:00:00Z","kind":"main"}"#,
+            #"{"id":"u1","timestamp":"2026-06-24T22:00:01Z","type":"user","content":[{"text":"write the file"}]}"#,
+            #"{"id":"g1","timestamp":"2026-06-24T22:00:02Z","type":"gemini","content":"I will write the complete cover_letter.html file.","thoughts":[]}"#,
+            #"{"$updateToolCall":{"messageId":"m1","toolCall":{"id":"write_file__1","name":"write_file","args":{"file_path":"cover_letter.html"},"status":"success"},"status":"success","timestamp":"2026-06-24T22:00:03Z"}}"#,
+            #"{"id":"g2","timestamp":"2026-06-24T22:00:04Z","type":"gemini","content":"The cover letter is ready.","thoughts":[]}"#,
+        ]
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let result = try #require(readGeminiTranscriptTurns(sessionId: sessionId, projectKey: projectKey))
+        #expect(result.turns.count == 4)
+
+        guard case .message(.user, "write the file", _) = result.turns[0].content else {
+            Issue.record("Expected user prompt")
+            return
+        }
+        guard case .thought("I will write the complete cover_letter.html file.", _) = result.turns[1].content else {
+            Issue.record("Expected separated tool prelude to become thought")
+            return
+        }
+        guard case .tool(let tool, _) = result.turns[2].content else {
+            Issue.record("Expected separated updateToolCall to become tool")
+            return
+        }
+        #expect(tool.name == "write_file")
+        #expect(tool.string("file_path") == "cover_letter.html")
+        guard case .message(.assistant, "The cover letter is ready.", _) = result.turns[3].content else {
+            Issue.record("Expected final Gemini response")
+            return
+        }
+    }
 }
