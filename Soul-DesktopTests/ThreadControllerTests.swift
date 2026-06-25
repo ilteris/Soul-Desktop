@@ -683,6 +683,145 @@ struct ThreadControllerTests {
         #expect(controller.lastActivityAt > stale)
     }
 
+    @Test func testSubstantiveTurnWithoutTraceAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = "I will summarize the changes and confirm the successful integration of the live job URL."
+        controller.items.append(.agentProgress(id: UUID(), text: "I will edit the file.", complete: true, timestamp: Date()))
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+        #expect(status.contains("complete <soul_trace> block"))
+        #expect(controller.items.compactMap(Self.agentMessageText) == [reply])
+        let hook = try #require(ledger.hooks.last)
+        #expect(hook["event"] as? String == "TraceMissing")
+        #expect(hook["provider"] as? String == "geminiCLI")
+        #expect(hook["reply_characters"] as? Int == reply.count)
+    }
+
+    @Test func testSubstantiveTurnWithTraceDoesNotAddIntegrityStatus() {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = """
+        <soul_trace>{"intent":"Update URL","next_step":"Await operator","rationale":"Files were updated."}</soul_trace>
+
+        Done.
+        """
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
+        #expect(ledger.hooks.isEmpty)
+    }
+
+    @Test func testSubstantiveTurnWithIncompleteTraceAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.ledger = RecordingLedger()
+        let start = controller.items.count
+        let reply = """
+        I edited the file.
+        <soul_trace>{"intent":"Update URL"
+        """
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+    }
+
+    @Test func testSubstantiveTurnWithSchemaEmptyTraceAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.ledger = RecordingLedger()
+        let start = controller.items.count
+        let reply = """
+        I edited the file.
+        <soul_trace>{}</soul_trace>
+        """
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+    }
+
+    @Test func testFinalizeOnlyTurnWithoutTraceAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.ledger = RecordingLedger()
+        let start = controller.items.count
+        let reply = "Finalized."
+        controller.items.append(.finalize(
+            id: UUID(),
+            intent: "Close the session",
+            summary: "Done",
+            rationale: "Operator requested closure",
+            fixed: nil,
+            nextStep: "Reset context",
+            timestamp: Date()
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+    }
+
+    @Test func testAnswerOnlyTurnWithoutTraceDoesNotAddIntegrityStatus() {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = "Done."
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
+        #expect(ledger.hooks.isEmpty)
+    }
+
     @Test func testNativeCompactOwnsWorkingStateUntilFinished() async throws {
         let controller = ThreadController(provider: .codex, project: Self.testProject())
         controller.isHydrating = false
@@ -765,8 +904,29 @@ struct ThreadControllerTests {
         return nil
     }
 
+    private static func agentMessageText(_ item: ThreadItem) -> String? {
+        if case .agentMessage(_, let text, _, _) = item {
+            return text
+        }
+        return nil
+    }
+
     private struct NoopLedger: ThreadLedger {
         func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {}
+        func retireAgentChunks(projectKey: String, sessionId: String) {}
+        func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool { false }
+    }
+
+    private final class RecordingLedger: ThreadLedger {
+        var hooks: [[String: Any]] = []
+
+        func appendHook(projectKey: String, sessionId: String, event: [String: Any]) {
+            var recorded = event
+            recorded["projectKey"] = projectKey
+            recorded["sessionId"] = sessionId
+            hooks.append(recorded)
+        }
+
         func retireAgentChunks(projectKey: String, sessionId: String) {}
         func ledgerContainsAfterTool(projectKey: String, sessionId: String, toolId: String) -> Bool { false }
     }

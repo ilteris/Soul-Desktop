@@ -9,6 +9,12 @@ struct SoulTrace: Hashable {
     let nextStep: String
     let rationale: String
 
+    var isComplete: Bool {
+        !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Pull `<soul_trace>` blocks out of an agent reply. Returns the visible
     /// text (every block stripped) plus the most recent parsed trace when
     /// present and well-formed. Hardened against the leak modes seen in the

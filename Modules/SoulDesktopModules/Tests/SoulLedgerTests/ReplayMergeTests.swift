@@ -64,6 +64,24 @@ struct ReplayMergeTests {
         #expect(a == "the answer")
     }
 
+    @Test("replays trace missing hook as status row")
+    func replaysTraceMissingStatus() throws {
+        let f = try fixture(hooks: [
+            #"{"event":"UserPrompt","timestamp":"2026-05-25T15:00:01Z","text":"please edit"}"#,
+            #"{"event":"AfterTool","timestamp":"2026-05-25T15:00:02Z","tool":"Edit","target":"/tmp/x.swift"}"#,
+            #"{"event":"AfterAgent","timestamp":"2026-05-25T15:00:03Z","content":"I will summarize the changes."}"#,
+            #"{"event":"TraceMissing","timestamp":"2026-05-25T15:00:04Z","provider":"geminiCLI","reply_characters":29}"#,
+        ])
+
+        let events = merge(f)
+
+        #expect(events.count == 4)
+        guard case .status(_, let text) = events[3].item else { Issue.record("3 not status"); return }
+        #expect(text.contains("trace missing"))
+        #expect(text.contains("complete <soul_trace> block"))
+        #expect(text.contains("Gemini"))
+    }
+
     @Test("recovers an agent_chunks bubble that has no AfterAgent")
     func recoversOrphanAgentChunk() throws {
         let f = try fixture(

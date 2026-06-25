@@ -331,6 +331,12 @@ public enum LedgerReplayMerge {
                     timestamp: ts,
                     item: .status(id: UUID(), text: "⌁ \(payload.op) — \(payload.intent)")
                 ))
+            case .traceMissing(let payload):
+                out.append(ReplayEvent(
+                    id: UUID(),
+                    timestamp: ts,
+                    item: .status(id: UUID(), text: traceMissingStatusText(provider: payload.provider))
+                ))
             case .decision(let payload):
                 let text = "⌁ \(payload.op) — \(payload.intent)"
                 out.append(ReplayEvent(
@@ -341,6 +347,18 @@ public enum LedgerReplayMerge {
             }
         }
         return out
+    }
+
+    private static func traceMissingStatusText(provider: String) -> String {
+        let label: String
+        switch provider {
+        case "geminiCLI": label = "Gemini"
+        case "claude": label = "Claude"
+        case "pi": label = "Pi"
+        case "codex": label = "Codex"
+        default: label = provider.isEmpty ? "Provider" : provider
+        }
+        return "trace missing: \(label) completed a substantive turn without a complete <soul_trace> block; preserved provider reply as-is."
     }
 
     private static func delegationContext(
