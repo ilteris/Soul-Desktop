@@ -234,6 +234,9 @@ struct Soul_DesktopTests {
         #expect(ComputerUsePromptIntent.detect(in: "inspect the UI in Xcode")?.target == "Xcode")
         #expect(ComputerUsePromptIntent.detect(in: "inspect Google Chrome's current display state")?.target == "Google Chrome")
         #expect(ComputerUsePromptIntent.detect(in: "tell me what is visible in the browser")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "show Chrome screen")?.target == "Google Chrome")
+        #expect(ComputerUsePromptIntent.detect(in: "Safari visible?")?.target == "Safari")
+        #expect(ComputerUsePromptIntent.detect(in: "browser screen")?.target == "Google Chrome")
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.target == "Google Chrome")
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.requiresInteractionBeforeCapture == true)
         #expect(ComputerUsePromptIntent.detect(in: "let's start with looking at google chrome and opening up trusslabs.org site and see what's visible. take a screenshot.")?.navigationURL == "https://trusslabs.org")
@@ -241,6 +244,23 @@ struct Soul_DesktopTests {
         #expect(ComputerUsePromptIntent.detect(in: "open localhost:8080/examples/demo.html in Chrome and take a screenshot")?.navigationURL == "http://localhost:8080/examples/demo.html")
         #expect(ComputerUsePromptIntent.detect(in: "inspect 127.0.0.1:3000 in the browser and tell me what is visible")?.navigationURL == "http://127.0.0.1:3000")
         #expect(ComputerUsePromptIntent.detect(in: "search the repo for screenshot rendering") == nil)
+    }
+
+    @Test func computerUsePromptIntentIgnoresJobDescriptionDomainTerms() {
+        let intuitJD = """
+        Intuit is the global financial technology platform that powers prosperity for the people and communities we serve.
+        With approximately 100 million customers worldwide using products such as TurboTax, Credit Karma, QuickBooks,
+        and Mailchimp, we believe that everyone should have the opportunity to prosper.
+
+        Strong understanding of accessibility principles, including ARIA guidelines, WCAG success criteria,
+        and screen reader technologies.
+        """
+
+        #expect(ComputerUsePromptIntent.detect(in: intuitJD) == nil)
+        #expect(ComputerUsePromptIntent.detect(in: "look at the screen reader code") == nil)
+        #expect(ComputerUsePromptIntent.detect(in: "go to chromedriver docs") == nil)
+        #expect(ComputerUsePromptIntent.detect(in: "show me the mail parser") == nil)
+        #expect(ComputerUsePromptIntent.detect(in: "what's in calendar sync?") == nil)
     }
 
     @Test func computerUseArtifactScannerPrefersAnnotatedSnapshots() throws {
