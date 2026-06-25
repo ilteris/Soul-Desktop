@@ -8,12 +8,15 @@ version-locked to the app.
 
 Gemini provider spawning resolves in this order:
 
-1. App bundle: `Contents/Resources/GeminiCLI/bundle/gemini.js`
-2. `SOUL_GEMINI_LOCAL` development override
-3. `gemini` on `PATH`
+1. `SOUL_GEMINI_LOCAL` explicit development override
+2. `~/dotfiles/bin/gemini` or `~/bin/gemini`
+3. App bundle: `Contents/Resources/GeminiCLI/bundle/gemini.js`
+4. `gemini` on `PATH`
 
-When the bundled runtime exists, changes in `~/Code/gemini-cli` are not visible
-to Soul-Desktop until the runtime is re-vendored.
+The dotfiles launcher is the normal development path. It lets Soul Desktop pick
+up the local Gemini checkout without re-vendoring the app bundle every time
+Gemini CLI changes. Re-vendor only when you want to freeze a known-good Gemini
+runtime into the app.
 
 ## Updating the Bundle
 
@@ -66,4 +69,3 @@ APP="/Users/ilteris/Library/Developer/Xcode/DerivedData/Soul-Desktop-hcakcmmzirx
 cat "$APP/Contents/Resources/GeminiCLI/manifest.json"
 node "$APP/Contents/Resources/GeminiCLI/bundle/gemini.js" --version
 ```
-

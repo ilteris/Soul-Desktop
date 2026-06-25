@@ -13,15 +13,14 @@ extension ACPProviderSpawn {
         let env = enrichedEnvironment()
         switch provider {
         case .geminiCLI:
-            // SOUL_GEMINI_LOCAL=1 (or a path) swaps in a local checkout under
-            // ~/Code/gemini-cli — used while iterating on patches to gemini-cli
-            // itself (e.g. the permission-round-trip heartbeat). This MUST be
-            // tried before the bundled copy: otherwise the bundle always wins
-            // and the documented opt-in is dead. `localGeminiSpawn` returns nil
-            // unless the env var is set and the entry exists, so production
-            // (env unset) still falls through to the bundled runtime below.
+            // Explicit env override wins, then the user's dotfiles launcher
+            // keeps development sessions on the local Gemini checkout without
+            // requiring a Soul Desktop re-vendor for every Gemini CLI edit.
             if let local = localGeminiSpawn(env: env) {
                 return local
+            }
+            if let dotfiles = dotfilesGeminiSpawn(env: env) {
+                return dotfiles
             }
             if let bundled = bundledGeminiSpawn(env: env) {
                 return bundled
@@ -83,6 +82,32 @@ private func bundledGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
     guard FileManager.default.fileExists(atPath: entry) else { return nil }
     guard let node = which("node") else { return nil }
     return .init(executablePath: node, arguments: [entry] + geminiACPArguments(), environment: env)
+}
+
+/// Resolve the user's stable Gemini launcher. This is intentionally checked
+/// before the app bundle so local Gemini CLI development only needs the
+/// launcher to point at the current checkout; re-vendoring remains a release
+/// snapshot operation.
+func dotfilesGeminiLauncherPath(
+    home: String = NSHomeDirectory(),
+    fileManager: FileManager = .default
+) -> String? {
+    let candidates = [
+        "\(home)/dotfiles/bin/gemini",
+        "\(home)/bin/gemini",
+    ]
+    return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+}
+
+func dotfilesGeminiSpawn(
+    env: [String: String],
+    home: String = NSHomeDirectory(),
+    fileManager: FileManager = .default
+) -> ACPProviderSpawn? {
+    guard let launcher = dotfilesGeminiLauncherPath(home: home, fileManager: fileManager) else {
+        return nil
+    }
+    return .init(executablePath: launcher, arguments: geminiACPArguments(), environment: env)
 }
 
 /// Resolve a local gemini-cli spawn when the user has opted in via
