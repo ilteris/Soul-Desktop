@@ -12,8 +12,48 @@ struct ComputerUsePromptIntent {
 
     static func detect(in text: String) -> ComputerUsePromptIntent? {
         let lower = text.lowercased()
-        let target = targetApp(in: lower)
-        let screenshotAction = [
+        let targetMatch = targetAppMatch(in: lower)
+        let target = targetMatch?.app
+        let screenshotAction = containsScreenshotActionCue(in: lower)
+        let visualInspection = containsVisualInspectionCue(in: lower)
+        let targetedInspection = targetMatch.map { match in
+            containsTargetedInspectionCue(in: lower)
+                || containsAdjacentVisualCue(in: lower, subject: match.needle)
+        } ?? false
+        let browserInspection = containsTokenPhrase("browser", in: lower)
+            && containsBrowserInspectionCue(in: lower)
+        let navigationURL = browserNavigationURL(in: lower, target: target)
+
+        guard screenshotAction || visualInspection || targetedInspection || browserInspection else { return nil }
+        return ComputerUsePromptIntent(
+            target: target ?? (browserInspection ? "Google Chrome" : nil),
+            navigationURL: navigationURL
+        )
+    }
+
+    private static func targetAppMatch(in lower: String) -> (app: String, needle: String)? {
+        let targets: [(needles: [String], app: String)] = [
+            (["chrome", "google chrome"], "Google Chrome"),
+            (["safari"], "Safari"),
+            (["xcode"], "Xcode"),
+            (["finder"], "Finder"),
+            (["terminal"], "Terminal"),
+            (["iterm", "iterm2"], "iTerm"),
+            (["simulator", "ios simulator"], "Simulator"),
+            (["notes"], "Notes"),
+            (["calendar"], "Calendar"),
+            (["mail"], "Mail")
+        ]
+        for target in targets {
+            if let needle = target.needles.first(where: { containsTokenPhrase($0, in: lower) }) {
+                return (target.app, needle)
+            }
+        }
+        return nil
+    }
+
+    private static func containsScreenshotActionCue(in lower: String) -> Bool {
+        containsAnyTokenPhrase([
             "get a screenshot",
             "take a screenshot",
             "capture a screenshot",
@@ -31,14 +71,24 @@ struct ComputerUsePromptIntent {
             "go to finder",
             "go to terminal",
             "go to simulator"
-        ].contains { lower.contains($0) }
-        let visualInspection = [
+        ], in: lower)
+    }
+
+    private static func containsVisualInspectionCue(in lower: String) -> Bool {
+        let screenPatterns = [
             "capture the screen",
             "capture screen",
-            "take a picture",
             "what's on screen",
             "what is on screen",
             "look at the screen",
+            "current screen"
+        ]
+        for phrase in screenPatterns where containsScreenPhrase(phrase, in: lower) {
+            return true
+        }
+
+        return containsAnyTokenPhrase([
+            "take a picture",
             "look at this app",
             "inspect the ui",
             "inspect ui",
@@ -47,45 +97,77 @@ struct ComputerUsePromptIntent {
             "visible state",
             "display state",
             "current display",
-            "current screen",
             "currently visible",
             "what is visible",
             "what's visible",
             "what do you see",
             "what is showing",
             "what's showing"
-        ].contains { lower.contains($0) }
-        let targetedInspection = target != nil
-            && ["inspect", "look at", "visible", "visual", "display", "screen", "showing", "state"]
-                .contains { lower.contains($0) }
-        let browserInspection = lower.contains("browser")
-            && ["inspect", "visible", "visual", "display", "screen", "showing", "state", "screenshot"]
-                .contains { lower.contains($0) }
-        let navigationURL = browserNavigationURL(in: lower, target: target)
-
-        guard screenshotAction || visualInspection || targetedInspection || browserInspection else { return nil }
-        return ComputerUsePromptIntent(
-            target: target ?? (browserInspection ? "Google Chrome" : nil),
-            navigationURL: navigationURL
-        )
+        ], in: lower)
     }
 
-    private static func targetApp(in lower: String) -> String? {
-        let targets: [(needles: [String], app: String)] = [
-            (["chrome", "google chrome"], "Google Chrome"),
-            (["safari"], "Safari"),
-            (["xcode"], "Xcode"),
-            (["finder"], "Finder"),
-            (["terminal"], "Terminal"),
-            (["iterm", "iterm2"], "iTerm"),
-            (["simulator", "ios simulator"], "Simulator"),
-            (["notes"], "Notes"),
-            (["calendar"], "Calendar"),
-            (["mail"], "Mail")
+    private static func containsTargetedInspectionCue(in lower: String) -> Bool {
+        containsAnyTokenPhrase([
+            "inspect",
+            "look at",
+            "what's on",
+            "what is on",
+            "what do you see",
+            "what is visible",
+            "what's visible",
+            "currently visible",
+            "current display",
+            "display state",
+            "visual state",
+            "visible state",
+            "what is showing",
+            "what's showing"
+        ], in: lower)
+    }
+
+    private static func containsBrowserInspectionCue(in lower: String) -> Bool {
+        containsTargetedInspectionCue(in: lower)
+            || containsAdjacentVisualCue(in: lower, subject: "browser")
+            || containsTokenPhrase("screenshot", in: lower)
+    }
+
+    private static func containsAdjacentVisualCue(in lower: String, subject: String) -> Bool {
+        let escapedSubject = NSRegularExpression.escapedPattern(for: subject.lowercased())
+        let gap = #"(?:[^A-Za-z0-9_]+[A-Za-z0-9_]+){0,3}[^A-Za-z0-9_]+"#
+        let cuePatterns = [
+            "screen(?![^A-Za-z0-9_]+reader\\b)",
+            "visible",
+            "visual",
+            "display",
+            "showing",
+            "state"
         ]
-        return targets.first { target in
-            target.needles.contains { lower.contains($0) }
-        }?.app
+
+        for cue in cuePatterns {
+            let afterSubject = #"(?<![A-Za-z0-9_])"# + escapedSubject + #"(?![A-Za-z0-9_])"# + gap + #"(?<![A-Za-z0-9_])"# + cue + #"(?![A-Za-z0-9_])"#
+            let beforeSubject = #"(?<![A-Za-z0-9_])"# + cue + #"(?![A-Za-z0-9_])"# + gap + #"(?<![A-Za-z0-9_])"# + escapedSubject + #"(?![A-Za-z0-9_])"#
+            if lower.range(of: afterSubject, options: .regularExpression) != nil
+                || lower.range(of: beforeSubject, options: .regularExpression) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func containsScreenPhrase(_ phrase: String, in lower: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: phrase.lowercased())
+        let pattern = #"(?<![A-Za-z0-9_])"# + escaped + #"(?![A-Za-z0-9_])"# + #"(?![^A-Za-z0-9_]+reader\b)"#
+        return lower.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private static func containsAnyTokenPhrase(_ phrases: [String], in lower: String) -> Bool {
+        phrases.contains { containsTokenPhrase($0, in: lower) }
+    }
+
+    private static func containsTokenPhrase(_ phrase: String, in lower: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: phrase.lowercased())
+        let pattern = #"(?<![A-Za-z0-9_])"# + escaped + #"(?![A-Za-z0-9_])"#
+        return lower.range(of: pattern, options: .regularExpression) != nil
     }
 
     private static func isBrowserTarget(_ target: String?, lower: String) -> Bool {
