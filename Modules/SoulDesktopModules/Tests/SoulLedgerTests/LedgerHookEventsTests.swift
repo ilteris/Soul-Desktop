@@ -156,6 +156,15 @@ struct LedgerHookEventsTests {
         #expect(timeout.fields["afterTool_in_ledger"] == .bool(true))
     }
 
+    @Test("trace missing event preserves provider and reply length")
+    func traceMissingShape() {
+        let event = LedgerHookEvent.traceMissing(provider: "geminiCLI", replyCharacters: 83)
+
+        #expect(event.name == "TraceMissing")
+        #expect(event.fields["provider"] == .string("geminiCLI"))
+        #expect(event.fields["reply_characters"] == .int(83))
+    }
+
     @Test("codex approval event preserves approval keys")
     func codexApprovalShape() {
         let event = LedgerHookEvent.codexApproval(

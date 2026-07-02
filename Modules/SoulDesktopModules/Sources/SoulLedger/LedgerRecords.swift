@@ -25,6 +25,7 @@ public enum LedgerHookPayload {
     case delegationCompleted(LedgerDelegationCompletedPayload)
     case delegationFailed(LedgerDelegationCompletedPayload)
     case codexApproval(LedgerDecisionPayload)
+    case traceMissing(LedgerTraceMissingPayload)
     case decision(LedgerDecisionPayload)
     case metadata(String)
     case unknown(String)
@@ -48,6 +49,8 @@ public enum LedgerHookPayload {
             self = .delegationFailed(LedgerDelegationCompletedPayload(event: event, object: object))
         case "CodexApproval":
             self = .codexApproval(LedgerDecisionPayload(event: event, object: object))
+        case "TraceMissing":
+            self = .traceMissing(LedgerTraceMissingPayload(object: object))
         case "SESSION_START", "NativeSessionID", "Title":
             self = .metadata(event)
         default:
@@ -70,6 +73,7 @@ public enum LedgerHookPayload {
         case .delegationCompleted: "DelegationCompleted"
         case .delegationFailed: "DelegationFailed"
         case .codexApproval: "CodexApproval"
+        case .traceMissing: "TraceMissing"
         case .decision(let payload): payload.event
         case .metadata(let event): event
         case .unknown(let event): event
@@ -156,6 +160,23 @@ public struct LedgerBranchSummaryPayload: Equatable, Hashable, Sendable {
                 ?? "",
             fromProvider: object["from_provider"] as? String,
             toProvider: object["to_provider"] as? String
+        )
+    }
+}
+
+public struct LedgerTraceMissingPayload: Equatable, Hashable, Sendable {
+    public var provider: String
+    public var replyCharacters: Int?
+
+    public init(provider: String, replyCharacters: Int? = nil) {
+        self.provider = provider
+        self.replyCharacters = replyCharacters
+    }
+
+    init(object: [String: Any]) {
+        self.init(
+            provider: object["provider"] as? String ?? "",
+            replyCharacters: object["reply_characters"] as? Int
         )
     }
 }

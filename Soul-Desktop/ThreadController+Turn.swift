@@ -245,6 +245,7 @@ extension ThreadController {
                         attachments: turn.extraBlocks
                     )
                     guard promptRequest.canDispatch else { return }
+                    let turnOutputStartIndex = items.count
                     try await sendCodex(promptRequest)
                     if codexTurnDidCompact && !codexPostCompactAgentTextSeen {
                         materializeBufferedAgentStreams()
@@ -283,6 +284,13 @@ extension ThreadController {
 
                     // Same finalize-card live injection as the ACP branch.
                     injectFinalizeSummaryIfFresh(sessionId: sid)
+                    if let raw = mostRecentAgentReplyText() {
+                        appendMissingTraceStatusIfNeeded(
+                            reply: LedgerPreamble.scrubEchoed(raw),
+                            outputStartIndex: turnOutputStartIndex,
+                            sessionId: sid
+                        )
+                    }
                     generateTitleAfterFirstSubstantiveTurnIfNeeded()
                     finishSteeredPromptDispatch(turn)
 
@@ -429,6 +437,13 @@ extension ThreadController {
                 // FinalizeCard inline so the user sees the Quad rendered
                 // without having to re-open the session from the sidebar.
                 injectFinalizeSummaryIfFresh(sessionId: sid)
+                if let reply, !reply.isEmpty {
+                    appendMissingTraceStatusIfNeeded(
+                        reply: reply,
+                        outputStartIndex: turnOutputStartIndex,
+                        sessionId: sid
+                    )
+                }
 
                 generateTitleAfterFirstSubstantiveTurnIfNeeded()
                 finishSteeredPromptDispatch(turn)
@@ -455,6 +470,22 @@ extension ThreadController {
         // a second provider prompt on the same child process after recovery.
     }
 
+    func appendMissingTraceStatusIfNeeded(reply: String, outputStartIndex: Int, sessionId sid: String? = nil) {
+        guard turnRequiresTrace(outputStartIndex: outputStartIndex),
+              SoulTrace.extract(from: reply).trace?.isComplete != true else { return }
+        let msg = "trace missing: \(provider.label) completed a substantive turn without a complete <soul_trace> block; preserved provider reply as-is."
+        logLifecycle("prompt.trace_missing", note: "replyChars=\(reply.count)")
+        items.append(.status(id: UUID(), text: msg))
+        ledger.appendHook(
+            projectKey: project.id,
+            sessionId: sid ?? sessionId ?? id,
+            event: LedgerHookEvent.traceMissing(
+                provider: provider.rawValue,
+                replyCharacters: reply.count
+            ).hookDictionary
+        )
+    }
+
     private func hasProviderOutputSince(_ index: Int) -> Bool {
         guard index < items.count else { return false }
         return items[index...].contains { item in
@@ -462,6 +493,18 @@ extension ThreadController {
             case .agentMessage, .agentThought, .agentProgress, .toolCall, .plan, .finalize, .toolCallGroup:
                 return true
             case .userMessage, .branchSummary, .status, .error:
+                return false
+            }
+        }
+    }
+
+    private func turnRequiresTrace(outputStartIndex index: Int) -> Bool {
+        guard index < items.count else { return false }
+        return items[index...].contains { item in
+            switch item {
+            case .toolCall, .toolCallGroup, .plan, .finalize:
+                return true
+            case .userMessage, .branchSummary, .agentMessage, .agentThought, .agentProgress, .status, .error:
                 return false
             }
         }

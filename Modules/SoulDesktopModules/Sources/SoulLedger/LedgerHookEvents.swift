@@ -170,6 +170,13 @@ public struct LedgerHookEvent: Equatable, Sendable {
         ])
     }
 
+    public static func traceMissing(provider: String, replyCharacters: Int) -> LedgerHookEvent {
+        LedgerHookEvent(name: "TraceMissing", fields: [
+            "provider": .string(provider),
+            "reply_characters": .int(replyCharacters),
+        ])
+    }
+
     public static func toolCallTimeout(
         provider: String,
         toolCallID: String,

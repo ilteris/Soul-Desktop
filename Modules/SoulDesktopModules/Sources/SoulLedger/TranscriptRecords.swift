@@ -84,6 +84,7 @@ public struct LedgerReplayRecord: Equatable, Sendable {
         case branchSummary(LedgerBranchSummaryPayload)
         case delegationStarted(LedgerDelegationStartedPayload, completed: LedgerDelegationCompletedPayload?)
         case codexApproval(LedgerDecisionPayload)
+        case traceMissing(LedgerTraceMissingPayload)
         case decision(LedgerDecisionPayload)
     }
 
@@ -129,6 +130,8 @@ public func readLedgerReplayRecords(atPath path: String) -> [LedgerReplayRecord]
             return nil
         case .codexApproval(let payload):
             return LedgerReplayRecord(timestamp: record.timestamp, kind: .codexApproval(payload))
+        case .traceMissing(let payload):
+            return LedgerReplayRecord(timestamp: record.timestamp, kind: .traceMissing(payload))
         case .decision(let payload):
             return LedgerReplayRecord(timestamp: record.timestamp, kind: .decision(payload))
         }
