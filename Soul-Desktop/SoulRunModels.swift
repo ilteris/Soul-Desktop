@@ -527,6 +527,27 @@ struct SoulProjectBinding: Decodable, Sendable {
     var companionPaths: [SoulBoundPath]
     var source: SoulProjectBindingSource
 
+    var statusLabel: String {
+        "\(resolution) · \(portable ? "portable" : "host-local")"
+    }
+
+    var locationSummary: String {
+        if declaredPath == resolvedPath { return declaredPath }
+        return "\(declaredPath) → \(resolvedPath)"
+    }
+
+    var manifestSummary: String {
+        source.manifest ?? "No manifest recorded"
+    }
+
+    var healthSummary: String {
+        if exists { return "Path exists" }
+        if let suggestedPath, !suggestedPath.isEmpty {
+            return "Missing; suggested \(suggestedPath)"
+        }
+        return "Path missing"
+    }
+
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case projectKey = "project_key"

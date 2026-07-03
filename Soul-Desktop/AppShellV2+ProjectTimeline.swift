@@ -31,7 +31,10 @@ extension AppShellV2 {
                         detail: pressureDetail,
                         action: openPressureTask
                     )
+                    projectBindingStoryBlock
                 }
+
+                projectBindingDiagnostics
 
                 let entries = projectTimelineEntries
                 if !entries.isEmpty {
@@ -113,6 +116,51 @@ extension AppShellV2 {
             return "No open task pressure detected in the registry."
         }
         return taskQueue.openTasks.first?.subject ?? "Backlog loaded."
+    }
+
+    var projectBindingStoryBlock: some View {
+        let binding = runStore.projectBinding
+        return storyBlock(
+            title: "Binding",
+            icon: binding?.portable == true ? "link.circle" : "link.circle.fill",
+            value: binding?.statusLabel ?? "No binding snapshot",
+            detail: binding?.locationSummary ?? "Waiting for app-server project_binding.",
+            action: runAppServerDoctor
+        )
+    }
+
+    @ViewBuilder
+    var projectBindingDiagnostics: some View {
+        if let binding = runStore.projectBinding {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Project binding")
+                    .font(SoulFont.ui(10, weight: .medium))
+                    .foregroundStyle(SoulColor.fgSubtle)
+                    .textCase(.uppercase)
+                diagnosticRow("Declared", binding.declaredPath)
+                diagnosticRow("Resolved", binding.resolvedPath)
+                diagnosticRow("Resolution", binding.statusLabel)
+                diagnosticRow("Health", binding.healthSummary)
+                diagnosticRow("Manifest", binding.manifestSummary)
+            }
+            .padding(10)
+            .background(SoulColor.bgElevated.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(SoulColor.border.opacity(0.22), lineWidth: 0.5))
+        }
+    }
+
+    func diagnosticRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(SoulFont.ui(10, weight: .medium))
+                .foregroundStyle(SoulColor.fgSubtle)
+                .frame(width: 64, alignment: .leading)
+            Text(value)
+                .font(SoulFont.code(10))
+                .foregroundStyle(SoulColor.fgMuted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
     }
 
     func storyBlock(title: String, icon: String, value: String, detail: String, action: @escaping () -> Void) -> some View {

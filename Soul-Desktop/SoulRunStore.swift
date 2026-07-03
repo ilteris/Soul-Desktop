@@ -8,6 +8,7 @@ final class SoulRunStore: ObservableObject {
     @Published private(set) var workStatus: SoulWorkStatusPayload? = nil
     @Published private(set) var reviewSummary: SoulRunReviewPayload.Summary? = nil
     @Published private(set) var subagents: [SoulSubagentRecord] = []
+    @Published private(set) var projectBinding: SoulProjectBinding? = nil
     @Published private(set) var isLoading: Bool = false
 
     private var boundProject: String? = nil
@@ -38,6 +39,7 @@ final class SoulRunStore: ObservableObject {
         workStatus = nil
         reviewSummary = nil
         subagents = []
+        projectBinding = nil
         pendingRefreshTask?.cancel()
         pendingRefreshTask = nil
         appServerTask?.cancel()
@@ -99,6 +101,7 @@ final class SoulRunStore: ObservableObject {
         workStatus = snapshot.workStatus
         reviewSummary = snapshot.reviewSummary
         subagents = snapshot.subagents
+        projectBinding = snapshot.projectBinding
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -111,6 +114,7 @@ final class SoulRunStore: ObservableObject {
         var workStatus: SoulWorkStatusPayload? = nil
         var reviewSummary: SoulRunReviewPayload.Summary? = nil
         var subagents: [SoulSubagentRecord] = []
+        var projectBinding: SoulProjectBinding? = nil
         var version: String? = nil
     }
 
@@ -177,6 +181,7 @@ final class SoulRunStore: ObservableObject {
             workStatus: snapshot.workStatus,
             reviewSummary: snapshot.runReview.summary,
             subagents: subagents,
+            projectBinding: snapshot.projectBinding,
             version: snapshot.version
         )
     }
