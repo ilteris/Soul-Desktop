@@ -492,12 +492,63 @@ struct SoulOrchestrationStatusResult: Decodable, Sendable {
     }
 }
 
+struct SoulProjectBindingSource: Decodable, Sendable {
+    var manifest: String?
+}
+
+struct SoulBoundPath: Decodable, Sendable {
+    var declaredPath: String
+    var resolvedPath: String
+    var resolution: String
+    var exists: Bool
+    var portable: Bool
+    var suggestedPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case declaredPath = "declared_path"
+        case resolvedPath = "resolved_path"
+        case resolution
+        case exists
+        case portable
+        case suggestedPath = "suggested_path"
+    }
+}
+
+struct SoulProjectBinding: Decodable, Sendable {
+    var schemaVersion: String
+    var projectKey: String
+    var name: String
+    var declaredPath: String
+    var resolvedPath: String
+    var resolution: String
+    var exists: Bool
+    var portable: Bool
+    var suggestedPath: String?
+    var companionPaths: [SoulBoundPath]
+    var source: SoulProjectBindingSource
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case projectKey = "project_key"
+        case name
+        case declaredPath = "declared_path"
+        case resolvedPath = "resolved_path"
+        case resolution
+        case exists
+        case portable
+        case suggestedPath = "suggested_path"
+        case companionPaths = "companion_paths"
+        case source
+    }
+}
+
 struct SoulOrchestrationSnapshot: Decodable, Sendable {
     var schema: String
     var project: String
     var projectKey: String?
     var version: String?
     var updatedAt: String?
+    var projectBinding: SoulProjectBinding?
     var workStatus: SoulWorkStatusPayload
     var runReview: SoulRunReviewPayload
     var subagentList: SoulSubagentListPayload
@@ -511,6 +562,7 @@ struct SoulOrchestrationSnapshot: Decodable, Sendable {
         case projectKey = "project_key"
         case version
         case updatedAt = "updated_at"
+        case projectBinding = "project_binding"
         case workStatus = "work_status"
         case runReview = "run_review"
         case subagentList = "subagent_list"

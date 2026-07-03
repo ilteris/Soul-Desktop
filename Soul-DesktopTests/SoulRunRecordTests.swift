@@ -260,6 +260,19 @@ struct SoulRunRecordTests {
             "project_key": "soul-desktop",
             "version": "abc123",
             "updated_at": "2026-06-24T06:30:00Z",
+            "project_binding": {
+              "schema_version": "project-binding/v1",
+              "project_key": "soul-desktop",
+              "name": "Soul Desktop",
+              "declared_path": "~/Code/Soul-Desktop",
+              "resolved_path": "/Users/adele/Code/Soul-Desktop",
+              "resolution": "tilde_home",
+              "exists": true,
+              "portable": true,
+              "suggested_path": null,
+              "companion_paths": [],
+              "source": {"manifest": "~/soul-cli/soul/config/PROJECTS.json"}
+            },
             "work_status": {
               "project": "soul-desktop",
               "task": {
@@ -371,6 +384,12 @@ struct SoulRunRecordTests {
         #expect(result.projectKey == "soul-desktop")
         #expect(result.snapshot.schema == "soul-orchestration-snapshot/v1")
         #expect(result.snapshot.version == "abc123")
+        #expect(result.snapshot.projectBinding?.schemaVersion == "project-binding/v1")
+        #expect(result.snapshot.projectBinding?.projectKey == "soul-desktop")
+        #expect(result.snapshot.projectBinding?.declaredPath == "~/Code/Soul-Desktop")
+        #expect(result.snapshot.projectBinding?.resolution == "tilde_home")
+        #expect(result.snapshot.projectBinding?.portable == true)
+        #expect(result.snapshot.projectBinding?.source.manifest == "~/soul-cli/soul/config/PROJECTS.json")
         #expect(result.snapshot.workStatus.task?.id == "SOUL-SOUL_DESKTOP-428")
         #expect(result.snapshot.workStatus.runs.map(\.runID) == ["run-active"])
         #expect(result.snapshot.runReview.summary.totalRuns == 2)
