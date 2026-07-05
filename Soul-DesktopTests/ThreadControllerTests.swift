@@ -738,6 +738,60 @@ struct ThreadControllerTests {
         #expect(ledger.hooks.isEmpty)
     }
 
+    @Test func testGeminiToolResultOnlyReplySkipsTraceMissingAndRequestsContinuation() {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = "/Users/adele/Code/job-hunt/admin/legal/WorkNumber_Employment_Data_Report_2026-04-29.pdf has 28 pages. Read complete."
+        controller.items.append(.agentProgress(
+            id: UUID(),
+            text: "I will read the initial pages of the employment report.",
+            complete: true,
+            timestamp: Date()
+        ))
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "read",
+            title: "WorkNumber_Employment_Data_Report_2026-04-29.pdf",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        #expect(controller.shouldAutoContinueGeminiToolResultOnlyTurn(reply: reply, outputStartIndex: start))
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
+
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
+        #expect(ledger.hooks.isEmpty)
+    }
+
+    @Test func testGeminiReadShapedAssistantReplyAfterNonReadToolStillRequiresTrace() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = "The document has 28 pages. Read complete."
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        #expect(!controller.shouldAutoContinueGeminiToolResultOnlyTurn(reply: reply, outputStartIndex: start))
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+        let hook = try #require(ledger.hooks.last)
+        #expect(hook["event"] as? String == "TraceMissing")
+    }
+
     @Test func testSubstantiveTurnWithIncompleteTraceAddsIntegrityStatus() throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
         controller.ledger = RecordingLedger()

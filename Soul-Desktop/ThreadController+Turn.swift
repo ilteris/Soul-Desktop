@@ -407,8 +407,35 @@ extension ThreadController {
                 // shows the prompts with empty bodies. With this row, every
                 // Soul-Desktop session is replayable from our own ledger
                 // alone, regardless of agent-side disk state.
-                let rawReply = mostRecentAgentReplyText()
-                let reply = rawReply.map(LedgerPreamble.scrubEchoed)
+                var rawReply = mostRecentAgentReplyText()
+                var reply = rawReply.map(LedgerPreamble.scrubEchoed)
+                if let initialReply = reply,
+                   shouldAutoContinueGeminiToolResultOnlyTurn(
+                       reply: initialReply,
+                       outputStartIndex: turnOutputStartIndex
+                   ) {
+                    logLifecycle(
+                        "prompt.gemini_tool_result_continuation",
+                        note: "replyChars=\(initialReply.count)"
+                    )
+                    items.append(.status(id: UUID(), text: "↻ continuing after tool result"))
+                    let continuationRequest = ProviderRuntimePromptRequest<ContentBlock>(
+                        session: runtimeSessionSnapshot(),
+                        text: "Continue from the tool result above and answer the user's request. Do not repeat the tool result line.",
+                        attachments: []
+                    )
+                    if continuationRequest.canDispatch {
+                        try await runtime.prompt(continuationRequest)
+                        logLifecycle(
+                            "prompt.complete",
+                            note: "rpcSessionId=\(continuationRequest.session.rpcSessionID ?? "nil") continuation=gemini_tool_result"
+                        )
+                        flushPendingStreamUpdates()
+                        materializeBufferedAgentStreams()
+                        rawReply = mostRecentAgentReplyText()
+                        reply = rawReply.map(LedgerPreamble.scrubEchoed)
+                    }
+                }
                 if let reply, !reply.isEmpty {
                     ledger.appendHook(
                         projectKey: project.id,
@@ -472,7 +499,10 @@ extension ThreadController {
 
     func appendMissingTraceStatusIfNeeded(reply: String, outputStartIndex: Int, sessionId sid: String? = nil) {
         guard turnRequiresTrace(outputStartIndex: outputStartIndex),
-              SoulTrace.extract(from: reply).trace?.isComplete != true else { return }
+              !isGeminiReadToolResultOnlyTurn(reply: reply, outputStartIndex: outputStartIndex),
+              SoulTrace.extract(
+                from: turnTraceSourceText(reply: reply, outputStartIndex: outputStartIndex)
+              ).trace?.isComplete != true else { return }
         let msg = "trace missing: \(provider.label) completed a substantive turn without a complete <soul_trace> block; preserved provider reply as-is."
         logLifecycle("prompt.trace_missing", note: "replyChars=\(reply.count)")
         items.append(.status(id: UUID(), text: msg))
@@ -484,6 +514,88 @@ extension ThreadController {
                 replyCharacters: reply.count
             ).hookDictionary
         )
+    }
+
+    func shouldAutoContinueGeminiToolResultOnlyTurn(reply: String, outputStartIndex: Int) -> Bool {
+        guard provider == .geminiCLI,
+              turnRequiresTrace(outputStartIndex: outputStartIndex),
+              isGeminiReadToolResultOnlyTurn(reply: reply, outputStartIndex: outputStartIndex)
+        else { return false }
+        return SoulTrace.extract(
+            from: turnTraceSourceText(reply: reply, outputStartIndex: outputStartIndex)
+        ).trace?.isComplete != true
+    }
+
+    private func turnTraceSourceText(reply: String, outputStartIndex index: Int) -> String {
+        guard index < items.count else { return reply }
+        var parts: [String] = []
+        for item in items[index...] {
+            switch item {
+            case .agentMessage(_, let text, _, _),
+                 .agentThought(_, let text, _, _),
+                 .agentProgress(_, let text, _, _):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    parts.append(trimmed)
+                }
+            case .userMessage, .branchSummary, .toolCall, .toolCallGroup, .plan, .finalize, .status, .error:
+                continue
+            }
+        }
+        if parts.isEmpty {
+            return reply
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func isGeminiToolResultOnlyReply(_ reply: String) -> Bool {
+        guard provider == .geminiCLI else { return false }
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: "\n\n") == nil else { return false }
+        let pattern = #"^.+\bhas\s+\d+\s+(pages?|lines?|bytes?)\.\s+Read complete\.$"#
+        return trimmed.range(
+            of: pattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    private func isGeminiReadToolResultOnlyTurn(reply: String, outputStartIndex index: Int) -> Bool {
+        guard provider == .geminiCLI,
+              index < items.count,
+              isGeminiToolResultOnlyReply(reply)
+        else { return false }
+
+        let target = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sawMatchingReply = false
+        for item in items[index...].reversed() {
+            switch item {
+            case .agentMessage(_, let text, _, _):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if !sawMatchingReply {
+                    guard trimmed == target else { return false }
+                    sawMatchingReply = true
+                } else {
+                    return false
+                }
+            case .agentThought(_, let text, _, _),
+                 .agentProgress(_, let text, _, _):
+                if sawMatchingReply && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return false
+                }
+            case .toolCall(_, let kind, _, _, _, _):
+                if sawMatchingReply {
+                    return kind == "read"
+                }
+            case .toolCallGroup, .plan, .finalize:
+                if sawMatchingReply {
+                    return false
+                }
+            case .userMessage, .branchSummary, .status, .error:
+                continue
+            }
+        }
+        return false
     }
 
     private func hasProviderOutputSince(_ index: Int) -> Bool {
