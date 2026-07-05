@@ -24,6 +24,7 @@ extension AppShellV2 {
                         detail: liveWorkDetail,
                         action: inspectLatestOperation
                     )
+                    workProjectionStoryBlock
                     storyBlock(
                         title: "Pressure",
                         icon: "exclamationmark.triangle",
@@ -100,6 +101,27 @@ extension AppShellV2 {
             return "\(eventCount) live events across current project sessions."
         }
         return "Launch an agent or run pulse to create a fresh operating signal."
+    }
+
+    var workProjectionStoryBlock: some View {
+        let projection = runStore.workProjection
+        let error = runStore.workProjectionError
+        let value = error == nil
+            ? (projection?.trajectory?.primaryIntent
+                ?? projection?.sessionID
+                ?? "No work projection")
+            : "Projection error"
+        let detail = error?.message
+            ?? error?.code
+            ?? projection?.nextStep
+            ?? "Waiting for central work_projection.get."
+        return storyBlock(
+            title: "Continuity",
+            icon: "point.topleft.down.curvedto.point.bottomright.up",
+            value: value,
+            detail: detail,
+            action: runAppServerDoctor
+        )
     }
 
     var pressureTitle: String {
