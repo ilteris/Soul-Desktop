@@ -129,6 +129,25 @@ actor SoulAppServerClient {
         return try decode(SoulOrchestrationStatusResult.self, from: result)
     }
 
+    func workProjection(
+        projectKey: String,
+        sessionID: String? = nil,
+        tail: Int = 12
+    ) async throws -> SoulWorkProjection {
+        var params: [String: JSONValue] = [
+            "project_key": .string(projectKey),
+            "tail": .int(tail)
+        ]
+        if let sessionID {
+            params["session_id"] = .string(sessionID)
+        }
+        let result = try await call(
+            method: "work_projection.get",
+            params: .object(params)
+        )
+        return try decode(SoulWorkProjection.self, from: result)
+    }
+
     func decodeNotificationParams<T: Decodable>(_ type: T.Type, from value: JSONValue?) throws -> T {
         guard let value else { throw SoulAppServerClientError.decodeFailed }
         return try decode(type, from: value)

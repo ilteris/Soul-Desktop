@@ -9,6 +9,8 @@ final class SoulRunStore: ObservableObject {
     @Published private(set) var reviewSummary: SoulRunReviewPayload.Summary? = nil
     @Published private(set) var subagents: [SoulSubagentRecord] = []
     @Published private(set) var projectBinding: SoulProjectBinding? = nil
+    @Published private(set) var workProjection: SoulWorkProjection? = nil
+    @Published private(set) var workProjectionError: SoulProjectionError? = nil
     @Published private(set) var isLoading: Bool = false
 
     private var boundProject: String? = nil
@@ -17,6 +19,7 @@ final class SoulRunStore: ObservableObject {
     private var appServerTask: Task<Void, Never>? = nil
     private var appServerClient: SoulAppServerClient? = nil
     private var lastOrchestrationVersion: String? = nil
+    private var lastWorkProjectionFingerprint: String? = nil
     private var isRefreshing: Bool = false
     private var needsRefreshAfterCurrent: Bool = false
 
@@ -40,12 +43,15 @@ final class SoulRunStore: ObservableObject {
         reviewSummary = nil
         subagents = []
         projectBinding = nil
+        workProjection = nil
+        workProjectionError = nil
         pendingRefreshTask?.cancel()
         pendingRefreshTask = nil
         appServerTask?.cancel()
         appServerTask = nil
         appServerClient = nil
         lastOrchestrationVersion = nil
+        lastWorkProjectionFingerprint = nil
         registryMonitor = nil
         guard let projectKey, !projectKey.isEmpty else { return }
         startAppServerLoop(project: projectKey)
@@ -97,11 +103,14 @@ final class SoulRunStore: ObservableObject {
             return
         }
         lastOrchestrationVersion = snapshot.version ?? lastOrchestrationVersion
+        lastWorkProjectionFingerprint = snapshot.workProjection?.projectionFingerprint ?? lastWorkProjectionFingerprint
         runs = snapshot.runs
         workStatus = snapshot.workStatus
         reviewSummary = snapshot.reviewSummary
         subagents = snapshot.subagents
         projectBinding = snapshot.projectBinding
+        workProjection = snapshot.workProjection
+        workProjectionError = nil
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -115,7 +124,14 @@ final class SoulRunStore: ObservableObject {
         var reviewSummary: SoulRunReviewPayload.Summary? = nil
         var subagents: [SoulSubagentRecord] = []
         var projectBinding: SoulProjectBinding? = nil
+        var workProjection: SoulWorkProjection? = nil
         var version: String? = nil
+    }
+
+    struct WorkProjectionRefreshRequest: Equatable, Sendable {
+        var sessionID: String?
+        var projectionFingerprint: String?
+        var projectionError: SoulProjectionError?
     }
 
     private func startAppServerLoop(project: String) {
@@ -136,16 +152,45 @@ final class SoulRunStore: ObservableObject {
 
             for await notification in client.notifications {
                 guard boundProject == project, !Task.isCancelled else { return }
-                guard notification.method == "orchestration.updated" else { continue }
-                guard let params = try? await client.decodeNotificationParams(
-                    SoulOrchestrationUpdatedParams.self,
-                    from: notification.params
-                ) else { continue }
-                guard params.projectKey == project else { continue }
-                if let version = params.version, version == lastOrchestrationVersion {
+                if notification.method == "orchestration.updated" {
+                    guard let params = try? await client.decodeNotificationParams(
+                        SoulOrchestrationUpdatedParams.self,
+                        from: notification.params
+                    ) else { continue }
+                    guard params.projectKey == project else { continue }
+                    if let version = params.version, version == lastOrchestrationVersion {
+                        continue
+                    }
+                    await refresh()
                     continue
                 }
-                await refresh()
+                if notification.method == "work_projection.updated" {
+                    guard let params = try? await client.decodeNotificationParams(
+                        SoulWorkProjectionUpdatedParams.self,
+                        from: notification.params
+                    ) else { continue }
+                    guard let request = Self.workProjectionRefreshRequest(
+                        from: params,
+                        project: project,
+                        lastFingerprint: lastWorkProjectionFingerprint
+                    ) else { continue }
+                    do {
+                        let projection = try await client.workProjection(
+                            projectKey: project,
+                            sessionID: request.sessionID
+                        )
+                        guard boundProject == project, !Task.isCancelled else { return }
+                        workProjection = projection
+                        workProjectionError = nil
+                        lastWorkProjectionFingerprint = projection.projectionFingerprint ?? request.projectionFingerprint
+                    } catch {
+                        guard boundProject == project, !Task.isCancelled else { return }
+                        workProjectionError = request.projectionError ?? SoulProjectionError(
+                            code: "work_projection_get_failed",
+                            message: error.localizedDescription
+                        )
+                    }
+                }
             }
 
             guard boundProject == project, !Task.isCancelled else { return }
@@ -158,6 +203,24 @@ final class SoulRunStore: ObservableObject {
         }
     }
 
+    nonisolated static func workProjectionRefreshRequest(
+        from params: SoulWorkProjectionUpdatedParams,
+        project: String,
+        lastFingerprint: String?
+    ) -> WorkProjectionRefreshRequest? {
+        guard params.projectKey == project else { return nil }
+        if let fingerprint = params.projectionFingerprint,
+           !fingerprint.isEmpty,
+           fingerprint == lastFingerprint {
+            return nil
+        }
+        return WorkProjectionRefreshRequest(
+            sessionID: params.sessionID,
+            projectionFingerprint: params.projectionFingerprint,
+            projectionError: params.projectionError
+        )
+    }
+
     nonisolated private static func loadFromAppServer(
         projectKey: String,
         client: SoulAppServerClient
@@ -168,7 +231,9 @@ final class SoulRunStore: ObservableObject {
             reviewLimit: 25,
             subagentLimit: 25
         )
-        return snapshot(from: result)
+        var snapshot = snapshot(from: result)
+        snapshot.workProjection = try? await client.workProjection(projectKey: projectKey)
+        return snapshot
     }
 
     nonisolated private static func snapshot(from result: SoulOrchestrationStatusResult) -> Snapshot {
@@ -182,6 +247,7 @@ final class SoulRunStore: ObservableObject {
             reviewSummary: snapshot.runReview.summary,
             subagents: subagents,
             projectBinding: snapshot.projectBinding,
+            workProjection: nil,
             version: snapshot.version
         )
     }
