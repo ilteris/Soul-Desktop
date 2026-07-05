@@ -20,6 +20,7 @@ final class SoulRunStore: ObservableObject {
     private var appServerClient: SoulAppServerClient? = nil
     private var lastOrchestrationVersion: String? = nil
     private var lastWorkProjectionFingerprint: String? = nil
+    private var appServerConnectionError: SoulProjectionError? = nil
     private var isRefreshing: Bool = false
     private var needsRefreshAfterCurrent: Bool = false
 
@@ -52,6 +53,7 @@ final class SoulRunStore: ObservableObject {
         appServerClient = nil
         lastOrchestrationVersion = nil
         lastWorkProjectionFingerprint = nil
+        appServerConnectionError = nil
         registryMonitor = nil
         guard let projectKey, !projectKey.isEmpty else { return }
         startAppServerLoop(project: projectKey)
@@ -88,9 +90,14 @@ final class SoulRunStore: ObservableObject {
         if let appServerClient {
             do {
                 snapshot = try await Self.loadFromAppServer(projectKey: project, client: appServerClient)
+                appServerConnectionError = nil
                 registryMonitor = nil
             } catch {
                 self.appServerClient = nil
+                appServerConnectionError = SoulProjectionError(
+                    code: "app_server_unavailable",
+                    message: error.localizedDescription
+                )
                 snapshot = await Self.loadFromCLI(projectKey: project)
                 activateRegistryMonitor(project: project, snapshot: snapshot)
             }
@@ -110,7 +117,7 @@ final class SoulRunStore: ObservableObject {
         subagents = snapshot.subagents
         projectBinding = snapshot.projectBinding
         workProjection = snapshot.workProjection
-        workProjectionError = nil
+        workProjectionError = snapshot.workProjection == nil ? appServerConnectionError : nil
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -199,6 +206,10 @@ final class SoulRunStore: ObservableObject {
         } catch {
             guard boundProject == project, !Task.isCancelled else { return }
             appServerClient = nil
+            appServerConnectionError = SoulProjectionError(
+                code: "app_server_unavailable",
+                message: error.localizedDescription
+            )
             await refresh()
         }
     }

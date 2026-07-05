@@ -187,13 +187,19 @@ actor SoulAppServerClient {
 
     private func startReader() {
         guard let handle else { return }
+        let fd = handle.fileDescriptor
         readTask = Task.detached(priority: .utility) { [weak self] in
             var buffer = Data()
+            var chunk = [UInt8](repeating: 0, count: 4096)
             do {
                 while !Task.isCancelled {
-                    let chunk = try handle.read(upToCount: 4096) ?? Data()
-                    if chunk.isEmpty { break }
-                    buffer.append(chunk)
+                    let count = Darwin.read(fd, &chunk, chunk.count)
+                    if count == 0 { break }
+                    if count < 0 {
+                        if errno == EINTR { continue }
+                        throw SoulAppServerClientError.connectFailed(String(cString: strerror(errno)))
+                    }
+                    buffer.append(contentsOf: chunk.prefix(count))
                     while let newline = buffer.firstIndex(of: 0x0A) {
                         let line = buffer[..<newline]
                         buffer.removeSubrange(...newline)
