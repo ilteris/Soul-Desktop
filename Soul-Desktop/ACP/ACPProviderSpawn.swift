@@ -112,26 +112,32 @@ func dotfilesGeminiSpawn(
 
 /// Resolve a local gemini-cli spawn when the user has opted in via
 /// `SOUL_GEMINI_LOCAL`. Accepted values:
-///   "1" / "true"  → use the default ~/Code/gemini-cli/packages/cli/dist/index.js
+///   "1" / "true"  → use the default ~/Code/gemini-cli/bundle/gemini.js
 ///   "<abs path>"  → use that path verbatim as the JS entry point
 /// Returns nil when the env var is unset, empty, "0", or points at a file that
 /// doesn't exist (caller falls back to the global `gemini` binary).
-private func localGeminiSpawn(env: [String: String]) -> ACPProviderSpawn? {
-    guard let raw = ProcessInfo.processInfo.environment["SOUL_GEMINI_LOCAL"]?
+func localGeminiSpawn(
+    env: [String: String],
+    processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+    home: String = NSHomeDirectory(),
+    fileManager: FileManager = .default
+) -> ACPProviderSpawn? {
+    guard let raw = processEnvironment["SOUL_GEMINI_LOCAL"]?
         .trimmingCharacters(in: .whitespacesAndNewlines),
           !raw.isEmpty, raw != "0" else {
         return nil
     }
-    let home = NSHomeDirectory()
-    let entry: String
-    if raw == "1" || raw.lowercased() == "true" {
-        entry = "\(home)/Code/gemini-cli/packages/cli/dist/index.js"
-    } else {
-        entry = (raw as NSString).expandingTildeInPath
-    }
-    guard FileManager.default.fileExists(atPath: entry) else { return nil }
+    let entry = localGeminiEntryPath(raw: raw, home: home)
+    guard fileManager.fileExists(atPath: entry) else { return nil }
     guard let node = which("node") else { return nil }
     return .init(executablePath: node, arguments: [entry] + geminiACPArguments(), environment: env)
+}
+
+func localGeminiEntryPath(raw: String, home: String = NSHomeDirectory()) -> String {
+    if raw == "1" || raw.lowercased() == "true" {
+        return "\(home)/Code/gemini-cli/bundle/gemini.js"
+    }
+    return (raw as NSString).expandingTildeInPath
 }
 
 /// Resolve a local claude-agent-acp checkout when opted in via
