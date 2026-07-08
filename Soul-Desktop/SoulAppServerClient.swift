@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 import SoulACP
 
-enum SoulAppServerClientError: LocalizedError {
+enum SoulRegistryServerClientError: LocalizedError {
     case socketPathTooLong(String)
     case connectFailed(String)
     case notConnected
@@ -14,24 +14,24 @@ enum SoulAppServerClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .socketPathTooLong(let path):
-            return "Soul app-server socket path is too long: \(path)"
+            return "Soul Registry Server socket path is too long: \(path)"
         case .connectFailed(let detail):
-            return "Could not connect to Soul app-server: \(detail)"
+            return "Could not connect to Soul Registry Server: \(detail)"
         case .notConnected:
-            return "Soul app-server is not connected."
+            return "Soul Registry Server is not connected."
         case .rpcError(let error):
             return error.message
         case .requestTimedOut(let method):
-            return "Soul app-server request timed out: \(method)"
+            return "Soul Registry Server request timed out: \(method)"
         case .connectionClosed:
-            return "Soul app-server connection closed."
+            return "Soul Registry Server connection closed."
         case .decodeFailed:
-            return "Could not decode Soul app-server response."
+            return "Could not decode Soul Registry Server response."
         }
     }
 }
 
-struct SoulAppServerNotification: Sendable {
+struct SoulRegistryServerNotification: Sendable {
     var method: String
     var params: JSONValue?
 }
@@ -52,11 +52,13 @@ struct SoulOrchestrationUpdatedParams: Decodable, Sendable {
     }
 }
 
-actor SoulAppServerClient {
+actor SoulRegistryServerClient {
     static func defaultSocketPath() -> String {
         let root = ProcessInfo.processInfo.environment["SOUL_REGISTRY"] ?? "\(NSHomeDirectory())/soul_registry"
         return URL(fileURLWithPath: (root as NSString).expandingTildeInPath)
             .appendingPathComponent("run")
+            // Compatibility window: the canonical role is Registry Server,
+            // while the daemon still exposes the legacy app-server socket.
             .appendingPathComponent("app-server.sock")
             .path
     }
@@ -69,16 +71,16 @@ actor SoulAppServerClient {
     private var nextID = 1
     private var pending: [JSONRPCID: CheckedContinuation<JSONValue, Error>] = [:]
     private var pendingTimeouts: [JSONRPCID: Task<Void, Never>] = [:]
-    private let notificationStream: AsyncStream<SoulAppServerNotification>
-    private let notificationContinuation: AsyncStream<SoulAppServerNotification>.Continuation
+    private let notificationStream: AsyncStream<SoulRegistryServerNotification>
+    private let notificationContinuation: AsyncStream<SoulRegistryServerNotification>.Continuation
 
-    nonisolated var notifications: AsyncStream<SoulAppServerNotification> {
+    nonisolated var notifications: AsyncStream<SoulRegistryServerNotification> {
         notificationStream
     }
 
-    init(socketPath: String = SoulAppServerClient.defaultSocketPath()) {
+    init(socketPath: String = SoulRegistryServerClient.defaultSocketPath()) {
         self.socketPath = socketPath
-        var continuation: AsyncStream<SoulAppServerNotification>.Continuation!
+        var continuation: AsyncStream<SoulRegistryServerNotification>.Continuation!
         notificationStream = AsyncStream { continuation = $0 }
         notificationContinuation = continuation
     }
@@ -149,12 +151,12 @@ actor SoulAppServerClient {
     }
 
     func decodeNotificationParams<T: Decodable>(_ type: T.Type, from value: JSONValue?) throws -> T {
-        guard let value else { throw SoulAppServerClientError.decodeFailed }
+        guard let value else { throw SoulRegistryServerClientError.decodeFailed }
         return try decode(type, from: value)
     }
 
     private func call(method: String, params: JSONValue, timeoutSeconds: UInt64 = 5) async throws -> JSONValue {
-        guard let handle else { throw SoulAppServerClientError.notConnected }
+        guard let handle else { throw SoulRegistryServerClientError.notConnected }
         let id = JSONRPCID.int(nextID)
         nextID += 1
         let envelope = JSONRPCEnvelope(jsonrpc: nil, id: id, method: method, params: params)
@@ -164,7 +166,7 @@ actor SoulAppServerClient {
             pending[id] = continuation
             pendingTimeouts[id] = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-                await self?.resolvePending(id: id, result: .failure(SoulAppServerClientError.requestTimedOut(method: method)))
+                await self?.resolvePending(id: id, result: .failure(SoulRegistryServerClientError.requestTimedOut(method: method)))
             }
             var line = data
             line.append(0x0A)
@@ -181,7 +183,7 @@ actor SoulAppServerClient {
             let data = try encoder.encode(value)
             return try decoder.decode(type, from: data)
         } catch {
-            throw SoulAppServerClientError.decodeFailed
+            throw SoulRegistryServerClientError.decodeFailed
         }
     }
 
@@ -197,7 +199,7 @@ actor SoulAppServerClient {
                     if count == 0 { break }
                     if count < 0 {
                         if errno == EINTR { continue }
-                        throw SoulAppServerClientError.connectFailed(String(cString: strerror(errno)))
+                        throw SoulRegistryServerClientError.connectFailed(String(cString: strerror(errno)))
                     }
                     buffer.append(contentsOf: chunk.prefix(count))
                     while let newline = buffer.firstIndex(of: 0x0A) {
@@ -211,7 +213,7 @@ actor SoulAppServerClient {
                 await self?.failAll(error)
                 return
             }
-            await self?.failAll(SoulAppServerClientError.connectionClosed)
+            await self?.failAll(SoulRegistryServerClientError.connectionClosed)
         }
     }
 
@@ -219,14 +221,14 @@ actor SoulAppServerClient {
         guard let envelope = try? decoder.decode(JSONRPCEnvelope.self, from: data) else { return }
         if let id = envelope.id {
             if let error = envelope.error {
-                resolvePending(id: id, result: .failure(SoulAppServerClientError.rpcError(error)))
+                resolvePending(id: id, result: .failure(SoulRegistryServerClientError.rpcError(error)))
             } else {
                 resolvePending(id: id, result: .success(envelope.result ?? .null))
             }
             return
         }
         guard let method = envelope.method else { return }
-        notificationContinuation.yield(SoulAppServerNotification(method: method, params: envelope.params))
+        notificationContinuation.yield(SoulRegistryServerNotification(method: method, params: envelope.params))
     }
 
     private func resolvePending(id: JSONRPCID, result: Result<JSONValue, Error>) {
@@ -250,7 +252,7 @@ actor SoulAppServerClient {
     private static func connectUnixSocket(path: String) throws -> FileHandle {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
-            throw SoulAppServerClientError.connectFailed(String(cString: strerror(errno)))
+            throw SoulRegistryServerClientError.connectFailed(String(cString: strerror(errno)))
         }
 
         var address = sockaddr_un()
@@ -259,7 +261,7 @@ actor SoulAppServerClient {
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
         guard pathBytes.count < capacity else {
             close(fd)
-            throw SoulAppServerClientError.socketPathTooLong(path)
+            throw SoulRegistryServerClientError.socketPathTooLong(path)
         }
 
         withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
@@ -279,9 +281,13 @@ actor SoulAppServerClient {
         guard connected == 0 else {
             let detail = String(cString: strerror(errno))
             close(fd)
-            throw SoulAppServerClientError.connectFailed(detail)
+            throw SoulRegistryServerClientError.connectFailed(detail)
         }
 
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 }
+
+typealias SoulAppServerClientError = SoulRegistryServerClientError
+typealias SoulAppServerNotification = SoulRegistryServerNotification
+typealias SoulAppServerClient = SoulRegistryServerClient

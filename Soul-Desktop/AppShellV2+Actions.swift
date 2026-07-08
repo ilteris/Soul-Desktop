@@ -71,10 +71,14 @@ extension AppShellV2 {
         }
     }
 
-    func runAppServerDoctor() {
-        pulseModel.run(kind: .appServerDoctor, title: "App-server Doctor", args: ["app-server", "doctor"], project: project?.id) {
+    func runRegistryServerDoctor() {
+        pulseModel.run(kind: .registryServerDoctor, title: "Registry Server Doctor", args: ["app-server", "doctor"], project: project?.id) {
             refreshRuns()
         }
+    }
+
+    func runAppServerDoctor() {
+        runRegistryServerDoctor()
     }
 
     func runDelegate(dryRun: Bool) {

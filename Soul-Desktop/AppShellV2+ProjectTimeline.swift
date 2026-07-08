@@ -120,7 +120,7 @@ extension AppShellV2 {
             icon: "point.topleft.down.curvedto.point.bottomright.up",
             value: value,
             detail: detail,
-            action: runAppServerDoctor
+            action: runRegistryServerDoctor
         )
     }
 
@@ -146,8 +146,8 @@ extension AppShellV2 {
             title: "Binding",
             icon: binding?.portable == true ? "link.circle" : "link.circle.fill",
             value: binding?.statusLabel ?? "No binding snapshot",
-            detail: binding?.locationSummary ?? "Waiting for app-server project_binding.",
-            action: runAppServerDoctor
+            detail: binding?.locationSummary ?? "Waiting for Registry Server project_binding.",
+            action: runRegistryServerDoctor
         )
     }
 

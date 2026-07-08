@@ -8,6 +8,7 @@ struct SoulOperation: Identifiable, Hashable {
         case task
         case finalize
         case compact
+        case registryServerDoctor
         case appServerDoctor
 
         var icon: String {
@@ -18,6 +19,7 @@ struct SoulOperation: Identifiable, Hashable {
             case .task: return "checklist"
             case .finalize: return "seal"
             case .compact: return "rectangle.compress.vertical"
+            case .registryServerDoctor: return "stethoscope"
             case .appServerDoctor: return "stethoscope"
             }
         }
