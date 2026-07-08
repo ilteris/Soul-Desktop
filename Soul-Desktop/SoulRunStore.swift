@@ -93,13 +93,19 @@ final class SoulRunStore: ObservableObject {
                 appServerConnectionError = nil
                 registryMonitor = nil
             } catch {
-                self.appServerClient = nil
                 appServerConnectionError = SoulProjectionError(
                     code: "app_server_unavailable",
                     message: error.localizedDescription
                 )
-                snapshot = await Self.loadFromCLI(projectKey: project)
-                activateRegistryMonitor(project: project, snapshot: snapshot)
+                if appServerClient.allowsLocalFallback {
+                    self.appServerClient = nil
+                    snapshot = await Self.loadFromCLI(projectKey: project)
+                    activateRegistryMonitor(project: project, snapshot: snapshot)
+                } else {
+                    self.appServerClient = appServerClient
+                    snapshot = Snapshot()
+                    registryMonitor = nil
+                }
             }
         } else {
             snapshot = await Self.loadFromCLI(projectKey: project)
@@ -201,16 +207,44 @@ final class SoulRunStore: ObservableObject {
             }
 
             guard boundProject == project, !Task.isCancelled else { return }
-            appServerClient = nil
-            await refresh()
+            appServerConnectionError = SoulProjectionError(
+                code: "app_server_unavailable",
+                message: "Soul app-server connection closed."
+            )
+            if client.allowsLocalFallback {
+                appServerClient = nil
+                await refresh()
+            } else {
+                appServerClient = client
+                runs = []
+                workStatus = nil
+                reviewSummary = nil
+                subagents = []
+                projectBinding = nil
+                workProjection = nil
+                workProjectionError = appServerConnectionError
+                isLoading = false
+            }
         } catch {
             guard boundProject == project, !Task.isCancelled else { return }
-            appServerClient = nil
             appServerConnectionError = SoulProjectionError(
                 code: "app_server_unavailable",
                 message: error.localizedDescription
             )
-            await refresh()
+            if client.allowsLocalFallback {
+                appServerClient = nil
+                await refresh()
+            } else {
+                appServerClient = client
+                runs = []
+                workStatus = nil
+                reviewSummary = nil
+                subagents = []
+                projectBinding = nil
+                workProjection = nil
+                workProjectionError = appServerConnectionError
+                isLoading = false
+            }
         }
     }
 
@@ -243,7 +277,7 @@ final class SoulRunStore: ObservableObject {
             subagentLimit: 25
         )
         var snapshot = snapshot(from: result)
-        snapshot.workProjection = try? await client.workProjection(projectKey: projectKey)
+        snapshot.workProjection = try await client.workProjection(projectKey: projectKey)
         return snapshot
     }
 

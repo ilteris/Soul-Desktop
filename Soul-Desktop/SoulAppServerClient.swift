@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 import SoulACP
 
 enum SoulAppServerClientError: LocalizedError {
@@ -10,6 +11,10 @@ enum SoulAppServerClientError: LocalizedError {
     case requestTimedOut(method: String)
     case connectionClosed
     case decodeFailed
+    case invalidEndpoint(String)
+    case missingAPIKey
+    case authFailed(String)
+    case authorityRequiredUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -27,7 +32,55 @@ enum SoulAppServerClientError: LocalizedError {
             return "Soul app-server connection closed."
         case .decodeFailed:
             return "Could not decode Soul app-server response."
+        case .invalidEndpoint(let detail):
+            return detail
+        case .missingAPIKey:
+            return "Soul registry authority requires SOUL_API_KEY or SOUL_AUTHORITY_API_KEY."
+        case .authFailed(let detail):
+            return "Soul registry authority authentication failed: \(detail)"
+        case .authorityRequiredUnavailable(let detail):
+            return "Required Soul registry authority unavailable: \(detail)"
         }
+    }
+
+    var disablesLocalFallback: Bool {
+        if case .authorityRequiredUnavailable = self { return true }
+        return false
+    }
+}
+
+enum SoulAppServerEndpoint: Equatable, Sendable {
+    case unixSocket(String)
+    case tcp(host: String, port: UInt16)
+    case invalid(String)
+
+    static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> SoulAppServerEndpoint {
+        let authorityMode = (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased()
+        let authorityRequired = authorityMode == "required"
+        if let rawURL = env["SOUL_REGISTRY_AUTHORITY_URL"], !rawURL.isEmpty {
+            guard let components = URLComponents(string: rawURL),
+                  components.scheme == "tcp",
+                  let host = components.host,
+                  !host.isEmpty,
+                  let port = components.port,
+                  (1...65535).contains(port)
+            else {
+                return .invalid("Unsupported SOUL_REGISTRY_AUTHORITY_URL: \(rawURL)")
+            }
+            return .tcp(host: host, port: UInt16(port))
+        }
+        if authorityRequired {
+            return .invalid("SOUL_REGISTRY_AUTHORITY=required needs SOUL_REGISTRY_AUTHORITY_URL.")
+        }
+        return .unixSocket(defaultSocketPath(env: env))
+    }
+
+    static func defaultSocketPath(env: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        let root = env["SOUL_REGISTRY"] ?? "\(NSHomeDirectory())/soul_registry"
+        return URL(fileURLWithPath: (root as NSString).expandingTildeInPath)
+            .appendingPathComponent("run")
+            .appendingPathComponent("app-server.sock")
+            .path
     }
 }
 
@@ -54,14 +107,12 @@ struct SoulOrchestrationUpdatedParams: Decodable, Sendable {
 
 actor SoulAppServerClient {
     static func defaultSocketPath() -> String {
-        let root = ProcessInfo.processInfo.environment["SOUL_REGISTRY"] ?? "\(NSHomeDirectory())/soul_registry"
-        return URL(fileURLWithPath: (root as NSString).expandingTildeInPath)
-            .appendingPathComponent("run")
-            .appendingPathComponent("app-server.sock")
-            .path
+        SoulAppServerEndpoint.defaultSocketPath()
     }
 
-    private let socketPath: String
+    private let endpoint: SoulAppServerEndpoint
+    private let apiKey: String?
+    private let fallbackAllowed: Bool
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var handle: FileHandle?
@@ -76,8 +127,28 @@ actor SoulAppServerClient {
         notificationStream
     }
 
+    nonisolated var allowsLocalFallback: Bool {
+        fallbackAllowed
+    }
+
+    init(
+        endpoint: SoulAppServerEndpoint = SoulAppServerEndpoint.fromEnvironment(),
+        apiKey: String? = SoulAppServerClient.defaultAPIKey(),
+        allowsLocalFallback: Bool? = nil
+    ) {
+        self.endpoint = endpoint
+        self.apiKey = apiKey
+        let authorityMode = (ProcessInfo.processInfo.environment["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased()
+        self.fallbackAllowed = allowsLocalFallback ?? (authorityMode != "required")
+        var continuation: AsyncStream<SoulAppServerNotification>.Continuation!
+        notificationStream = AsyncStream { continuation = $0 }
+        notificationContinuation = continuation
+    }
+
     init(socketPath: String = SoulAppServerClient.defaultSocketPath()) {
-        self.socketPath = socketPath
+        self.endpoint = .unixSocket(socketPath)
+        self.apiKey = nil
+        self.fallbackAllowed = true
         var continuation: AsyncStream<SoulAppServerNotification>.Continuation!
         notificationStream = AsyncStream { continuation = $0 }
         notificationContinuation = continuation
@@ -90,18 +161,28 @@ actor SoulAppServerClient {
     }
 
     func connectAndInitialize() async throws {
-        if handle == nil {
-            handle = try Self.connectUnixSocket(path: socketPath)
-            startReader()
+        do {
+            if handle == nil {
+                handle = try Self.connect(endpoint: endpoint)
+                startReader()
+            }
+            let result = try await call(
+                method: "initialize",
+                params: .object([
+                    "client_name": .string(Self.clientID),
+                    "client_version": .string(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"),
+                    "client_capabilities": .object([:])
+                ])
+            )
+            try await authenticateIfRequired(initializeResult: result)
+        } catch {
+            guard !fallbackAllowed else { throw error }
+            if let clientError = error as? SoulAppServerClientError,
+               clientError.disablesLocalFallback {
+                throw clientError
+            }
+            throw SoulAppServerClientError.authorityRequiredUnavailable(error.localizedDescription)
         }
-        _ = try await call(
-            method: "initialize",
-            params: .object([
-                "client_name": .string("Soul-Desktop"),
-                "client_version": .string(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"),
-                "client_capabilities": .object([:])
-            ])
-        )
     }
 
     func subscribe(projectKey: String) async throws {
@@ -151,6 +232,39 @@ actor SoulAppServerClient {
     func decodeNotificationParams<T: Decodable>(_ type: T.Type, from value: JSONValue?) throws -> T {
         guard let value else { throw SoulAppServerClientError.decodeFailed }
         return try decode(type, from: value)
+    }
+
+    private func authenticateIfRequired(initializeResult: JSONValue) async throws {
+        let auth = initializeResult["capabilities"]?["features"]?["auth"]
+        guard Self.boolValue(auth?["required"]) == true,
+              Self.boolValue(auth?["authenticated"]) != true
+        else { return }
+        guard let apiKey, !apiKey.isEmpty else {
+            throw SoulAppServerClientError.missingAPIKey
+        }
+        let challengeResult = try await call(method: "auth.challenge", params: .object([:]))
+        guard let challengeID = challengeResult["challenge"]?["challenge_id"]?.stringValue,
+              let nonce = challengeResult["challenge"]?["nonce"]?.stringValue
+        else {
+            throw SoulAppServerClientError.authFailed("authority did not return a challenge")
+        }
+        let response = Self.challengeResponse(
+            apiKey: apiKey,
+            challengeID: challengeID,
+            nonce: nonce,
+            clientID: Self.clientID
+        )
+        let authResult = try await call(
+            method: "auth.complete",
+            params: .object([
+                "challenge_id": .string(challengeID),
+                "client_id": .string(Self.clientID),
+                "response": .string(response)
+            ])
+        )
+        guard Self.boolValue(authResult["authenticated"]) == true else {
+            throw SoulAppServerClientError.authFailed("authority did not accept the challenge response")
+        }
     }
 
     private func call(method: String, params: JSONValue, timeoutSeconds: UInt64 = 5) async throws -> JSONValue {
@@ -247,6 +361,35 @@ actor SoulAppServerClient {
         notificationContinuation.finish()
     }
 
+    private static let clientID = "Soul-Desktop"
+
+    private static func defaultAPIKey(env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        env["SOUL_API_KEY"] ?? env["SOUL_AUTHORITY_API_KEY"]
+    }
+
+    private static func boolValue(_ value: JSONValue?) -> Bool? {
+        guard case .bool(let bool) = value else { return nil }
+        return bool
+    }
+
+    static func challengeResponse(apiKey: String, challengeID: String, nonce: String, clientID: String) -> String {
+        let message = Data("\(challengeID):\(nonce):\(clientID)".utf8)
+        let key = SymmetricKey(data: Data(apiKey.utf8))
+        let mac = HMAC<SHA256>.authenticationCode(for: message, using: key)
+        return Data(mac).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func connect(endpoint: SoulAppServerEndpoint) throws -> FileHandle {
+        switch endpoint {
+        case .unixSocket(let path):
+            return try connectUnixSocket(path: path)
+        case .tcp(let host, let port):
+            return try connectTCP(host: host, port: port)
+        case .invalid(let detail):
+            throw SoulAppServerClientError.invalidEndpoint(detail)
+        }
+    }
+
     private static func connectUnixSocket(path: String) throws -> FileHandle {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -283,5 +426,41 @@ actor SoulAppServerClient {
         }
 
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func connectTCP(host: String, port: UInt16) throws -> FileHandle {
+        var hints = addrinfo(
+            ai_flags: 0,
+            ai_family: AF_UNSPEC,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var result: UnsafeMutablePointer<addrinfo>?
+        let code = getaddrinfo(host, String(port), &hints, &result)
+        guard code == 0, let result else {
+            throw SoulAppServerClientError.connectFailed(String(cString: gai_strerror(code)))
+        }
+        defer { freeaddrinfo(result) }
+
+        var cursor: UnsafeMutablePointer<addrinfo>? = result
+        var lastError = "no address resolved"
+        while let info = cursor {
+            let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+            if fd >= 0 {
+                if Darwin.connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0 {
+                    return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                }
+                lastError = String(cString: strerror(errno))
+                close(fd)
+            } else {
+                lastError = String(cString: strerror(errno))
+            }
+            cursor = info.pointee.ai_next
+        }
+        throw SoulAppServerClientError.connectFailed(lastError)
     }
 }

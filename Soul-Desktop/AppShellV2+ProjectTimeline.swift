@@ -106,13 +106,26 @@ extension AppShellV2 {
     var workProjectionStoryBlock: some View {
         let projection = runStore.workProjection
         let error = runStore.workProjectionError
+        let authority = projection?.authority
+        let authorityLabel: String? = {
+            guard let authority else { return nil }
+            if authority.mode == "central", authority.transport == "app-server" {
+                return "Central app-server"
+            }
+            if let mode = authority.mode, let transport = authority.transport {
+                return "\(mode) \(transport)"
+            }
+            return authority.mode ?? authority.transport
+        }()
         let value = error == nil
-            ? (projection?.trajectory?.primaryIntent
+            ? (authorityLabel
+                ?? projection?.trajectory?.primaryIntent
                 ?? projection?.sessionID
                 ?? "No work projection")
             : "Projection error"
         let detail = error?.message
             ?? error?.code
+            ?? projection?.trajectory?.primaryIntent
             ?? projection?.nextStep
             ?? "Waiting for central work_projection.get."
         return storyBlock(

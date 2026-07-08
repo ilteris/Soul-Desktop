@@ -124,12 +124,29 @@ struct SoulSemanticTimelineCheckpoint: Decodable, Hashable, Sendable {
     }
 }
 
+struct SoulWorkProjectionAuthority: Decodable, Hashable, Sendable {
+    var mode: String?
+    var readOnly: Bool?
+    var registryFingerprint: String?
+    var transport: String?
+    var writes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case readOnly = "read_only"
+        case registryFingerprint = "registry_fingerprint"
+        case transport
+        case writes
+    }
+}
+
 struct SoulWorkProjection: Decodable, Sendable {
     var schema: String
     var projectKey: String
     var sessionID: String?
     var generatedAt: String?
     var projectionFingerprint: String?
+    var authority: SoulWorkProjectionAuthority?
     var activeTask: SoulTaskStatusRecord?
     var activeRun: SoulRunRecord?
     var trajectoryStatus: SoulTrajectoryStatus?
@@ -143,6 +160,7 @@ struct SoulWorkProjection: Decodable, Sendable {
         case sessionID = "session_id"
         case generatedAt = "generated_at"
         case projectionFingerprint = "projection_fingerprint"
+        case authority
         case activeTask = "active_task"
         case activeRun = "active_run"
         case trajectoryStatus = "trajectory_status"
@@ -158,6 +176,7 @@ struct SoulWorkProjection: Decodable, Sendable {
         sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
         generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
         projectionFingerprint = try container.decodeIfPresent(String.self, forKey: .projectionFingerprint)
+        authority = try container.decodeIfPresent(SoulWorkProjectionAuthority.self, forKey: .authority)
         activeTask = try container.decodeIfPresent(SoulTaskStatusRecord.self, forKey: .activeTask)
         activeRun = try container.decodeIfPresent(SoulRunRecord.self, forKey: .activeRun)
         trajectoryStatus = try container.decodeIfPresent(SoulTrajectoryStatus.self, forKey: .trajectoryStatus)
