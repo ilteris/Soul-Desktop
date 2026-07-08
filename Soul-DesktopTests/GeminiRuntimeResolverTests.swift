@@ -4,6 +4,43 @@ import SoulCore
 @testable import Soul_Desktop
 
 struct GeminiRuntimeResolverTests {
+    @Test func localGeminiShortcutUsesCheckoutBundle() {
+        #expect(
+            localGeminiEntryPath(raw: "1", home: "/Users/example")
+                == "/Users/example/Code/gemini-cli/bundle/gemini.js"
+        )
+        #expect(
+            localGeminiEntryPath(raw: "true", home: "/Users/example")
+                == "/Users/example/Code/gemini-cli/bundle/gemini.js"
+        )
+    }
+
+    @Test func localGeminiExplicitPathIsExpanded() {
+        let expected = "\(NSHomeDirectory())/Code/gemini-cli/custom/gemini.js"
+        #expect(localGeminiEntryPath(raw: "~/Code/gemini-cli/custom/gemini.js") == expected)
+    }
+
+    @Test func localGeminiSpawnUsesCheckoutBundleWhenShortcutEnabled() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("soul-gemini-local-\(UUID().uuidString)", isDirectory: true)
+        let bundleDir = root.appendingPathComponent("Code/gemini-cli/bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundleDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let geminiJS = bundleDir.appendingPathComponent("gemini.js")
+        try "#!/usr/bin/env node\n".write(to: geminiJS, atomically: true, encoding: .utf8)
+
+        let spawn = try #require(localGeminiSpawn(
+            env: ["PATH": "/usr/bin"],
+            processEnvironment: ["SOUL_GEMINI_LOCAL": "1"],
+            home: root.path
+        ))
+
+        #expect(spawn.executablePath.hasSuffix("/node"))
+        #expect(spawn.arguments.first == geminiJS.path)
+        #expect(spawn.arguments.dropFirst().first == "--acp")
+    }
+
     @Test func dotfilesLauncherPrefersDotfilesBin() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("soul-gemini-runtime-\(UUID().uuidString)", isDirectory: true)
