@@ -3,7 +3,7 @@ import SwiftUI
 /// Canonical color mapping for `delegate_to_specialist` subagents (SOUL-SOUL_DESKTOP-111).
 ///
 /// Source of truth is the `color` frontmatter field on `~/soul-cli/soul/agents/<name>.md`,
-/// resolved server-side by the App Server and shipped down as a hex string in the
+/// resolved server-side by the Registry Server and shipped down as a hex string in the
 /// `delegate_to_specialist` tool metadata. This palette is the local FALLBACK for two
 /// cases:
 ///   1. The kernel hasn't shipped the color enrichment yet (development boot-strap).

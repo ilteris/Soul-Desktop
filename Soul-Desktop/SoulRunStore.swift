@@ -16,11 +16,11 @@ final class SoulRunStore: ObservableObject {
     private var boundProject: String? = nil
     private var registryMonitor: SoulRegistryMonitor? = nil
     private var pendingRefreshTask: Task<Void, Never>? = nil
-    private var appServerTask: Task<Void, Never>? = nil
-    private var appServerClient: SoulAppServerClient? = nil
+    private var registryServerTask: Task<Void, Never>? = nil
+    private var registryServerClient: SoulRegistryServerClient? = nil
     private var lastOrchestrationVersion: String? = nil
     private var lastWorkProjectionFingerprint: String? = nil
-    private var appServerConnectionError: SoulProjectionError? = nil
+    private var registryServerConnectionError: SoulProjectionError? = nil
     private var isRefreshing: Bool = false
     private var needsRefreshAfterCurrent: Bool = false
 
@@ -48,20 +48,20 @@ final class SoulRunStore: ObservableObject {
         workProjectionError = nil
         pendingRefreshTask?.cancel()
         pendingRefreshTask = nil
-        appServerTask?.cancel()
-        appServerTask = nil
-        appServerClient = nil
+        registryServerTask?.cancel()
+        registryServerTask = nil
+        registryServerClient = nil
         lastOrchestrationVersion = nil
         lastWorkProjectionFingerprint = nil
-        appServerConnectionError = nil
+        registryServerConnectionError = nil
         registryMonitor = nil
         guard let projectKey, !projectKey.isEmpty else { return }
-        startAppServerLoop(project: projectKey)
+        startRegistryServerLoop(project: projectKey)
     }
 
     deinit {
         pendingRefreshTask?.cancel()
-        appServerTask?.cancel()
+        registryServerTask?.cancel()
         registryMonitor = nil
     }
 
@@ -87,15 +87,15 @@ final class SoulRunStore: ObservableObject {
         defer { isRefreshing = false }
         isLoading = true
         let snapshot: Snapshot
-        if let appServerClient {
+        if let registryServerClient {
             do {
-                snapshot = try await Self.loadFromAppServer(projectKey: project, client: appServerClient)
-                appServerConnectionError = nil
+                snapshot = try await Self.loadFromRegistryServer(projectKey: project, client: registryServerClient)
+                registryServerConnectionError = nil
                 registryMonitor = nil
             } catch {
-                self.appServerClient = nil
-                appServerConnectionError = SoulProjectionError(
-                    code: "app_server_unavailable",
+                self.registryServerClient = nil
+                registryServerConnectionError = SoulProjectionError(
+                    code: "registry_server_unavailable",
                     message: error.localizedDescription
                 )
                 snapshot = await Self.loadFromCLI(projectKey: project)
@@ -117,7 +117,7 @@ final class SoulRunStore: ObservableObject {
         subagents = snapshot.subagents
         projectBinding = snapshot.projectBinding
         workProjection = snapshot.workProjection
-        workProjectionError = snapshot.workProjection == nil ? appServerConnectionError : nil
+        workProjectionError = snapshot.workProjection == nil ? registryServerConnectionError : nil
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -141,19 +141,19 @@ final class SoulRunStore: ObservableObject {
         var projectionError: SoulProjectionError?
     }
 
-    private func startAppServerLoop(project: String) {
-        appServerTask = Task { [weak self] in
-            await self?.runAppServerLoop(project: project)
+    private func startRegistryServerLoop(project: String) {
+        registryServerTask = Task { [weak self] in
+            await self?.runRegistryServerLoop(project: project)
         }
     }
 
-    private func runAppServerLoop(project: String) async {
-        let client = SoulAppServerClient()
+    private func runRegistryServerLoop(project: String) async {
+        let client = SoulRegistryServerClient()
         do {
             try await client.connectAndInitialize()
             try await client.subscribe(projectKey: project)
             guard boundProject == project, !Task.isCancelled else { return }
-            appServerClient = client
+            registryServerClient = client
             registryMonitor = nil
             await refresh()
 
@@ -201,13 +201,13 @@ final class SoulRunStore: ObservableObject {
             }
 
             guard boundProject == project, !Task.isCancelled else { return }
-            appServerClient = nil
+            registryServerClient = nil
             await refresh()
         } catch {
             guard boundProject == project, !Task.isCancelled else { return }
-            appServerClient = nil
-            appServerConnectionError = SoulProjectionError(
-                code: "app_server_unavailable",
+            registryServerClient = nil
+            registryServerConnectionError = SoulProjectionError(
+                code: "registry_server_unavailable",
                 message: error.localizedDescription
             )
             await refresh()
@@ -232,9 +232,9 @@ final class SoulRunStore: ObservableObject {
         )
     }
 
-    nonisolated private static func loadFromAppServer(
+    nonisolated private static func loadFromRegistryServer(
         projectKey: String,
-        client: SoulAppServerClient
+        client: SoulRegistryServerClient
     ) async throws -> Snapshot {
         let result = try await client.orchestrationStatus(
             projectKey: projectKey,

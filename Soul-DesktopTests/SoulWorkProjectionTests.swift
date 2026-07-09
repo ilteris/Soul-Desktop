@@ -4,12 +4,12 @@ import Testing
 @testable import Soul_Desktop
 
 struct SoulWorkProjectionTests {
-    @Test func appServerClientReadsUnixSocketResponses() async throws {
+    @Test func registryServerClientReadsUnixSocketResponses() async throws {
         let server = try UnixJSONRPCFixture()
         server.start()
         defer { server.stop() }
 
-        let client = SoulAppServerClient(socketPath: server.socketPath)
+        let client = SoulRegistryServerClient(socketPath: server.socketPath)
         try await client.connectAndInitialize()
         try await client.subscribe(projectKey: "soul-desktop")
 
@@ -19,6 +19,25 @@ struct SoulWorkProjectionTests {
 
         let projection = try await client.workProjection(projectKey: "soul-desktop")
         #expect(projection.schema == "soul-work-projection/v1")
+        #expect(projection.nextStep == "Compile semantic trajectory.")
+    }
+
+    @Test func appServerCompatibilityAliasesRemainAvailable() {
+        let error: SoulAppServerClientError = .notConnected
+
+        #expect(error.localizedDescription == "Soul Registry Server is not connected.")
+        #expect(SoulAppServerClient.defaultSocketPath().hasSuffix("/run/app-server.sock"))
+    }
+
+    @Test func appServerCompatibilityAliasReadsUnixSocketResponses() async throws {
+        let server = try UnixJSONRPCFixture()
+        server.start()
+        defer { server.stop() }
+
+        let client = SoulAppServerClient(socketPath: server.socketPath)
+        try await client.connectAndInitialize()
+
+        let projection = try await client.workProjection(projectKey: "soul-desktop")
         #expect(projection.nextStep == "Compile semantic trajectory.")
     }
 
@@ -201,7 +220,7 @@ private final class UnixJSONRPCFixture {
         let pathBytes = Array(socketPath.utf8)
         try withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
             guard pathBytes.count < rawBuffer.count else {
-                throw SoulAppServerClientError.socketPathTooLong(socketPath)
+                throw SoulRegistryServerClientError.socketPathTooLong(socketPath)
             }
             for index in rawBuffer.indices {
                 rawBuffer[index] = 0

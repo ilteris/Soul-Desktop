@@ -13,8 +13,8 @@ extension AppShellV2 {
                 operationButton(title: "Finalize session", detail: "Commit current work into persistent memory.", icon: "seal") {
                     runFinalCommand("finalize")
                 }
-                operationButton(title: "App-server doctor", detail: "Inspect daemon, socket, provider, and mobile transport health.", icon: "stethoscope") {
-                    runAppServerDoctor()
+                operationButton(title: "Registry Server doctor", detail: "Inspect daemon, socket, provider, and mobile transport health.", icon: "stethoscope") {
+                    runRegistryServerDoctor()
                 }
             }
         }
@@ -88,7 +88,7 @@ extension AppShellV2 {
         controlCard(title: "Operation Feed", icon: "list.bullet.rectangle") {
             VStack(alignment: .leading, spacing: 10) {
                 if pulseModel.operations.isEmpty {
-                    emptyLine("Run pulse, verify, delegate, or app-server doctor to start an operation.")
+                    emptyLine("Run pulse, verify, delegate, or Registry Server doctor to start an operation.")
                 } else {
                     ForEach(pulseModel.operations) { operation in
                         operationRow(operation)
