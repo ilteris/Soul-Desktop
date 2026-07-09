@@ -652,7 +652,6 @@ final class SoulControlPanelModel: ObservableObject {
         case .finalize: return "Finalize session"
         case .compact: return "Compact session context"
         case .registryServerDoctor: return "Run Registry Server doctor"
-        case .appServerDoctor: return "Run Registry Server doctor"
         }
     }
 
