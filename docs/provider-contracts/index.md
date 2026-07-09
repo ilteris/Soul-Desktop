@@ -25,7 +25,7 @@ Each provider owns only the behavior exposed through its runtime protocol or CLI
 
 Provider-specific behavior must be mapped into Soul's provider-neutral runtime contracts before the UI depends on it.
 
-If a feature is exposed through ACP, app-server JSON-RPC, or a documented CLI path, Soul may render or route it. If it only exists inside a provider's private app/runtime state, Soul should either reconstruct it from the kernel ledger or document it as unsupported.
+If a feature is exposed through ACP, Codex app-server JSON-RPC, or a documented CLI path, Soul may render or route it. If it only exists inside a provider's private app/runtime state, Soul should either reconstruct it from the kernel ledger or document it as unsupported.
 
 ## Streaming UI Invariant
 
