@@ -130,7 +130,7 @@ extension AppShell {
         }
 
         harness = provider
-        var routedProject = project
+        var routedProject = projectWithPathOverride(project) ?? project
         if let wt = session.worktreePath,
            !wt.isEmpty,
            FileManager.default.fileExists(atPath: wt) {
@@ -376,7 +376,14 @@ extension AppShell {
     }
 
     func startReplay(_ session: SoulSession) {
-        guard let project = workspace.project(id: session.project) ?? currentProject() else { return }
+        guard var project = projectWithPathOverride(workspace.project(id: session.project))
+                ?? currentProject()
+        else { return }
+        if let wt = session.worktreePath,
+           !wt.isEmpty,
+           FileManager.default.fileExists(atPath: wt) {
+            project.path = wt
+        }
         replay.start(
             session: session,
             project: project,
