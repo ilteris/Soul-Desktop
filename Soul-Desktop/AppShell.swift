@@ -165,6 +165,43 @@ struct AppShell: View {
         projectWithPathOverride(workspace.selectedProject)
     }
 
+    private func previewBasePath() -> String? {
+        if let replayController = replay.controller {
+            let cachedReplayWorktreePath: String? = {
+                registryStore.cachedSessions(forProject: replayController.project.id)?
+                    .first(where: { $0.id == replayController.sessionId })?
+                    .worktreePath
+            }()
+            let replayProjectOverridePath = projectPathOverrides[replayController.project.id]
+            return Self.preferredPreviewBasePath(
+                sessionWorktreePath: cachedReplayWorktreePath,
+                projectOverridePath: replayProjectOverridePath,
+                threadProjectPath: nil,
+                replayProjectPath: replayController.project.path,
+                currentProjectPath: nil
+            )
+        } else {
+            let cachedWorktreePath: String? = {
+                guard let thread,
+                      let sessionId = thread.sessionId
+                else { return nil }
+                return registryStore.cachedSessions(forProject: thread.project.id)?
+                    .first(where: { $0.id == sessionId })?
+                    .worktreePath
+            }()
+            let projectOverridePath = thread
+                .flatMap { projectPathOverrides[$0.project.id] }
+                ?? workspace.selectedProjectId.flatMap { projectPathOverrides[$0] }
+            return Self.preferredPreviewBasePath(
+                sessionWorktreePath: cachedWorktreePath,
+                projectOverridePath: projectOverridePath,
+                threadProjectPath: thread?.activeProjectPath,
+                replayProjectPath: nil,
+                currentProjectPath: currentProject()?.path
+            )
+        }
+    }
+
     func openReminderSheet(thread: ThreadController?) {
         guard let context = reminderContext(thread: thread) else { return }
         pendingReminderContext = context
@@ -287,25 +324,44 @@ struct AppShell: View {
     }
 
     private func resolvePreviewPath(_ stripped: String) -> String {
-        if stripped.hasPrefix("/") { return stripped }
-        if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
-        let base = thread?.project.path
-            ?? replay.controller?.project.path
-            ?? currentProject()?.path
-        guard let base else { return stripped }
-        return (base as NSString).appendingPathComponent(stripped)
+        Self.resolvePreviewPath(stripped, base: previewBasePath())
     }
 
     private func resolveProjectPrefixedPreviewPath(_ current: String, stripped: String) -> String {
         guard !FileManager.default.fileExists(atPath: current),
               !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
-              let base = thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path
+              let base = previewBasePath()
         else { return current }
         let baseName = (base as NSString).lastPathComponent
         let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2, parts[0] == Substring(baseName) else { return current }
         let retry = (base as NSString).appendingPathComponent(String(parts[1]))
         return FileManager.default.fileExists(atPath: retry) ? retry : current
+    }
+
+    static func preferredPreviewBasePath(
+        sessionWorktreePath: String?,
+        projectOverridePath: String?,
+        threadProjectPath: String?,
+        replayProjectPath: String?,
+        currentProjectPath: String?,
+        fileManager: FileManager = .default
+    ) -> String? {
+        for candidate in [sessionWorktreePath, projectOverridePath, threadProjectPath, replayProjectPath, currentProjectPath] {
+            guard let path = candidate, !path.isEmpty else { continue }
+            let expanded = (path as NSString).expandingTildeInPath
+            if fileManager.fileExists(atPath: expanded) {
+                return expanded
+            }
+        }
+        return threadProjectPath ?? replayProjectPath ?? currentProjectPath
+    }
+
+    static func resolvePreviewPath(_ stripped: String, base: String?) -> String {
+        if stripped.hasPrefix("/") { return stripped }
+        if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
+        guard let base else { return stripped }
+        return (base as NSString).appendingPathComponent(stripped)
     }
 
     private func resolveBarePreviewPath(_ current: String, stripped: String) -> String {
