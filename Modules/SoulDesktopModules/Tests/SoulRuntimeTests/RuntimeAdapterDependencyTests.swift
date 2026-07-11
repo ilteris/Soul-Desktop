@@ -97,6 +97,25 @@ struct RuntimeAdapterDependencyTests {
         #expect(result.env["SOUL"] == "1")
         #expect(result.log == ["hydrated"])
     }
+
+    @Test("ACP runtime exports resolved workspace environment")
+    func acpRuntimeWorkspaceEnvironment() {
+        let workspace = "/tmp/SOUL-JOB_HUNT-052"
+        let env = ACPProviderRuntimeAdapter.applyWorkspaceEnvironment(
+            ["PWD": "/tmp/wrong", "CODER_AGENT_WORKSPACE_PATH": "/tmp/wrong"],
+            projectKey: "job-hunt",
+            workspacePath: workspace,
+            kernelSessionID: "kernel-123"
+        )
+
+        #expect(env["SOUL_PROJECT"] == "job-hunt")
+        #expect(env["SOUL_PROJECT_PATH"] == workspace)
+        #expect(env["SOUL_WORKSPACE_PATH"] == workspace)
+        #expect(env["SOUL_DESKTOP_WORKSPACE_PATH"] == workspace)
+        #expect(env["CODER_AGENT_WORKSPACE_PATH"] == workspace)
+        #expect(env["PWD"] == workspace)
+        #expect(env["SOUL_SESSION_ID"] == "kernel-123")
+    }
 }
 
 private actor HydrationProbe {

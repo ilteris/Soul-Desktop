@@ -120,4 +120,17 @@ struct PreviewPathTargetTests {
 
         #expect(base == replayWorktreePath.path)
     }
+
+    @Test func bareFilenameFallbackDoesNotEscapeActivePreviewBase() {
+        #expect(!AppShell.shouldSearchKnownProjectsForBarePreview(
+            currentExists: false,
+            stripped: "MONDAY_BEN_CALL_PLAYBOOK.md",
+            base: "/Users/example/soul_worktrees/job-hunt/SOUL-JOB_HUNT-052"
+        ))
+        #expect(AppShell.shouldSearchKnownProjectsForBarePreview(
+            currentExists: false,
+            stripped: "PROJECTS.json",
+            base: nil
+        ))
+    }
 }

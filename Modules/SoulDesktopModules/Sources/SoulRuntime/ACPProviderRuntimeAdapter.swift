@@ -63,18 +63,29 @@ public actor ACPProviderRuntimeAdapter: ProviderRuntime {
                           userInfo: [NSLocalizedDescriptionKey: "no spawn config for \(provider.rawValue)"])
         }
 
-        let hydration = await hydrationPreparer(provider, projectKey, request.session.projectPath, provisionalSessionID)
+        let workspacePath = Self.resolvedWorkspacePath(request.session.projectPath)
+        guard Self.directoryExists(at: workspacePath) else {
+            throw NSError(
+                domain: "Soul-Desktop",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "workspace path does not exist: \(workspacePath)"]
+            )
+        }
+
+        let hydration = await hydrationPreparer(provider, projectKey, workspacePath, provisionalSessionID)
 
         var env = spawn.environment ?? [:]
         for (key, value) in hydration.env {
             env[key] = value
         }
-        env["SOUL_PROJECT"] = projectKey
-        if let sid = request.session.kernelSessionID {
-            env["SOUL_SESSION_ID"] = sid
-        }
+        env = Self.applyWorkspaceEnvironment(
+            env,
+            projectKey: projectKey,
+            workspacePath: workspacePath,
+            kernelSessionID: request.session.kernelSessionID
+        )
         spawn.environment = env
-        spawn.cwd = request.session.projectPath
+        spawn.cwd = workspacePath
 
         let client = try ACPClient(spawn: spawn)
         self.client = client
@@ -88,6 +99,37 @@ public actor ACPProviderRuntimeAdapter: ProviderRuntime {
             supportsImageAttachments: initResp.agentCapabilities?.promptCapabilities?.image ?? false
         )
         return ProviderRuntimeStartResult(capabilities: capabilities)
+    }
+
+    static func resolvedWorkspacePath(_ raw: String) -> String {
+        URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+            .standardizedFileURL
+            .path
+    }
+
+    static func applyWorkspaceEnvironment(
+        _ environment: [String: String],
+        projectKey: String,
+        workspacePath: String,
+        kernelSessionID: String?
+    ) -> [String: String] {
+        var env = environment
+        env["SOUL_PROJECT"] = projectKey
+        env["SOUL_PROJECT_PATH"] = workspacePath
+        env["SOUL_WORKSPACE_PATH"] = workspacePath
+        env["SOUL_DESKTOP_WORKSPACE_PATH"] = workspacePath
+        env["CODER_AGENT_WORKSPACE_PATH"] = workspacePath
+        env["PWD"] = workspacePath
+        if let sid = kernelSessionID {
+            env["SOUL_SESSION_ID"] = sid
+        }
+        return env
+    }
+
+    private static func directoryExists(at path: String) -> Bool {
+        var isDirectory = ObjCBool(false)
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     public func loadSession(_ request: ProviderRuntimeLoadRequest) async throws {
