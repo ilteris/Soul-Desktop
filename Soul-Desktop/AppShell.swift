@@ -365,11 +365,23 @@ struct AppShell: View {
     }
 
     private func resolveBarePreviewPath(_ current: String, stripped: String) -> String {
-        guard !FileManager.default.fileExists(atPath: current),
-              !stripped.hasPrefix("/"), !stripped.hasPrefix("~"), !stripped.contains("/"),
+        guard Self.shouldSearchKnownProjectsForBarePreview(
+                currentExists: FileManager.default.fileExists(atPath: current),
+                stripped: stripped,
+                base: previewBasePath()
+              ),
               let match = findFileInKnownProjects(filename: stripped)
         else { return current }
         return match
+    }
+
+    static func shouldSearchKnownProjectsForBarePreview(currentExists: Bool, stripped: String, base: String?) -> Bool {
+        guard !currentExists,
+              !stripped.hasPrefix("/"),
+              !stripped.hasPrefix("~"),
+              !stripped.contains("/")
+        else { return false }
+        return base?.isEmpty ?? true
     }
 
     static func sameFilesystemPath(_ lhs: String, _ rhs: String) -> Bool {
