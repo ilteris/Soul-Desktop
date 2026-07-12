@@ -52,16 +52,62 @@ enum SessionWorktreeProvisioner {
     /// On failure: applies `fallbackPolicy` and surfaces a status/error row.
     @MainActor
     static func provision(controller: ThreadController) async {
+        let projectKey = controller.project.id
+        let mainPath = controller.project.path
+        let sid = controller.sessionId
+        if let sid {
+            let branch = branchName(
+                projectKey: projectKey,
+                sessionId: sid,
+                title: controller.customTitle ?? controller.displayTitle
+            )
+            let worktreePath = GitWorktreeService.expectedPath(projectKey: projectKey, sessionId: sid)
+            if GitWorktreeService.worktreeExists(projectKey: projectKey, sessionId: sid) {
+                controller.adoptWorktree(worktreePath, primaryCheckout: mainPath)
+                controller.worktreeProvisionState = .provisioned(path: worktreePath, branch: branch)
+                return
+            }
+        }
+
+        if activeTaskAdoptionEnabled(for: controller.project),
+           let adoption = ActiveTaskWorktreeResolver.adoption(for: controller.project) {
+            let primaryCheckout = controller.project.path
+            controller.adoptWorktree(adoption.path, primaryCheckout: primaryCheckout)
+            controller.worktreeProvisionState = .provisioned(
+                path: adoption.path,
+                branch: adoption.branch ?? adoption.taskId
+            )
+            if let sid = controller.sessionId {
+                var event: [String: Any] = [
+                    "event": "WorktreeAdopted",
+                    "path": adoption.path,
+                    "task_id": adoption.taskId,
+                    "source": "active_task"
+                ]
+                if let branch = adoption.branch {
+                    event["branch"] = branch
+                }
+                SoulRegistry.appendHook(
+                    projectKey: controller.project.id,
+                    sessionId: sid,
+                    event: event
+                )
+            }
+            controller.items.append(.status(
+                id: UUID(),
+                text: "↗ Using active task worktree \(adoption.taskId)"
+            ))
+            return
+        }
+
         guard autoProvisionEnabled(for: controller.project) else {
             controller.worktreeProvisionState = .skipped(reason: "auto-provision disabled")
             return
         }
-        guard let sid = controller.sessionId else {
+        guard let sid else {
             controller.worktreeProvisionState = .skipped(reason: "no session id")
             return
         }
-        let projectKey = controller.project.id
-        let mainPath = controller.project.path
 
         // Non-git project roots can't host worktrees; isolation is moot.
         guard await GitWorktreeService.isGitRepository(path: mainPath) else {
@@ -75,13 +121,6 @@ enum SessionWorktreeProvisioner {
             title: controller.customTitle ?? controller.displayTitle
         )
         let worktreePath = GitWorktreeService.expectedPath(projectKey: projectKey, sessionId: sid)
-
-        // Idempotency: adopt an existing worktree rather than re-creating it.
-        if GitWorktreeService.worktreeExists(projectKey: projectKey, sessionId: sid) {
-            controller.adoptWorktree(worktreePath, primaryCheckout: mainPath)
-            controller.worktreeProvisionState = .provisioned(path: worktreePath, branch: branch)
-            return
-        }
 
         controller.items.append(.status(
             id: UUID(),
@@ -154,6 +193,10 @@ enum SessionWorktreeProvisioner {
     static func branchName(projectKey: String, sessionId: String, title: String) -> String {
         let shortSid = String(sessionId.prefix(8))
         return "soul/session/\(projectKey)/\(shortSid)-\(slugify(title))"
+    }
+
+    static func activeTaskAdoptionEnabled(for project: SoulProject) -> Bool {
+        project.worktreePolicy != "off"
     }
 
     static func slugify(_ raw: String) -> String {
