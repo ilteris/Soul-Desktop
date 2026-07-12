@@ -81,6 +81,17 @@ struct SessionWorktreeProvisionerTests {
     }
 
     @Test
+    func activeTaskAdoptionHonorsExplicitOffPolicy() {
+        let pOff = SoulProject(id: "soul-desktop", name: "Soul Desktop", path: "~/Code/Soul-Desktop", worktreePolicy: "off")
+        let pNil = SoulProject(id: "job-hunt", name: "Job Hunt 2026", path: "~/Code/job-hunt", worktreePolicy: nil)
+        let pSession = SoulProject(id: "soul", name: "Soul OS", path: "~/soul-cli/soul", worktreePolicy: "per-session")
+
+        #expect(SessionWorktreeProvisioner.activeTaskAdoptionEnabled(for: pOff) == false)
+        #expect(SessionWorktreeProvisioner.activeTaskAdoptionEnabled(for: pNil) == true)
+        #expect(SessionWorktreeProvisioner.activeTaskAdoptionEnabled(for: pSession) == true)
+    }
+
+    @Test
     func isGitRepositoryTrueForInitializedRepoFalseForPlainDir() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
