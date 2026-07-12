@@ -64,8 +64,8 @@ struct ReplayMergeTests {
         #expect(a == "the answer")
     }
 
-    @Test("replays trace missing hook as status row")
-    func replaysTraceMissingStatus() throws {
+    @Test("does not replay Gemini trace missing hook as status row")
+    func skipsGeminiTraceMissingStatus() throws {
         let f = try fixture(hooks: [
             #"{"event":"UserPrompt","timestamp":"2026-05-25T15:00:01Z","text":"please edit"}"#,
             #"{"event":"AfterTool","timestamp":"2026-05-25T15:00:02Z","tool":"Edit","target":"/tmp/x.swift"}"#,
@@ -75,11 +75,29 @@ struct ReplayMergeTests {
 
         let events = merge(f)
 
+        #expect(events.count == 3)
+        #expect(!events.contains { event in
+            if case .status = event.item { return true }
+            return false
+        })
+    }
+
+    @Test("replays non-Gemini trace missing hook as status row")
+    func replaysNonGeminiTraceMissingStatus() throws {
+        let f = try fixture(hooks: [
+            #"{"event":"UserPrompt","timestamp":"2026-05-25T15:00:01Z","text":"please edit"}"#,
+            #"{"event":"AfterTool","timestamp":"2026-05-25T15:00:02Z","tool":"Edit","target":"/tmp/x.swift"}"#,
+            #"{"event":"AfterAgent","timestamp":"2026-05-25T15:00:03Z","content":"I will summarize the changes."}"#,
+            #"{"event":"TraceMissing","timestamp":"2026-05-25T15:00:04Z","provider":"codex","reply_characters":29}"#,
+        ])
+
+        let events = merge(f)
+
         #expect(events.count == 4)
         guard case .status(_, let text) = events[3].item else { Issue.record("3 not status"); return }
         #expect(text.contains("trace missing"))
         #expect(text.contains("complete <soul_trace> block"))
-        #expect(text.contains("Gemini"))
+        #expect(text.contains("Codex"))
     }
 
     @Test("recovers an agent_chunks bubble that has no AfterAgent")

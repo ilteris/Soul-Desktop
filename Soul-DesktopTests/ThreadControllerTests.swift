@@ -683,7 +683,7 @@ struct ThreadControllerTests {
         #expect(controller.lastActivityAt > stale)
     }
 
-    @Test func testSubstantiveTurnWithoutTraceAddsIntegrityStatus() throws {
+    @Test func testSubstantiveTurnWithoutTraceRecordsHookWithoutVisibleStatus() throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
         let ledger = RecordingLedger()
         controller.ledger = ledger
@@ -702,14 +702,37 @@ struct ThreadControllerTests {
 
         controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
 
-        let status = try #require(controller.items.compactMap(Self.statusText).last)
-        #expect(status.contains("trace missing"))
-        #expect(status.contains("complete <soul_trace> block"))
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
         #expect(controller.items.compactMap(Self.agentMessageText) == [reply])
         let hook = try #require(ledger.hooks.last)
         #expect(hook["event"] as? String == "TraceMissing")
         #expect(hook["provider"] as? String == "geminiCLI")
         #expect(hook["reply_characters"] as? Int == reply.count)
+    }
+
+    @Test func testNonGeminiSubstantiveTurnWithoutTraceStillAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .codex, project: Self.testProject())
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
+        let start = controller.items.count
+        let reply = "I will summarize the changes and confirm the successful integration of the live job URL."
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+        let hook = try #require(ledger.hooks.last)
+        #expect(hook["event"] as? String == "TraceMissing")
+        #expect(hook["provider"] as? String == "codex")
     }
 
     @Test func testSubstantiveTurnWithTraceDoesNotAddIntegrityStatus() {
@@ -767,7 +790,7 @@ struct ThreadControllerTests {
         #expect(ledger.hooks.isEmpty)
     }
 
-    @Test func testGeminiReadShapedAssistantReplyAfterNonReadToolStillRequiresTrace() throws {
+    @Test func testGeminiReadShapedAssistantReplyAfterNonReadToolStillRecordsTraceMissingHook() throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
         let ledger = RecordingLedger()
         controller.ledger = ledger
@@ -786,8 +809,7 @@ struct ThreadControllerTests {
         #expect(!controller.shouldAutoContinueGeminiToolResultOnlyTurn(reply: reply, outputStartIndex: start))
         controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start, sessionId: "test-sid")
 
-        let status = try #require(controller.items.compactMap(Self.statusText).last)
-        #expect(status.contains("trace missing"))
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
         let hook = try #require(ledger.hooks.last)
         #expect(hook["event"] as? String == "TraceMissing")
     }
@@ -799,6 +821,30 @@ struct ThreadControllerTests {
         let reply = """
         I edited the file.
         <soul_trace>{"intent":"Update URL"
+        """
+        controller.items.append(.toolCall(
+            id: UUID(),
+            kind: "edit",
+            title: "APPLICATION_LOG.md",
+            status: "completed",
+            locationHint: nil,
+            details: nil
+        ))
+        controller.items.append(.agentMessage(id: UUID(), text: reply, complete: true, timestamp: Date()))
+
+        controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
+
+        let status = try #require(controller.items.compactMap(Self.statusText).last)
+        #expect(status.contains("trace missing"))
+    }
+
+    @Test func testSubstantiveTurnWithBareTraceOpenerAddsIntegrityStatus() throws {
+        let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
+        controller.ledger = RecordingLedger()
+        let start = controller.items.count
+        let reply = """
+        I edited the file.
+        <soul_trace>
         """
         controller.items.append(.toolCall(
             id: UUID(),
@@ -840,9 +886,10 @@ struct ThreadControllerTests {
         #expect(status.contains("trace missing"))
     }
 
-    @Test func testFinalizeOnlyTurnWithoutTraceAddsIntegrityStatus() throws {
+    @Test func testFinalizeOnlyTurnWithoutTraceRecordsHookWithoutVisibleStatus() throws {
         let controller = ThreadController(provider: .geminiCLI, project: Self.testProject())
-        controller.ledger = RecordingLedger()
+        let ledger = RecordingLedger()
+        controller.ledger = ledger
         let start = controller.items.count
         let reply = "Finalized."
         controller.items.append(.finalize(
@@ -858,8 +905,9 @@ struct ThreadControllerTests {
 
         controller.appendMissingTraceStatusIfNeeded(reply: reply, outputStartIndex: start)
 
-        let status = try #require(controller.items.compactMap(Self.statusText).last)
-        #expect(status.contains("trace missing"))
+        #expect(controller.items.compactMap(Self.statusText).isEmpty)
+        let hook = try #require(ledger.hooks.last)
+        #expect(hook["event"] as? String == "TraceMissing")
     }
 
     @Test func testAnswerOnlyTurnWithoutTraceDoesNotAddIntegrityStatus() {
