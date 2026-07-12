@@ -90,4 +90,40 @@ struct GeminiRuntimeResolverTests {
         #expect(spawn.arguments.first == "--acp")
         #expect(spawn.environment?["PATH"] == "/usr/bin")
     }
+
+    @Test func geminiReasoningEffortInheritDoesNotForwardEnv() {
+        let env = geminiEnvironment(
+            applying: .inherit,
+            to: ["PATH": "/usr/bin", "SOUL_REASONING_EFFORT": "high"]
+        )
+
+        #expect(env["PATH"] == "/usr/bin")
+        #expect(env["SOUL_REASONING_EFFORT"] == nil)
+    }
+
+    @Test func geminiReasoningEffortExplicitValueForwardsEnv() {
+        let env = geminiEnvironment(
+            applying: .medium,
+            to: ["PATH": "/usr/bin"]
+        )
+
+        #expect(env["SOUL_REASONING_EFFORT"] == "medium")
+    }
+
+    @Test func nonGeminiProvidersDoNotForwardReasoningEffortEnv() {
+        for provider in [Provider.claude, .codex, .pi] {
+            let env = providerEnvironment(
+                for: provider,
+                applying: .high,
+                to: ["PATH": "/usr/bin"]
+            )
+
+            #expect(env["PATH"] == "/usr/bin")
+            #expect(env["SOUL_REASONING_EFFORT"] == nil)
+        }
+    }
+
+    @Test func geminiReasoningEffortStorageFallbackUsesInherit() {
+        #expect(GeminiReasoningEffort.fromStorage("not-a-valid-effort") == .inherit)
+    }
 }

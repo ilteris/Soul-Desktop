@@ -79,6 +79,7 @@ struct ComposerView: View {
     /// Called when the user changes harness from the inline picker. Routes
     /// through AppShell which handles new-chat-on-switch semantics.
     var onPickHarness: (Provider) -> Void = { _ in }
+    @Binding var geminiReasoningEffort: GeminiReasoningEffort
     var isSendEnabled: Bool = true
     var disabledMessage: String? = nil
     var onBranchFromDisabled: (Provider) -> Void = { _ in }
@@ -487,6 +488,9 @@ struct ComposerView: View {
                         action: onAddReminder
                     )
                     HarnessPicker(selection: provider, onSelect: onPickHarness)
+                    if provider == .geminiCLI {
+                        GeminiReasoningEffortPicker(effort: $geminiReasoningEffort)
+                    }
                     PermissionModePicker(mode: $permissionMode)
                     Spacer()
                     SoulIcon(name: "mic", size: SoulMetric.iconLarge, color: SoulColor.fgMuted)
@@ -673,6 +677,48 @@ enum GitInfo {
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? "exit \(result.status)"
         }.value
+    }
+}
+
+private struct GeminiReasoningEffortPicker: View {
+    @Binding var effort: GeminiReasoningEffort
+
+    var body: some View {
+        Menu {
+            ForEach(GeminiReasoningEffort.allCases) { option in
+                Button {
+                    effort = option
+                } label: {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            SoulIcon(name: "brain", size: SoulMetric.iconHint, color: SoulColor.fgMuted)
+                            Text(option.label)
+                            if effort == option { Image(systemName: "checkmark") }
+                        }
+                        Text(option.menuDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                SoulIcon(name: "brain", size: SoulMetric.iconHint, color: SoulColor.fgMuted)
+                Text(effort.label)
+                    .font(SoulFont.ui(13))
+                    .foregroundStyle(SoulColor.fgMuted)
+                    .lineLimit(1)
+                SoulIcon(name: "chevron.down", size: SoulMetric.iconHint, color: SoulColor.fgSubtle)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(SoulColor.surface.opacity(0.6), in: Capsule())
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Gemini reasoning effort")
     }
 }
 

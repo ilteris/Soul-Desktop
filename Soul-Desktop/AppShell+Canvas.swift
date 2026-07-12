@@ -46,6 +46,13 @@ extension AppShell {
         }
     }
 
+    var pendingGeminiReasoningEffortBinding: Binding<GeminiReasoningEffort> {
+        Binding(
+            get: { GeminiReasoningEffort.fromStorage(pendingGeminiReasoningEffortRaw) },
+            set: { pendingGeminiReasoningEffortRaw = $0.rawValue }
+        )
+    }
+
     /// SOUL-SOUL_DESKTOP-237: invoked by the sheet's "Continue" choice.
     /// Mirrors today's pre-sheet behavior: close the active thread, fresh
     /// draft in the new harness. Source session is untouched on disk.
@@ -191,6 +198,7 @@ extension AppShell {
                         pendingPermissionMode: $pendingPermissionMode,
                         provider: harness,
                         onPickHarness: onPickHarness,
+                        geminiReasoningEffort: pendingGeminiReasoningEffortBinding,
                         branchSeedLoading: branchSeedLoading,
                         droppedAttachments: $emptyStateDroppedAttachments
                     )

@@ -9,8 +9,17 @@ extension ACPProviderSpawn {
     /// on that session — bypassing ACP `loadSession`, which gemini-cli and
     /// pi don't really support over RPC. Claude resumes via ACP, so its
     /// spawn shape doesn't change.
-    static func resolve(_ provider: Provider, resumeSessionId: String? = nil) -> ACPProviderSpawn? {
-        let env = enrichedEnvironment()
+    static func resolve(
+        _ provider: Provider,
+        resumeSessionId: String? = nil,
+        geminiReasoningEffort: GeminiReasoningEffort = .inherit
+    ) -> ACPProviderSpawn? {
+        let baseEnv = enrichedEnvironment()
+        let env = providerEnvironment(
+            for: provider,
+            applying: geminiReasoningEffort,
+            to: baseEnv
+        )
         switch provider {
         case .geminiCLI:
             // Explicit env override wins, then the user's dotfiles launcher
@@ -67,6 +76,32 @@ extension ACPProviderSpawn {
             )
         }
     }
+}
+
+func providerEnvironment(
+    for provider: Provider,
+    applying effort: GeminiReasoningEffort,
+    to environment: [String: String]
+) -> [String: String] {
+    switch provider {
+    case .geminiCLI:
+        return geminiEnvironment(applying: effort, to: environment)
+    case .claude, .codex, .pi:
+        return environment
+    }
+}
+
+func geminiEnvironment(
+    applying effort: GeminiReasoningEffort,
+    to environment: [String: String]
+) -> [String: String] {
+    var env = environment
+    if let value = effort.environmentValue {
+        env["SOUL_REASONING_EFFORT"] = value
+    } else {
+        env.removeValue(forKey: "SOUL_REASONING_EFFORT")
+    }
+    return env
 }
 
 /// Resolve the Gemini CLI runtime bundled inside the app. The bundle is

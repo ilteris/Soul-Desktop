@@ -9,8 +9,9 @@ Gemini is run through a version-controlled runtime path so Soul can keep ACP beh
 Gemini provider spawning resolves in this order:
 
 1. `SOUL_GEMINI_LOCAL` development override
-2. App-bundled Gemini CLI runtime
-3. `gemini` on `PATH`
+2. User dotfiles launcher (`~/dotfiles/bin/gemini` or `~/bin/gemini`)
+3. App-bundled Gemini CLI runtime
+4. `gemini` on `PATH`
 
 The runtime shape is:
 
@@ -21,6 +22,14 @@ The runtime shape is:
 - UI/event bridge: `ThreadController+ACP`
 
 Soul passes additional include directories for the Soul kernel and dotfiles when available so spawned Gemini sessions can inspect project-adjacent Soul context.
+
+## Reasoning Effort
+
+Soul Desktop exposes a Gemini-only effort picker in the composer footer.
+
+The Desktop contract is intentionally provider-neutral: it forwards only `SOUL_REASONING_EFFORT` to the Gemini CLI ACP child process when the user chooses an explicit effort (`minimal`, `low`, `medium`, or `high`). The default `Auto` choice omits that environment variable, allowing Gemini CLI and the selected model to use their own default.
+
+Gemini CLI owns translating `SOUL_REASONING_EFFORT` into the API-compliant Gemini request body. Soul Desktop must not send Gemini API fields directly.
 
 ## Identity And Resume
 
@@ -65,4 +74,3 @@ The following remain outside the provider contract unless Gemini exposes them th
 - Provider-private chat file behavior as a source of truth
 - Undocumented CLI state
 - Runtime behavior from an unbundled Gemini build when the bundled runtime is active
-

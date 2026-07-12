@@ -64,9 +64,14 @@ extension ThreadController {
     }
 
     func runtimeSpawnResolver() -> RuntimeSpawnResolver {
-        { provider, resumeSessionID in
+        let effort = self.geminiReasoningEffort
+        return { provider, resumeSessionID in
             guard let appProvider = provider.appProvider else { return nil }
-            return ACPProviderSpawn.resolve(appProvider, resumeSessionId: resumeSessionID)
+            return ACPProviderSpawn.resolve(
+                appProvider,
+                resumeSessionId: resumeSessionID,
+                geminiReasoningEffort: effort
+            )
         }
     }
 
