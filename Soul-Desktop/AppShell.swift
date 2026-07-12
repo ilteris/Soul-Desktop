@@ -75,6 +75,10 @@ struct AppShell: View {
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
     @State var pendingPermissionMode: PermissionMode = .fullAccess
+    /// Gemini effort chosen before a thread exists. Persisted so the hero
+    /// composer remembers the spawn preference across new chats; copied onto
+    /// each Gemini thread before ACP starts the provider process.
+    @AppStorage("soul.gemini.reasoningEffort") var pendingGeminiReasoningEffortRaw: String = GeminiReasoningEffort.inherit.rawValue
     /// SOUL-SOUL_DESKTOP-035: when the user clicks a live row owned by an
     /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
     /// and surface a sheet offering the read-only Replay path instead.

@@ -173,6 +173,9 @@ final class ThreadController {
             Task { await runtime?.setPermissionMode(mode.agentPermissionMode) }
         }
     }
+    /// Gemini-only spawn hint. Desktop forwards this as SOUL_REASONING_EFFORT;
+    /// gemini-cli owns translating it into provider-specific API fields.
+    var geminiReasoningEffort: GeminiReasoningEffort = .inherit
     /// Rolling capture of the agent's stderr + protocol-level errors. Bounded
     /// so a chatty agent can't bloat memory. Surfaced via the inactivity
     /// popover so the user has somewhere to look when the agent stalls.

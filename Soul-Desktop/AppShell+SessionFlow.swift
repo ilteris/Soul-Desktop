@@ -8,6 +8,7 @@ extension AppShell {
         sessions.draftSession = nil
         let controller = ThreadController(provider: harness, project: project)
         controller.permissionMode = pendingPermissionMode
+        controller.geminiReasoningEffort = GeminiReasoningEffort.fromStorage(pendingGeminiReasoningEffortRaw)
         // startThread owns its first item synchronously via acceptUserPrompt
         // below — no read-from-disk happens. Opt out of the default
         // isHydrating=true so the skeleton overlay doesn't paint over the
@@ -249,6 +250,7 @@ extension AppShell {
         let project = source.project
         let controller = ThreadController(provider: target, project: project)
         controller.permissionMode = pendingPermissionMode
+        controller.geminiReasoningEffort = GeminiReasoningEffort.fromStorage(pendingGeminiReasoningEffortRaw)
         // Branch flow uses its own loading affordance (`branchSeedLoading`
         // below) instead of the hydration skeleton. Opt out of the default
         // isHydrating=true so the two loading states don't double-paint.
