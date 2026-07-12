@@ -332,6 +332,9 @@ public enum LedgerReplayMerge {
                     item: .status(id: UUID(), text: "⌁ \(payload.op) — \(payload.intent)")
                 ))
             case .traceMissing(let payload):
+                if payload.provider == "geminiCLI" {
+                    continue
+                }
                 out.append(ReplayEvent(
                     id: UUID(),
                     timestamp: ts,
