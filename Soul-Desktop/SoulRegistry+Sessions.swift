@@ -32,6 +32,16 @@ extension SoulRegistry {
     private static let sessionListPayloadCacheLock = NSLock()
     nonisolated(unsafe) private static var sessionListPayloadCache: [String: SessionListPayloadCache] = [:]
 
+    static func invalidateSessionListPayloadCache(forProject key: String? = nil) {
+        sessionListPayloadCacheLock.lock()
+        if let key {
+            sessionListPayloadCache.removeValue(forKey: key)
+        } else {
+            sessionListPayloadCache.removeAll()
+        }
+        sessionListPayloadCacheLock.unlock()
+    }
+
     /// Single shell-out to `soul session list -p <key> --json --include-machine`. Returns nil
     /// on CLI failure (executable missing, non-zero exit, decode error) —
     /// callers degrade to empty. SOUL-SOUL_DESKTOP-263.

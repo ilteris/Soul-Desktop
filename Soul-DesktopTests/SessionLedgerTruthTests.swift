@@ -1003,6 +1003,45 @@ struct SessionLedgerTruthTests {
         #expect(row?.taskSubject == "Lift task association")
     }
 
+    @Test func explicitTaskAssociationOverridesEarlierWorktreeTask() throws {
+        try SessionLedgerTruthTests.withTempHome { home in
+            let fm = FileManager.default
+            let project = SessionLedgerTruthTests.testProject()
+            let sid = UUID().uuidString.lowercased()
+            let taskRoot = home.appendingPathComponent("soul_registry/tasks/\(project.id)")
+            try fm.createDirectory(at: taskRoot, withIntermediateDirectories: true)
+            try """
+            {"id":"SOUL-SOUL-052","project":"\(project.id)","subject":"Old active work","status":"in_progress"}
+            """.write(to: taskRoot.appendingPathComponent("SOUL-SOUL-052.json"), atomically: true, encoding: .utf8)
+            try """
+            {"id":"SOUL-SOUL-056","project":"\(project.id)","subject":"New explicit work","status":"pending"}
+            """.write(to: taskRoot.appendingPathComponent("SOUL-SOUL-056.json"), atomically: true, encoding: .utf8)
+
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "UserPrompt",
+                "text": "Start from old active task"
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "WorktreeAdopted",
+                "task_id": "SOUL-SOUL-052",
+                "source": "active_task",
+                "path": "/tmp/SOUL-SOUL-052"
+            ])
+            SoulRegistry.appendHook(projectKey: project.id, sessionId: sid, event: [
+                "event": "TaskAssociation",
+                "task_id": "SOUL-SOUL-056",
+                "session_role": "implementation",
+                "source": "sidebar_context_menu"
+            ])
+            SoulRegistry.flushHooks()
+
+            let session = try #require(SoulRegistry.allSessions(forProject: project.id, projectPath: project.path).first { $0.id == sid })
+            #expect(session.taskId == "SOUL-SOUL-056")
+            #expect(session.taskStatus == "pending")
+            #expect(session.taskSubject == "New explicit work")
+        }
+    }
+
     @Test func resolverFiltersActiveControllersAndDraftByProjectKey() {
         let projectA = SessionLedgerTruthTests.testProject()
         let projectB = SoulProject(
