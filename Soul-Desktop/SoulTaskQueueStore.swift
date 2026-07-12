@@ -64,24 +64,42 @@ final class SoulTaskQueueStore: ObservableObject {
                 options: [.skipsHiddenFiles]
             )) ?? []
 
-            var tasks: [SoulTaskRecord] = []
-            for url in urls where url.pathExtension == "json" {
-                guard let task = readTask(url, projectKey: projectKey) else { continue }
-                if task.status == "completed" || task.status == "wont_fix" || task.status == "archive" {
-                    continue
-                }
-                tasks.append(task)
-            }
-
-            tasks.sort { lhs, rhs in
-                let rank: [String: Int] = ["in_progress": 0, "pending": 1, "freezer": 2]
-                let lhsRank = rank[lhs.status] ?? 9
-                let rhsRank = rank[rhs.status] ?? 9
-                if lhsRank != rhsRank { return lhsRank < rhsRank }
-                return lhs.id < rhs.id
-            }
+            let tasks = loadOpenTasks(projectKey: projectKey, from: urls)
             return Snapshot(tasks: tasks, activeTaskId: active?.isEmpty == false ? active : nil)
         }.value
+    }
+
+    nonisolated static func loadOpenTasks(projectKey: String) -> [SoulTaskRecord] {
+        let root = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("soul_registry")
+            .appendingPathComponent("tasks")
+            .appendingPathComponent(projectKey)
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return loadOpenTasks(projectKey: projectKey, from: urls)
+    }
+
+    nonisolated private static func loadOpenTasks(projectKey: String, from urls: [URL]) -> [SoulTaskRecord] {
+        var tasks: [SoulTaskRecord] = []
+        for url in urls where url.pathExtension == "json" {
+            guard let task = readTask(url, projectKey: projectKey) else { continue }
+            if task.status == "completed" || task.status == "wont_fix" || task.status == "archive" {
+                continue
+            }
+            tasks.append(task)
+        }
+
+        tasks.sort { lhs, rhs in
+            let rank: [String: Int] = ["in_progress": 0, "pending": 1, "freezer": 2]
+            let lhsRank = rank[lhs.status] ?? 9
+            let rhsRank = rank[rhs.status] ?? 9
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.id < rhs.id
+        }
+        return tasks
     }
 
     nonisolated private static func readTask(_ url: URL, projectKey: String) -> SoulTaskRecord? {
