@@ -123,7 +123,7 @@ final class SoulRunStore: ObservableObject {
         subagents = snapshot.subagents
         projectBinding = snapshot.projectBinding
         workProjection = snapshot.workProjection
-        workProjectionError = snapshot.workProjection == nil ? appServerConnectionError : nil
+        workProjectionError = snapshot.workProjectionError ?? (snapshot.workProjection == nil ? appServerConnectionError : nil)
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -131,13 +131,14 @@ final class SoulRunStore: ObservableObject {
         }
     }
 
-    private struct Snapshot: Sendable {
+    struct Snapshot: Sendable {
         var runs: [SoulRunRecord] = []
         var workStatus: SoulWorkStatusPayload? = nil
         var reviewSummary: SoulRunReviewPayload.Summary? = nil
         var subagents: [SoulSubagentRecord] = []
         var projectBinding: SoulProjectBinding? = nil
         var workProjection: SoulWorkProjection? = nil
+        var workProjectionError: SoulProjectionError? = nil
         var version: String? = nil
     }
 
@@ -266,7 +267,7 @@ final class SoulRunStore: ObservableObject {
         )
     }
 
-    nonisolated private static func loadFromAppServer(
+    nonisolated static func loadFromAppServer(
         projectKey: String,
         client: SoulAppServerClient
     ) async throws -> Snapshot {
@@ -277,7 +278,14 @@ final class SoulRunStore: ObservableObject {
             subagentLimit: 25
         )
         var snapshot = snapshot(from: result)
-        snapshot.workProjection = try await client.workProjection(projectKey: projectKey)
+        do {
+            snapshot.workProjection = try await client.workProjection(projectKey: projectKey)
+        } catch {
+            snapshot.workProjectionError = SoulProjectionError(
+                code: "work_projection_get_failed",
+                message: error.localizedDescription
+            )
+        }
         return snapshot
     }
 
@@ -293,6 +301,7 @@ final class SoulRunStore: ObservableObject {
             subagents: subagents,
             projectBinding: snapshot.projectBinding,
             workProjection: nil,
+            workProjectionError: nil,
             version: snapshot.version
         )
     }

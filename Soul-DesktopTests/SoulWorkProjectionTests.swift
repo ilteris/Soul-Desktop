@@ -279,6 +279,105 @@ struct SoulWorkProjectionTests {
         #expect(projection.nextStep == "Pull work_projection.get.")
     }
 
+    @Test func workProjectionPayloadDecodesNestedTrajectoryStatusObject() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "generated_at": "2026-07-13T10:15:00Z",
+          "projection_fingerprint": "sha256:central",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "trajectory": {
+            "status": {
+              "schema": "soul-trajectory-status/v1",
+              "project_key": "job-hunt",
+              "session_id": "019f5294-586a-7700-a0a9-ee46b4781fc6",
+              "exists": false,
+              "stale": true,
+              "reason": "trajectory_missing"
+            },
+            "primary_intent": null,
+            "compiled_at": null,
+            "verification": null
+          },
+          "current_work": {
+            "task_id": "SOUL-JOB_HUNT-052",
+            "subject": "Track zo.computer Head of Design / Staff Design Engineer Application",
+            "status": "in_progress",
+            "next_step": "Create Monday call playbook and rubric talking points for Ben / Zo Computer"
+          },
+          "runs": [],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.projectKey == "job-hunt")
+        #expect(projection.authority?.mode == "central")
+        #expect(projection.activeTask?.id == "SOUL-JOB_HUNT-052")
+        #expect(projection.activeTask?.project == "job-hunt")
+        #expect(projection.activeTask?.subject == "Track zo.computer Head of Design / Staff Design Engineer Application")
+        #expect(projection.activeTask?.status == "in_progress")
+        #expect(projection.nextStep == "Create Monday call playbook and rubric talking points for Ben / Zo Computer")
+        #expect(projection.trajectory?.status == "trajectory_missing")
+        #expect(projection.trajectory?.statusDetail?.exists == false)
+        #expect(projection.trajectory?.statusDetail?.stale == true)
+        #expect(projection.trajectory?.primaryIntent == nil)
+    }
+
+    @Test func workProjectionCurrentWorkWithoutTaskDoesNotFailDecode() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "current_work": {
+            "task_id": null,
+            "next_step": "Select the next task from central projection."
+          },
+          "runs": [],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.projectKey == "job-hunt")
+        #expect(projection.activeTask == nil)
+        #expect(projection.nextStep == "Select the next task from central projection.")
+    }
+
+    @Test func runStorePreservesBindingWhenWorkProjectionDecodeFails() async throws {
+        let invalidProjection: [String: Any] = [
+            "schema": "soul-work-projection/v1",
+            "project_key": 42
+        ]
+        let server = try UnixJSONRPCFixture(workProjectionResult: invalidProjection)
+        server.start()
+        defer { server.stop() }
+
+        let client = SoulAppServerClient(socketPath: server.socketPath)
+        try await client.connectAndInitialize()
+
+        let snapshot = try await SoulRunStore.loadFromAppServer(projectKey: "soul-desktop", client: client)
+
+        #expect(snapshot.projectBinding?.declaredPath == "~/Code/Soul-Desktop")
+        #expect(snapshot.projectBinding?.resolvedPath == "/Users/adele/Code/Soul-Desktop")
+        #expect(snapshot.workProjection == nil)
+        #expect(snapshot.workProjectionError?.code == "work_projection_get_failed")
+    }
+
     @Test func workProjectionUpdatedParamsDriveTargetedRefresh() throws {
         let data = Data("""
         {
@@ -360,8 +459,10 @@ private final class UnixJSONRPCFixture {
     let socketPath: String
     private let listenFD: Int32
     private var task: Task<Void, Never>?
+    private let workProjectionResult: [String: Any]
 
-    init() throws {
+    init(workProjectionResult: [String: Any] = UnixJSONRPCFixture.workProjection) throws {
+        self.workProjectionResult = workProjectionResult
         let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("sd-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -400,6 +501,7 @@ private final class UnixJSONRPCFixture {
 
     func start() {
         let fd = listenFD
+        let workProjectionResult = workProjectionResult
         task = Task.detached(priority: .utility) {
             let clientFD = accept(fd, nil, nil)
             guard clientFD >= 0 else { return }
@@ -415,7 +517,7 @@ private final class UnixJSONRPCFixture {
                     let line = buffer[..<newline]
                     buffer.removeSubrange(...newline)
                     guard !line.isEmpty,
-                          let response = Self.response(for: Data(line))
+                          let response = Self.response(for: Data(line), workProjectionResult: workProjectionResult)
                     else { continue }
                     Self.write(response, to: clientFD)
                 }
@@ -429,7 +531,7 @@ private final class UnixJSONRPCFixture {
         try? FileManager.default.removeItem(atPath: (socketPath as NSString).deletingLastPathComponent)
     }
 
-    private static func response(for data: Data) -> Data? {
+    private static func response(for data: Data, workProjectionResult: [String: Any]) -> Data? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = object["id"],
               let method = object["method"] as? String
@@ -448,7 +550,7 @@ private final class UnixJSONRPCFixture {
         case "project.orchestrationStatus":
             result = orchestrationStatus
         case "work_projection.get":
-            result = workProjection
+            result = workProjectionResult
         case "task.list":
             result = taskList
         default:
