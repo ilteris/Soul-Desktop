@@ -116,6 +116,10 @@ struct SoulWorkProjectionTests {
         #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredMissingURLEnv))
         #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredInvalidURLEnv))
         #expect(SoulRunStore.allowsLocalSnapshotFallback(env: autoEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredMissingURLEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredInvalidURLEnv))
+        #expect(!ActiveTaskStore.shouldUseCentralAuthority(env: autoEnv))
     }
 
     @Test func headerDisplayPrefersCentralProjectBindingInRequiredTCPMode() throws {
@@ -360,6 +364,94 @@ struct SoulWorkProjectionTests {
         #expect(projection.projectKey == "job-hunt")
         #expect(projection.activeTask == nil)
         #expect(projection.nextStep == "Select the next task from central projection.")
+    }
+
+    @Test func workProjectionInfersCentralHomeFromRunFiles() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "current_work": {
+            "task_id": "SOUL-JOB_HUNT-052",
+            "subject": "Track zo.computer application",
+            "status": "in_progress"
+          },
+          "runs": [
+            {
+              "run_id": "run_20260711191117_4cd423",
+              "project": "job-hunt",
+              "status": "running",
+              "file": "/Users/adele/soul_registry/runs/job-hunt/run_20260711191117_4cd423/run.json"
+            }
+          ],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.runs.count == 1)
+        #expect(projection.inferredCentralHomeDirectory == "/Users/adele")
+    }
+
+    @Test func requiredRemoteAuthorityRewritesLocalResolvedBindingFromCentralProjectionHome() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "runs": [
+            {
+              "run_id": "run_20260711191117_4cd423",
+              "project": "job-hunt",
+              "status": "running",
+              "file": "/Users/adele/soul_registry/runs/job-hunt/run_20260711191117_4cd423/run.json"
+            }
+          ],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+        let localBinding = SoulProjectBinding(
+            schemaVersion: "project-binding/v1",
+            projectKey: "job-hunt",
+            name: "Job Hunt 2026",
+            declaredPath: "~/Code/job-hunt",
+            resolvedPath: "/Users/ilteris/Code/job-hunt",
+            resolution: "tilde_home",
+            exists: true,
+            portable: true,
+            suggestedPath: nil,
+            companionPaths: [],
+            source: SoulProjectBindingSource(manifest: "~/soul-cli/soul/config/PROJECTS.json")
+        )
+        let snapshot = SoulRunStore.Snapshot(
+            projectBinding: localBinding,
+            workProjection: projection
+        )
+        let requiredRemoteEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720"
+        ]
+
+        let normalized = SoulRunStore.normalizedForRequiredRemoteAuthority(
+            snapshot,
+            env: requiredRemoteEnv,
+            localHome: "/Users/ilteris"
+        )
+
+        #expect(normalized.projectBinding?.locationSummary == "~/Code/job-hunt → /Users/adele/Code/job-hunt")
     }
 
     @Test func runStorePreservesBindingWhenWorkProjectionDecodeFails() async throws {

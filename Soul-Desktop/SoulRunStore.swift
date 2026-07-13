@@ -86,7 +86,7 @@ final class SoulRunStore: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
         isLoading = true
-        let snapshot: Snapshot
+        var snapshot: Snapshot
         if let appServerClient {
             do {
                 snapshot = try await Self.loadFromAppServer(projectKey: project, client: appServerClient)
@@ -123,6 +123,7 @@ final class SoulRunStore: ObservableObject {
             isLoading = false
             return
         }
+        snapshot = Self.normalizedForRequiredRemoteAuthority(snapshot)
         lastOrchestrationVersion = snapshot.version ?? lastOrchestrationVersion
         lastWorkProjectionFingerprint = snapshot.workProjection?.projectionFingerprint ?? lastWorkProjectionFingerprint
         runs = snapshot.runs
@@ -162,6 +163,44 @@ final class SoulRunStore: ObservableObject {
         (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() != "required"
     }
 
+    nonisolated static func normalizedForRequiredRemoteAuthority(
+        _ snapshot: Snapshot,
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        localHome: String = NSHomeDirectory()
+    ) -> Snapshot {
+        guard requiresRemoteAuthority(env: env),
+              let binding = snapshot.projectBinding,
+              binding.resolvedPath == localHome || binding.resolvedPath.hasPrefix(localHome + "/"),
+              let centralHome = snapshot.workProjection?.inferredCentralHomeDirectory,
+              binding.declaredPath.hasPrefix("~/")
+        else {
+            return snapshot
+        }
+
+        var normalized = snapshot
+        var updatedBinding = binding
+        let relativePath = String(binding.declaredPath.dropFirst(2))
+        updatedBinding.resolvedPath = URL(fileURLWithPath: centralHome)
+            .appendingPathComponent(relativePath)
+            .path
+        normalized.projectBinding = updatedBinding
+        return normalized
+    }
+
+    nonisolated static func requiresRemoteAuthority(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() == "required",
+              let rawURL = env["SOUL_REGISTRY_AUTHORITY_URL"],
+              let components = URLComponents(string: rawURL),
+              components.scheme == "tcp",
+              let host = components.host?.lowercased()
+        else {
+            return false
+        }
+        return !["localhost", "127.0.0.1", "::1"].contains(host)
+    }
+
     private func startAppServerLoop(project: String) {
         appServerTask = Task { [weak self] in
             await self?.runAppServerLoop(project: project)
@@ -169,7 +208,13 @@ final class SoulRunStore: ObservableObject {
     }
 
     private func runAppServerLoop(project: String) async {
-        let client = SoulAppServerClient()
+        let env = ProcessInfo.processInfo.environment
+        let endpoint = SoulAppServerEndpoint.fromEnvironment(env)
+        let client = SoulAppServerClient(
+            endpoint: endpoint,
+            apiKey: SoulAppServerClient.defaultAPIKey(env: env),
+            allowsLocalFallback: Self.allowsLocalSnapshotFallback(env: env)
+        )
         do {
             try await client.connectAndInitialize()
             try await client.subscribe(projectKey: project)

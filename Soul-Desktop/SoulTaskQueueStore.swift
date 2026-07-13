@@ -10,6 +10,7 @@ final class SoulTaskQueueStore: ObservableObject {
     @Published private(set) var isLoading: Bool = false
 
     private var boundProject: String? = nil
+    private var boundEnvironment: [String: String] = [:]
 
     var recommendedTask: SoulTaskRecord? {
         openTasks.first { $0.id == activeTaskId }
@@ -29,6 +30,7 @@ final class SoulTaskQueueStore: ObservableObject {
     func bind(projectKey: String?) {
         guard projectKey != boundProject else { return }
         boundProject = projectKey
+        boundEnvironment = ProcessInfo.processInfo.environment
         openTasks = []
         activeTaskId = nil
         loadError = nil
@@ -37,9 +39,10 @@ final class SoulTaskQueueStore: ObservableObject {
 
     func refresh() {
         guard let project = boundProject, !project.isEmpty else { return }
+        let env = boundEnvironment.isEmpty ? ProcessInfo.processInfo.environment : boundEnvironment
         isLoading = true
         Task {
-            let snapshot = await Self.load(projectKey: project)
+            let snapshot = await Self.load(projectKey: project, env: env)
             openTasks = snapshot.tasks
             activeTaskId = snapshot.activeTaskId
             loadError = snapshot.error
@@ -53,9 +56,9 @@ final class SoulTaskQueueStore: ObservableObject {
         var error: String? = nil
     }
 
-    nonisolated private static func load(projectKey: String) async -> Snapshot {
-        if shouldUseCentralAuthority() {
-            return await loadFromCentralAuthority(projectKey: projectKey)
+    nonisolated private static func load(projectKey: String, env: [String: String]) async -> Snapshot {
+        if shouldUseCentralAuthority(env: env) {
+            return await loadFromCentralAuthority(projectKey: projectKey, env: env)
         }
 
         return await Task.detached(priority: .userInitiated) {
@@ -84,8 +87,12 @@ final class SoulTaskQueueStore: ObservableObject {
         return mode == "required"
     }
 
-    nonisolated private static func loadFromCentralAuthority(projectKey: String) async -> Snapshot {
-        let client = SoulAppServerClient()
+    nonisolated private static func loadFromCentralAuthority(projectKey: String, env: [String: String]) async -> Snapshot {
+        let client = SoulAppServerClient(
+            endpoint: SoulAppServerEndpoint.fromEnvironment(env),
+            apiKey: SoulAppServerClient.defaultAPIKey(env: env),
+            allowsLocalFallback: false
+        )
         do {
             try await client.connectAndInitialize()
             let result = try await client.taskList(projectKey: projectKey, limit: 500)

@@ -159,10 +159,26 @@ struct SoulWorkProjection: Decodable, Sendable {
     var authority: SoulWorkProjectionAuthority?
     var activeTask: SoulTaskStatusRecord?
     var activeRun: SoulRunRecord?
+    var runs: [SoulRunRecord]
     var trajectoryStatus: SoulTrajectoryStatus?
     var trajectory: SoulTrajectorySummary?
     var semanticTimelineTail: [SoulSemanticTimelineCheckpoint]
     var nextStep: String?
+
+    var inferredCentralHomeDirectory: String? {
+        let candidates = ([activeRun?.file] + runs.map(\.file))
+            .compactMap { $0 }
+        for candidate in candidates {
+            guard let range = candidate.range(of: "/soul_registry/"),
+                  candidate.hasPrefix("/")
+            else { continue }
+            let home = String(candidate[..<range.lowerBound])
+            if !home.isEmpty {
+                return home
+            }
+        }
+        return nil
+    }
 
     private struct CurrentWork: Decodable {
         var taskID: String?
@@ -230,6 +246,7 @@ struct SoulWorkProjection: Decodable, Sendable {
         case authority
         case activeTask = "active_task"
         case activeRun = "active_run"
+        case runs
         case currentWork = "current_work"
         case trajectoryStatus = "trajectory_status"
         case trajectory
@@ -249,6 +266,7 @@ struct SoulWorkProjection: Decodable, Sendable {
         activeTask = try container.decodeIfPresent(SoulTaskStatusRecord.self, forKey: .activeTask)
             ?? currentWork?.taskRecord(defaultProject: projectKey)
         activeRun = try container.decodeIfPresent(SoulRunRecord.self, forKey: .activeRun)
+        runs = (try container.decodeIfPresent([SoulRunRecord].self, forKey: .runs)) ?? []
         trajectoryStatus = try container.decodeIfPresent(SoulTrajectoryStatus.self, forKey: .trajectoryStatus)
         trajectory = try container.decodeIfPresent(SoulTrajectorySummary.self, forKey: .trajectory)
         semanticTimelineTail = (try container.decodeIfPresent([SoulSemanticTimelineCheckpoint].self, forKey: .semanticTimelineTail)) ?? []
