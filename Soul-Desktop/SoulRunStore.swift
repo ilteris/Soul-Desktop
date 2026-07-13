@@ -107,9 +107,17 @@ final class SoulRunStore: ObservableObject {
                     registryMonitor = nil
                 }
             }
-        } else {
+        } else if Self.allowsLocalSnapshotFallback() {
             snapshot = await Self.loadFromCLI(projectKey: project)
             activateRegistryMonitor(project: project, snapshot: snapshot)
+        } else {
+            snapshot = Snapshot(
+                workProjectionError: SoulProjectionError(
+                    code: "registry_authority_connecting",
+                    message: "Waiting for required Soul registry authority."
+                )
+            )
+            registryMonitor = nil
         }
         guard boundProject == project else {
             isLoading = false
@@ -146,6 +154,12 @@ final class SoulRunStore: ObservableObject {
         var sessionID: String?
         var projectionFingerprint: String?
         var projectionError: SoulProjectionError?
+    }
+
+    nonisolated static func allowsLocalSnapshotFallback(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() != "required"
     }
 
     private func startAppServerLoop(project: String) {

@@ -112,6 +112,10 @@ struct SoulWorkProjectionTests {
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredEnv).isEmpty)
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredMissingURLEnv).isEmpty)
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredInvalidURLEnv).isEmpty)
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredEnv))
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredMissingURLEnv))
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredInvalidURLEnv))
+        #expect(SoulRunStore.allowsLocalSnapshotFallback(env: autoEnv))
     }
 
     @Test func headerDisplayPrefersCentralProjectBindingInRequiredTCPMode() throws {
