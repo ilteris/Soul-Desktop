@@ -498,14 +498,12 @@ extension ThreadController {
     }
 
     func appendMissingTraceStatusIfNeeded(reply: String, outputStartIndex: Int, sessionId sid: String? = nil) {
+        let traceSource = turnTraceSourceText(reply: reply, outputStartIndex: outputStartIndex)
         guard turnRequiresTrace(outputStartIndex: outputStartIndex),
               !isGeminiReadToolResultOnlyTurn(reply: reply, outputStartIndex: outputStartIndex),
-              SoulTrace.extract(
-                from: turnTraceSourceText(reply: reply, outputStartIndex: outputStartIndex)
-              ).trace?.isComplete != true else { return }
+              SoulTrace.extract(from: traceSource).trace?.isComplete != true else { return }
         let msg = "trace missing: \(provider.label) completed a substantive turn without a complete <soul_trace> block; preserved provider reply as-is."
         logLifecycle("prompt.trace_missing", note: "replyChars=\(reply.count)")
-        items.append(.status(id: UUID(), text: msg))
         ledger.appendHook(
             projectKey: project.id,
             sessionId: sid ?? sessionId ?? id,
@@ -514,6 +512,9 @@ extension ThreadController {
                 replyCharacters: reply.count
             ).hookDictionary
         )
+        if shouldSurfaceMissingTraceStatus(traceSource) {
+            items.append(.status(id: UUID(), text: msg))
+        }
     }
 
     func shouldAutoContinueGeminiToolResultOnlyTurn(reply: String, outputStartIndex: Int) -> Bool {
@@ -557,6 +558,26 @@ extension ThreadController {
             of: pattern,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
+    }
+
+    private func shouldSurfaceMissingTraceStatus(_ traceSource: String) -> Bool {
+        guard provider == .geminiCLI else {
+            return true
+        }
+        // Omitted traces are a diagnostics signal, not a user-facing chat
+        // interruption. Surface only explicit trace attempts that failed
+        // validation, since those indicate malformed or incomplete telemetry.
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<\s*soul[_-]trace\b[^>]*>"#,
+            options: [.caseInsensitive]
+        ) else { return false }
+
+        let range = NSRange(traceSource.startIndex..<traceSource.endIndex, in: traceSource)
+        return regex.matches(in: traceSource, options: [], range: range).contains { match in
+            guard let openerRange = Range(match.range, in: traceSource) else { return false }
+            let after = traceSource[openerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return after.isEmpty || after.hasPrefix("{")
+        }
     }
 
     private func isGeminiReadToolResultOnlyTurn(reply: String, outputStartIndex index: Int) -> Bool {

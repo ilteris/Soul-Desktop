@@ -579,11 +579,25 @@ struct MarkdownView: View, Equatable {
     /// Filename-with-extension matcher for bare tokens like `GEMINI.md`,
     /// `README.md`, `Package.swift`. Whitelisted extensions keep us from
     /// false-matching things like `Mr.Smith` or version numbers.
+    private static let linkableFileExtensions: Set<String> = [
+        "astro", "md", "markdown", "swift", "py", "js", "ts", "tsx", "jsx",
+        "rs", "go", "c", "cpp", "h", "hpp", "m", "mm", "sh", "zsh", "bash",
+        "fish", "json", "yaml", "yml", "toml", "xml", "html", "css", "scss",
+        "sql", "txt", "log", "conf", "config", "xcconfig", "plist", "lock"
+    ]
+
+    private static let linkableFileExtensionPattern = linkableFileExtensions
+        .sorted()
+        .joined(separator: "|")
+
     private static let filenameRegex: NSRegularExpression? = {
-        let exts = "md|markdown|swift|py|js|ts|tsx|jsx|rs|go|c|cpp|h|hpp|m|mm|sh|zsh|bash|fish|json|yaml|yml|toml|xml|html|css|scss|sql|txt|log|conf|config|xcconfig|plist|lock"
         return try? NSRegularExpression(
-            pattern: #"(?<![A-Za-z0-9._/~-])([A-Za-z][A-Za-z0-9_-]*\.(?:\#(exts)))(?![A-Za-z0-9])"#
+            pattern: #"(?<![A-Za-z0-9._/~-])([A-Za-z][A-Za-z0-9_-]*\.(?:\#(linkableFileExtensionPattern)))(?![A-Za-z0-9])"#
         )
+    }()
+
+    private static let gluedTitleBoundaryRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: #"\.[A-Z](?=[A-Za-z]|$)"#)
     }()
 
     static func linkifyPaths(_ attr: inout AttributedString) {
@@ -623,6 +637,13 @@ struct MarkdownView: View, Equatable {
                   let upper = AttributedString.Index(tokenRange.upperBound, within: attr) else { continue }
             var attrRange = clampPathCandidateToFirstAttributeRun(lower..<upper, in: attr)
             token = String(attr.characters[attrRange])
+            if let boundary = gluedTitleBoundary(in: token) {
+                let offset = token.distance(from: token.startIndex, to: boundary)
+                if let newUpper = attr.characters.index(attrRange.lowerBound, offsetBy: offset, limitedBy: attrRange.upperBound) {
+                    attrRange = attrRange.lowerBound..<newUpper
+                    token = String(attr.characters[attrRange])
+                }
+            }
             while let last = token.last, ".,;:)]}\"'".contains(last), attrRange.lowerBound < attrRange.upperBound {
                 token.removeLast()
                 attrRange = attrRange.lowerBound..<attr.characters.index(before: attrRange.upperBound)
@@ -641,6 +662,21 @@ struct MarkdownView: View, Equatable {
             guard let url = comps.url else { continue }
             attr[attrRange].link = url
         }
+    }
+
+    private static func gluedTitleBoundary(in token: String) -> String.Index? {
+        guard let regex = gluedTitleBoundaryRegex else { return nil }
+        let nsRange = NSRange(token.startIndex..<token.endIndex, in: token)
+        for match in regex.matches(in: token, range: nsRange) {
+            guard let range = Range(match.range, in: token) else { continue }
+            let prefix = token[..<range.lowerBound]
+            guard let extensionStart = prefix.lastIndex(of: ".") else { continue }
+            let ext = prefix[prefix.index(after: extensionStart)...].lowercased()
+            if linkableFileExtensions.contains(String(ext)) {
+                return range.lowerBound
+            }
+        }
+        return nil
     }
 
     /// Apple's markdown pass removes delimiter characters before this path

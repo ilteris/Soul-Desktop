@@ -20,12 +20,52 @@ struct MarkdownViewLinkifyTests {
         #expect(Self.linkedText(in: attr) == ["www/src/pages/sandbox.astro"])
     }
 
+    @Test func pathLinkDoesNotAbsorbPlainTitleAfterFilename() throws {
+        let attr = MarkdownView.attributedInline(
+            "I will read www/src/pages/sandbox.astro.Implementing the Split"
+        )
+
+        #expect(Self.linkedText(in: attr) == ["www/src/pages/sandbox.astro"])
+    }
+
+    @Test func filenameLinkDoesNotAbsorbPlainTitleAfterFilename() throws {
+        let attr = MarkdownView.attributedInline(
+            "Read README.md.Implementing the Split"
+        )
+
+        #expect(Self.linkedText(in: attr) == ["README.md"])
+    }
+
+    @Test func pathLinkDoesNotAbsorbAcronymTitleAfterFilename() throws {
+        let attr = MarkdownView.attributedInline(
+            "Read docs/README.md.API changes"
+        )
+
+        #expect(Self.linkedText(in: attr) == ["docs/README.md"])
+    }
+
+    @Test func pathLinkDoesNotAbsorbSingleLetterTitleAfterFilename() throws {
+        let attr = MarkdownView.attributedInline(
+            "Read docs/README.md.A plan"
+        )
+
+        #expect(Self.linkedText(in: attr) == ["docs/README.md"])
+    }
+
     @Test func ordinaryRelativePathStillLinks() throws {
         let attr = MarkdownView.attributedInline(
             "Open www/src/pages/sandbox.astro for the split controller"
         )
 
         #expect(Self.linkedText(in: attr) == ["www/src/pages/sandbox.astro"])
+    }
+
+    @Test func dottedComponentFilenameStillLinksFully() throws {
+        let attr = MarkdownView.attributedInline(
+            "Open www/src/components/Button.Stories.tsx for the story"
+        )
+
+        #expect(Self.linkedText(in: attr) == ["www/src/components/Button.Stories.tsx"])
     }
 
     @Test func latexArrowFallbackRendersAsGlyphInProse() throws {

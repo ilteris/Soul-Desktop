@@ -327,7 +327,7 @@ extension ThreadController {
         // SOUL-SOUL_DESKTOP-078: classify the hang at firing time. If the
         // kernel ledger already has an AfterTool for this toolCallId, it's
         // class B (ACP item/completed never delivered). If not, it's class
-        // A (still working — bump helps) or C (app-server stall). Cheap
+        // A (still working — bump helps) or C (provider RPC stall). Cheap
         // tail scan; we read at most 256KB off the end of hooks.jsonl.
         let afterToolInLedger = ledger.ledgerContainsAfterTool(
             projectKey: project.id,

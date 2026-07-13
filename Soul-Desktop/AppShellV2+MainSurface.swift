@@ -262,7 +262,7 @@ extension AppShellV2 {
             actionButton("Verify", icon: "checkmark.shield") { runVerify() }
             actionButton("Finalize", icon: "seal") { runFinalCommand("finalize") }
             actionButton("Compact", icon: "rectangle.compress.vertical") { runFinalCommand("compact") }
-            actionButton("Doctor", icon: "stethoscope") { runAppServerDoctor() }
+            actionButton("Doctor", icon: "stethoscope") { runRegistryServerDoctor() }
             Spacer(minLength: 0)
             actionButton("Refresh", icon: "arrow.clockwise") {
                 refreshProjects()

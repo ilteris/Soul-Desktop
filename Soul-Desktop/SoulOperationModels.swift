@@ -8,7 +8,7 @@ struct SoulOperation: Identifiable, Hashable {
         case task
         case finalize
         case compact
-        case appServerDoctor
+        case registryServerDoctor
 
         var icon: String {
             switch self {
@@ -18,7 +18,7 @@ struct SoulOperation: Identifiable, Hashable {
             case .task: return "checklist"
             case .finalize: return "seal"
             case .compact: return "rectangle.compress.vertical"
-            case .appServerDoctor: return "stethoscope"
+            case .registryServerDoctor: return "stethoscope"
             }
         }
     }

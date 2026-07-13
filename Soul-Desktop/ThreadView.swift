@@ -384,6 +384,10 @@ struct ThreadView: View {
                 ),
                 provider: controller.provider,
                 onPickHarness: onPickHarness,
+                geminiReasoningEffort: Binding(
+                    get: { controller.geminiReasoningEffort },
+                    set: { controller.geminiReasoningEffort = $0 }
+                ),
                 isSendEnabled: composerEnabled,
                 disabledMessage: composerEnabled
                     ? nil

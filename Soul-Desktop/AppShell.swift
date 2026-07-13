@@ -75,6 +75,10 @@ struct AppShell: View {
     /// Mode chosen before any thread exists — persists across new chats so
     /// the hero composer remembers the user's safety preference.
     @State var pendingPermissionMode: PermissionMode = .fullAccess
+    /// Gemini effort chosen before a thread exists. Persisted so the hero
+    /// composer remembers the spawn preference across new chats; copied onto
+    /// each Gemini thread before ACP starts the provider process.
+    @AppStorage("soul.gemini.reasoningEffort") var pendingGeminiReasoningEffortRaw: String = GeminiReasoningEffort.inherit.rawValue
     /// SOUL-SOUL_DESKTOP-035: when the user clicks a live row owned by an
     /// external writer (terminal Claude/Gemini-CLI), we refuse to ACP-load
     /// and surface a sheet offering the read-only Replay path instead.
@@ -163,6 +167,43 @@ struct AppShell: View {
 
     func currentProject() -> SoulProject? {
         projectWithPathOverride(workspace.selectedProject)
+    }
+
+    private func previewBasePath() -> String? {
+        if let replayController = replay.controller {
+            let cachedReplayWorktreePath: String? = {
+                registryStore.cachedSessions(forProject: replayController.project.id)?
+                    .first(where: { $0.id == replayController.sessionId })?
+                    .worktreePath
+            }()
+            let replayProjectOverridePath = projectPathOverrides[replayController.project.id]
+            return Self.preferredPreviewBasePath(
+                sessionWorktreePath: cachedReplayWorktreePath,
+                projectOverridePath: replayProjectOverridePath,
+                threadProjectPath: nil,
+                replayProjectPath: replayController.project.path,
+                currentProjectPath: nil
+            )
+        } else {
+            let cachedWorktreePath: String? = {
+                guard let thread,
+                      let sessionId = thread.sessionId
+                else { return nil }
+                return registryStore.cachedSessions(forProject: thread.project.id)?
+                    .first(where: { $0.id == sessionId })?
+                    .worktreePath
+            }()
+            let projectOverridePath = thread
+                .flatMap { projectPathOverrides[$0.project.id] }
+                ?? workspace.selectedProjectId.flatMap { projectPathOverrides[$0] }
+            return Self.preferredPreviewBasePath(
+                sessionWorktreePath: cachedWorktreePath,
+                projectOverridePath: projectOverridePath,
+                threadProjectPath: thread?.activeProjectPath,
+                replayProjectPath: nil,
+                currentProjectPath: currentProject()?.path
+            )
+        }
     }
 
     func openReminderSheet(thread: ThreadController?) {
@@ -287,19 +328,13 @@ struct AppShell: View {
     }
 
     private func resolvePreviewPath(_ stripped: String) -> String {
-        if stripped.hasPrefix("/") { return stripped }
-        if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
-        let base = thread?.project.path
-            ?? replay.controller?.project.path
-            ?? currentProject()?.path
-        guard let base else { return stripped }
-        return (base as NSString).appendingPathComponent(stripped)
+        Self.resolvePreviewPath(stripped, base: previewBasePath())
     }
 
     private func resolveProjectPrefixedPreviewPath(_ current: String, stripped: String) -> String {
         guard !FileManager.default.fileExists(atPath: current),
               !stripped.hasPrefix("/"), !stripped.hasPrefix("~"),
-              let base = thread?.project.path ?? replay.controller?.project.path ?? currentProject()?.path
+              let base = previewBasePath()
         else { return current }
         let baseName = (base as NSString).lastPathComponent
         let parts = stripped.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
@@ -308,12 +343,49 @@ struct AppShell: View {
         return FileManager.default.fileExists(atPath: retry) ? retry : current
     }
 
+    static func preferredPreviewBasePath(
+        sessionWorktreePath: String?,
+        projectOverridePath: String?,
+        threadProjectPath: String?,
+        replayProjectPath: String?,
+        currentProjectPath: String?,
+        fileManager: FileManager = .default
+    ) -> String? {
+        for candidate in [sessionWorktreePath, projectOverridePath, threadProjectPath, replayProjectPath, currentProjectPath] {
+            guard let path = candidate, !path.isEmpty else { continue }
+            let expanded = (path as NSString).expandingTildeInPath
+            if fileManager.fileExists(atPath: expanded) {
+                return expanded
+            }
+        }
+        return threadProjectPath ?? replayProjectPath ?? currentProjectPath
+    }
+
+    static func resolvePreviewPath(_ stripped: String, base: String?) -> String {
+        if stripped.hasPrefix("/") { return stripped }
+        if stripped.hasPrefix("~") { return (stripped as NSString).expandingTildeInPath }
+        guard let base else { return stripped }
+        return (base as NSString).appendingPathComponent(stripped)
+    }
+
     private func resolveBarePreviewPath(_ current: String, stripped: String) -> String {
-        guard !FileManager.default.fileExists(atPath: current),
-              !stripped.hasPrefix("/"), !stripped.hasPrefix("~"), !stripped.contains("/"),
+        guard Self.shouldSearchKnownProjectsForBarePreview(
+                currentExists: FileManager.default.fileExists(atPath: current),
+                stripped: stripped,
+                base: previewBasePath()
+              ),
               let match = findFileInKnownProjects(filename: stripped)
         else { return current }
         return match
+    }
+
+    static func shouldSearchKnownProjectsForBarePreview(currentExists: Bool, stripped: String, base: String?) -> Bool {
+        guard !currentExists,
+              !stripped.hasPrefix("/"),
+              !stripped.hasPrefix("~"),
+              !stripped.contains("/")
+        else { return false }
+        return base?.isEmpty ?? true
     }
 
     static func sameFilesystemPath(_ lhs: String, _ rhs: String) -> Bool {
