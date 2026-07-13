@@ -112,6 +112,14 @@ struct SoulWorkProjectionTests {
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredEnv).isEmpty)
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredMissingURLEnv).isEmpty)
         #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredInvalidURLEnv).isEmpty)
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredEnv))
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredMissingURLEnv))
+        #expect(!SoulRunStore.allowsLocalSnapshotFallback(env: requiredInvalidURLEnv))
+        #expect(SoulRunStore.allowsLocalSnapshotFallback(env: autoEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredMissingURLEnv))
+        #expect(ActiveTaskStore.shouldUseCentralAuthority(env: requiredInvalidURLEnv))
+        #expect(!ActiveTaskStore.shouldUseCentralAuthority(env: autoEnv))
     }
 
     @Test func headerDisplayPrefersCentralProjectBindingInRequiredTCPMode() throws {
@@ -279,6 +287,193 @@ struct SoulWorkProjectionTests {
         #expect(projection.nextStep == "Pull work_projection.get.")
     }
 
+    @Test func workProjectionPayloadDecodesNestedTrajectoryStatusObject() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "generated_at": "2026-07-13T10:15:00Z",
+          "projection_fingerprint": "sha256:central",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "trajectory": {
+            "status": {
+              "schema": "soul-trajectory-status/v1",
+              "project_key": "job-hunt",
+              "session_id": "019f5294-586a-7700-a0a9-ee46b4781fc6",
+              "exists": false,
+              "stale": true,
+              "reason": "trajectory_missing"
+            },
+            "primary_intent": null,
+            "compiled_at": null,
+            "verification": null
+          },
+          "current_work": {
+            "task_id": "SOUL-JOB_HUNT-052",
+            "subject": "Track zo.computer Head of Design / Staff Design Engineer Application",
+            "status": "in_progress",
+            "next_step": "Create Monday call playbook and rubric talking points for Ben / Zo Computer"
+          },
+          "runs": [],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.projectKey == "job-hunt")
+        #expect(projection.authority?.mode == "central")
+        #expect(projection.activeTask?.id == "SOUL-JOB_HUNT-052")
+        #expect(projection.activeTask?.project == "job-hunt")
+        #expect(projection.activeTask?.subject == "Track zo.computer Head of Design / Staff Design Engineer Application")
+        #expect(projection.activeTask?.status == "in_progress")
+        #expect(projection.nextStep == "Create Monday call playbook and rubric talking points for Ben / Zo Computer")
+        #expect(projection.trajectory?.status == "trajectory_missing")
+        #expect(projection.trajectory?.statusDetail?.exists == false)
+        #expect(projection.trajectory?.statusDetail?.stale == true)
+        #expect(projection.trajectory?.primaryIntent == nil)
+    }
+
+    @Test func workProjectionCurrentWorkWithoutTaskDoesNotFailDecode() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "current_work": {
+            "task_id": null,
+            "next_step": "Select the next task from central projection."
+          },
+          "runs": [],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.projectKey == "job-hunt")
+        #expect(projection.activeTask == nil)
+        #expect(projection.nextStep == "Select the next task from central projection.")
+    }
+
+    @Test func workProjectionInfersCentralHomeFromRunFiles() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "current_work": {
+            "task_id": "SOUL-JOB_HUNT-052",
+            "subject": "Track zo.computer application",
+            "status": "in_progress"
+          },
+          "runs": [
+            {
+              "run_id": "run_20260711191117_4cd423",
+              "project": "job-hunt",
+              "status": "running",
+              "file": "/Users/adele/soul_registry/runs/job-hunt/run_20260711191117_4cd423/run.json"
+            }
+          ],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+
+        #expect(projection.runs.count == 1)
+        #expect(projection.inferredCentralHomeDirectory == "/Users/adele")
+    }
+
+    @Test func requiredRemoteAuthorityRewritesLocalResolvedBindingFromCentralProjectionHome() throws {
+        let data = Data("""
+        {
+          "schema": "soul-work-projection/v1",
+          "project_key": "job-hunt",
+          "authority": {
+            "mode": "central",
+            "transport": "registry-server",
+            "writes": "local_only",
+            "read_only": true
+          },
+          "runs": [
+            {
+              "run_id": "run_20260711191117_4cd423",
+              "project": "job-hunt",
+              "status": "running",
+              "file": "/Users/adele/soul_registry/runs/job-hunt/run_20260711191117_4cd423/run.json"
+            }
+          ],
+          "semantic_timeline_tail": []
+        }
+        """.utf8)
+        let projection = try JSONDecoder().decode(SoulWorkProjection.self, from: data)
+        let localBinding = SoulProjectBinding(
+            schemaVersion: "project-binding/v1",
+            projectKey: "job-hunt",
+            name: "Job Hunt 2026",
+            declaredPath: "~/Code/job-hunt",
+            resolvedPath: "/Users/ilteris/Code/job-hunt",
+            resolution: "tilde_home",
+            exists: true,
+            portable: true,
+            suggestedPath: nil,
+            companionPaths: [],
+            source: SoulProjectBindingSource(manifest: "~/soul-cli/soul/config/PROJECTS.json")
+        )
+        let snapshot = SoulRunStore.Snapshot(
+            projectBinding: localBinding,
+            workProjection: projection
+        )
+        let requiredRemoteEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720"
+        ]
+
+        let normalized = SoulRunStore.normalizedForRequiredRemoteAuthority(
+            snapshot,
+            env: requiredRemoteEnv,
+            localHome: "/Users/ilteris"
+        )
+
+        #expect(normalized.projectBinding?.locationSummary == "~/Code/job-hunt → /Users/adele/Code/job-hunt")
+    }
+
+    @Test func runStorePreservesBindingWhenWorkProjectionDecodeFails() async throws {
+        let invalidProjection: [String: Any] = [
+            "schema": "soul-work-projection/v1",
+            "project_key": 42
+        ]
+        let server = try UnixJSONRPCFixture(workProjectionResult: invalidProjection)
+        server.start()
+        defer { server.stop() }
+
+        let client = SoulAppServerClient(socketPath: server.socketPath)
+        try await client.connectAndInitialize()
+
+        let snapshot = try await SoulRunStore.loadFromAppServer(projectKey: "soul-desktop", client: client)
+
+        #expect(snapshot.projectBinding?.declaredPath == "~/Code/Soul-Desktop")
+        #expect(snapshot.projectBinding?.resolvedPath == "/Users/adele/Code/Soul-Desktop")
+        #expect(snapshot.workProjection == nil)
+        #expect(snapshot.workProjectionError?.code == "work_projection_get_failed")
+    }
+
     @Test func workProjectionUpdatedParamsDriveTargetedRefresh() throws {
         let data = Data("""
         {
@@ -360,8 +555,10 @@ private final class UnixJSONRPCFixture {
     let socketPath: String
     private let listenFD: Int32
     private var task: Task<Void, Never>?
+    private let workProjectionResult: [String: Any]
 
-    init() throws {
+    init(workProjectionResult: [String: Any] = UnixJSONRPCFixture.workProjection) throws {
+        self.workProjectionResult = workProjectionResult
         let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("sd-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -400,6 +597,7 @@ private final class UnixJSONRPCFixture {
 
     func start() {
         let fd = listenFD
+        let workProjectionResult = workProjectionResult
         task = Task.detached(priority: .utility) {
             let clientFD = accept(fd, nil, nil)
             guard clientFD >= 0 else { return }
@@ -415,7 +613,7 @@ private final class UnixJSONRPCFixture {
                     let line = buffer[..<newline]
                     buffer.removeSubrange(...newline)
                     guard !line.isEmpty,
-                          let response = Self.response(for: Data(line))
+                          let response = Self.response(for: Data(line), workProjectionResult: workProjectionResult)
                     else { continue }
                     Self.write(response, to: clientFD)
                 }
@@ -429,7 +627,7 @@ private final class UnixJSONRPCFixture {
         try? FileManager.default.removeItem(atPath: (socketPath as NSString).deletingLastPathComponent)
     }
 
-    private static func response(for data: Data) -> Data? {
+    private static func response(for data: Data, workProjectionResult: [String: Any]) -> Data? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = object["id"],
               let method = object["method"] as? String
@@ -448,7 +646,7 @@ private final class UnixJSONRPCFixture {
         case "project.orchestrationStatus":
             result = orchestrationStatus
         case "work_projection.get":
-            result = workProjection
+            result = workProjectionResult
         case "task.list":
             result = taskList
         default:

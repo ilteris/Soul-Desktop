@@ -382,7 +382,7 @@ actor SoulAppServerClient {
 
     private static let clientID = "Soul-Desktop"
 
-    private static func defaultAPIKey(env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+    static func defaultAPIKey(env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         env["SOUL_API_KEY"] ?? env["SOUL_AUTHORITY_API_KEY"]
     }
 

@@ -58,6 +58,7 @@ struct SoulTrajectoryVerification: Decodable, Hashable, Sendable {
 
 struct SoulTrajectorySummary: Decodable, Hashable, Sendable {
     var status: String?
+    var statusDetail: SoulTrajectoryStatus?
     var primaryIntent: String?
     var compiledAt: String?
     var compilerVersion: String?
@@ -79,7 +80,16 @@ struct SoulTrajectorySummary: Decodable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        status = try container.decodeIfPresent(String.self, forKey: .status)
+        if let rawStatus = try? container.decodeIfPresent(String.self, forKey: .status) {
+            status = rawStatus
+            statusDetail = nil
+        } else if let detail = try? container.decodeIfPresent(SoulTrajectoryStatus.self, forKey: .status) {
+            statusDetail = detail
+            status = detail.trajectoryStatus ?? detail.reason
+        } else {
+            status = nil
+            statusDetail = nil
+        }
         primaryIntent = try container.decodeIfPresent(String.self, forKey: .primaryIntent)
         compiledAt = try container.decodeIfPresent(String.self, forKey: .compiledAt)
         compilerVersion = try container.decodeIfPresent(String.self, forKey: .compilerVersion)
@@ -149,10 +159,83 @@ struct SoulWorkProjection: Decodable, Sendable {
     var authority: SoulWorkProjectionAuthority?
     var activeTask: SoulTaskStatusRecord?
     var activeRun: SoulRunRecord?
+    var runs: [SoulRunRecord]
     var trajectoryStatus: SoulTrajectoryStatus?
     var trajectory: SoulTrajectorySummary?
     var semanticTimelineTail: [SoulSemanticTimelineCheckpoint]
     var nextStep: String?
+
+    var inferredCentralHomeDirectory: String? {
+        let candidates = ([activeRun?.file] + runs.map(\.file))
+            .compactMap { $0 }
+        for candidate in candidates {
+            guard let range = candidate.range(of: "/soul_registry/"),
+                  candidate.hasPrefix("/")
+            else { continue }
+            let home = String(candidate[..<range.lowerBound])
+            if !home.isEmpty {
+                return home
+            }
+        }
+        return nil
+    }
+
+    private struct CurrentWork: Decodable {
+        var taskID: String?
+        var project: String?
+        var subject: String?
+        var status: String?
+        var nextStep: String?
+        var priority: String?
+        var category: String?
+        var doneCriteria: [String]
+        var completedCriteria: [String]
+        var file: String?
+
+        enum CodingKeys: String, CodingKey {
+            case taskID = "task_id"
+            case fallbackID = "id"
+            case project
+            case subject
+            case status
+            case nextStep = "next_step"
+            case priority
+            case category
+            case doneCriteria = "done_criteria"
+            case completedCriteria = "completed_criteria"
+            case file
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            taskID = try container.decodeIfPresent(String.self, forKey: .taskID)
+                ?? container.decodeIfPresent(String.self, forKey: .fallbackID)
+            project = try container.decodeIfPresent(String.self, forKey: .project)
+            subject = try container.decodeIfPresent(String.self, forKey: .subject)
+            status = try container.decodeIfPresent(String.self, forKey: .status)
+            nextStep = try container.decodeIfPresent(String.self, forKey: .nextStep)
+            priority = try container.decodeIfPresent(String.self, forKey: .priority)
+            category = try container.decodeIfPresent(String.self, forKey: .category)
+            doneCriteria = (try container.decodeIfPresent([String].self, forKey: .doneCriteria)) ?? []
+            completedCriteria = (try container.decodeIfPresent([String].self, forKey: .completedCriteria)) ?? []
+            file = try container.decodeIfPresent(String.self, forKey: .file)
+        }
+
+        func taskRecord(defaultProject: String) -> SoulTaskStatusRecord? {
+            guard let taskID, !taskID.isEmpty else { return nil }
+            return SoulTaskStatusRecord(
+                taskID: taskID,
+                project: project ?? defaultProject,
+                subject: subject,
+                status: status,
+                priority: priority,
+                category: category,
+                doneCriteria: doneCriteria,
+                completedCriteria: completedCriteria,
+                file: file
+            )
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case schema
@@ -163,6 +246,8 @@ struct SoulWorkProjection: Decodable, Sendable {
         case authority
         case activeTask = "active_task"
         case activeRun = "active_run"
+        case runs
+        case currentWork = "current_work"
         case trajectoryStatus = "trajectory_status"
         case trajectory
         case semanticTimelineTail = "semantic_timeline_tail"
@@ -177,12 +262,15 @@ struct SoulWorkProjection: Decodable, Sendable {
         generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
         projectionFingerprint = try container.decodeIfPresent(String.self, forKey: .projectionFingerprint)
         authority = try container.decodeIfPresent(SoulWorkProjectionAuthority.self, forKey: .authority)
+        let currentWork = try container.decodeIfPresent(CurrentWork.self, forKey: .currentWork)
         activeTask = try container.decodeIfPresent(SoulTaskStatusRecord.self, forKey: .activeTask)
+            ?? currentWork?.taskRecord(defaultProject: projectKey)
         activeRun = try container.decodeIfPresent(SoulRunRecord.self, forKey: .activeRun)
+        runs = (try container.decodeIfPresent([SoulRunRecord].self, forKey: .runs)) ?? []
         trajectoryStatus = try container.decodeIfPresent(SoulTrajectoryStatus.self, forKey: .trajectoryStatus)
         trajectory = try container.decodeIfPresent(SoulTrajectorySummary.self, forKey: .trajectory)
         semanticTimelineTail = (try container.decodeIfPresent([SoulSemanticTimelineCheckpoint].self, forKey: .semanticTimelineTail)) ?? []
-        nextStep = try container.decodeIfPresent(String.self, forKey: .nextStep)
+        nextStep = try container.decodeIfPresent(String.self, forKey: .nextStep) ?? currentWork?.nextStep
     }
 }
 

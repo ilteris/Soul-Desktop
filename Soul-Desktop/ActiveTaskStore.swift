@@ -28,12 +28,14 @@ final class ActiveTaskStore: ObservableObject {
     private var activeTaskFile: String? = nil
     private var registryMonitor: SoulRegistryMonitor? = nil
     private var pendingRefreshTask: Task<Void, Never>? = nil
+    private var boundEnvironment: [String: String] = [:]
     private var isRefreshing: Bool = false
     private var needsRefreshAfterCurrent: Bool = false
 
     func bind(projectKey: String?) {
         guard projectKey != boundProject else { return }
         boundProject = projectKey
+        boundEnvironment = ProcessInfo.processInfo.environment
         taskId = nil
         subject = nil
         status = nil
@@ -43,12 +45,14 @@ final class ActiveTaskStore: ObservableObject {
         pendingRefreshTask = nil
         registryMonitor = nil
         guard let key = projectKey, !key.isEmpty else { return }
-        registryMonitor = SoulRegistryMonitor { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.scheduleRegistryRefresh()
+        if !Self.shouldUseCentralAuthority(env: boundEnvironment) {
+            registryMonitor = SoulRegistryMonitor { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.scheduleRegistryRefresh()
+                }
             }
+            configureRegistryMonitor(project: key)
         }
-        configureRegistryMonitor(project: key)
         Task { await refresh() }
     }
 
@@ -87,14 +91,19 @@ final class ActiveTaskStore: ObservableObject {
         }
         isRefreshing = true
         defer { isRefreshing = false }
-        let snap = await Self.load(projectKey: key)
+        let env = boundEnvironment.isEmpty ? ProcessInfo.processInfo.environment : boundEnvironment
+        let snap = await Self.load(projectKey: key, env: env)
         guard boundProject == key else { return }
         if taskId != snap.taskId { taskId = snap.taskId }
         if subject != snap.subject { subject = snap.subject }
         if status != snap.status { status = snap.status }
         if criteria != snap.criteria { criteria = snap.criteria }
         activeTaskFile = snap.file
-        configureRegistryMonitor(project: key)
+        if Self.shouldUseCentralAuthority(env: boundEnvironment) {
+            registryMonitor = nil
+        } else {
+            configureRegistryMonitor(project: key)
+        }
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
             Task { await refresh() }
@@ -109,7 +118,11 @@ final class ActiveTaskStore: ObservableObject {
         var file: String? = nil
     }
 
-    private static func load(projectKey: String) async -> Snap {
+    nonisolated private static func load(projectKey: String, env: [String: String]) async -> Snap {
+        if shouldUseCentralAuthority(env: env) {
+            return await loadFromCentralAuthority(projectKey: projectKey, env: env)
+        }
+
         let payload: Payload
         do {
             payload = try await SoulCLI.runJSON(
@@ -139,6 +152,36 @@ final class ActiveTaskStore: ObservableObject {
         )
     }
 
+    nonisolated private static func loadFromCentralAuthority(projectKey: String, env: [String: String]) async -> Snap {
+        let client = SoulAppServerClient(
+            endpoint: SoulAppServerEndpoint.fromEnvironment(env),
+            apiKey: SoulAppServerClient.defaultAPIKey(env: env),
+            allowsLocalFallback: false
+        )
+        do {
+            try await client.connectAndInitialize()
+            let result = try await client.taskList(projectKey: projectKey, limit: 500)
+            let activePayload = result.tasks.first { payload in
+                let id = payload.id ?? payload.taskID
+                return id == result.activeTask
+            } ?? result.tasks.first { payload in
+                SoulTaskPayload.normalized(payload.status, fallback: "pending") == "in_progress"
+            }
+            guard let activePayload else { return Snap(taskId: result.activeTask) }
+            let record = activePayload.record(defaultProject: projectKey)
+            let completed = Set(activePayload.completedCriteria ?? [])
+            let criteria = record.doneCriteria.map { Criterion(text: $0, done: completed.contains($0)) }
+            return Snap(
+                taskId: record.id,
+                subject: record.subject,
+                status: record.status,
+                criteria: criteria
+            )
+        } catch {
+            return Snap()
+        }
+    }
+
     private func configureRegistryMonitor(project: String) {
         let root = Self.registryRootURL()
         var urls: [URL] = [
@@ -154,6 +197,12 @@ final class ActiveTaskStore: ObservableObject {
     private static func registryRootURL() -> URL {
         let raw = ProcessInfo.processInfo.environment["SOUL_REGISTRY"] ?? "\(NSHomeDirectory())/soul_registry"
         return fileURL(from: raw)
+    }
+
+    nonisolated static func shouldUseCentralAuthority(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() == "required"
     }
 
     private static func fileURL(from raw: String) -> URL {

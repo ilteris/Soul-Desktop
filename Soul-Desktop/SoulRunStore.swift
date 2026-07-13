@@ -86,7 +86,7 @@ final class SoulRunStore: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
         isLoading = true
-        let snapshot: Snapshot
+        var snapshot: Snapshot
         if let appServerClient {
             do {
                 snapshot = try await Self.loadFromAppServer(projectKey: project, client: appServerClient)
@@ -107,14 +107,23 @@ final class SoulRunStore: ObservableObject {
                     registryMonitor = nil
                 }
             }
-        } else {
+        } else if Self.allowsLocalSnapshotFallback() {
             snapshot = await Self.loadFromCLI(projectKey: project)
             activateRegistryMonitor(project: project, snapshot: snapshot)
+        } else {
+            snapshot = Snapshot(
+                workProjectionError: SoulProjectionError(
+                    code: "registry_authority_connecting",
+                    message: "Waiting for required Soul registry authority."
+                )
+            )
+            registryMonitor = nil
         }
         guard boundProject == project else {
             isLoading = false
             return
         }
+        snapshot = Self.normalizedForRequiredRemoteAuthority(snapshot)
         lastOrchestrationVersion = snapshot.version ?? lastOrchestrationVersion
         lastWorkProjectionFingerprint = snapshot.workProjection?.projectionFingerprint ?? lastWorkProjectionFingerprint
         runs = snapshot.runs
@@ -123,7 +132,7 @@ final class SoulRunStore: ObservableObject {
         subagents = snapshot.subagents
         projectBinding = snapshot.projectBinding
         workProjection = snapshot.workProjection
-        workProjectionError = snapshot.workProjection == nil ? appServerConnectionError : nil
+        workProjectionError = snapshot.workProjectionError ?? (snapshot.workProjection == nil ? appServerConnectionError : nil)
         isLoading = false
         if needsRefreshAfterCurrent {
             needsRefreshAfterCurrent = false
@@ -131,13 +140,14 @@ final class SoulRunStore: ObservableObject {
         }
     }
 
-    private struct Snapshot: Sendable {
+    struct Snapshot: Sendable {
         var runs: [SoulRunRecord] = []
         var workStatus: SoulWorkStatusPayload? = nil
         var reviewSummary: SoulRunReviewPayload.Summary? = nil
         var subagents: [SoulSubagentRecord] = []
         var projectBinding: SoulProjectBinding? = nil
         var workProjection: SoulWorkProjection? = nil
+        var workProjectionError: SoulProjectionError? = nil
         var version: String? = nil
     }
 
@@ -147,6 +157,50 @@ final class SoulRunStore: ObservableObject {
         var projectionError: SoulProjectionError?
     }
 
+    nonisolated static func allowsLocalSnapshotFallback(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() != "required"
+    }
+
+    nonisolated static func normalizedForRequiredRemoteAuthority(
+        _ snapshot: Snapshot,
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        localHome: String = NSHomeDirectory()
+    ) -> Snapshot {
+        guard requiresRemoteAuthority(env: env),
+              let binding = snapshot.projectBinding,
+              binding.resolvedPath == localHome || binding.resolvedPath.hasPrefix(localHome + "/"),
+              let centralHome = snapshot.workProjection?.inferredCentralHomeDirectory,
+              binding.declaredPath.hasPrefix("~/")
+        else {
+            return snapshot
+        }
+
+        var normalized = snapshot
+        var updatedBinding = binding
+        let relativePath = String(binding.declaredPath.dropFirst(2))
+        updatedBinding.resolvedPath = URL(fileURLWithPath: centralHome)
+            .appendingPathComponent(relativePath)
+            .path
+        normalized.projectBinding = updatedBinding
+        return normalized
+    }
+
+    nonisolated static func requiresRemoteAuthority(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased() == "required",
+              let rawURL = env["SOUL_REGISTRY_AUTHORITY_URL"],
+              let components = URLComponents(string: rawURL),
+              components.scheme == "tcp",
+              let host = components.host?.lowercased()
+        else {
+            return false
+        }
+        return !["localhost", "127.0.0.1", "::1"].contains(host)
+    }
+
     private func startAppServerLoop(project: String) {
         appServerTask = Task { [weak self] in
             await self?.runAppServerLoop(project: project)
@@ -154,7 +208,13 @@ final class SoulRunStore: ObservableObject {
     }
 
     private func runAppServerLoop(project: String) async {
-        let client = SoulAppServerClient()
+        let env = ProcessInfo.processInfo.environment
+        let endpoint = SoulAppServerEndpoint.fromEnvironment(env)
+        let client = SoulAppServerClient(
+            endpoint: endpoint,
+            apiKey: SoulAppServerClient.defaultAPIKey(env: env),
+            allowsLocalFallback: Self.allowsLocalSnapshotFallback(env: env)
+        )
         do {
             try await client.connectAndInitialize()
             try await client.subscribe(projectKey: project)
@@ -266,7 +326,7 @@ final class SoulRunStore: ObservableObject {
         )
     }
 
-    nonisolated private static func loadFromAppServer(
+    nonisolated static func loadFromAppServer(
         projectKey: String,
         client: SoulAppServerClient
     ) async throws -> Snapshot {
@@ -277,7 +337,14 @@ final class SoulRunStore: ObservableObject {
             subagentLimit: 25
         )
         var snapshot = snapshot(from: result)
-        snapshot.workProjection = try await client.workProjection(projectKey: projectKey)
+        do {
+            snapshot.workProjection = try await client.workProjection(projectKey: projectKey)
+        } catch {
+            snapshot.workProjectionError = SoulProjectionError(
+                code: "work_projection_get_failed",
+                message: error.localizedDescription
+            )
+        }
         return snapshot
     }
 
@@ -293,6 +360,7 @@ final class SoulRunStore: ObservableObject {
             subagents: subagents,
             projectBinding: snapshot.projectBinding,
             workProjection: nil,
+            workProjectionError: nil,
             version: snapshot.version
         )
     }

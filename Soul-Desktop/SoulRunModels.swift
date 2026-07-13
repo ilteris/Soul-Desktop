@@ -324,6 +324,32 @@ struct SoulTaskStatusRecord: Identifiable, Hashable, Sendable, Decodable {
 
     var id: String { taskID }
 
+    init(
+        taskID: String,
+        project: String,
+        subject: String? = nil,
+        status: String? = nil,
+        rawStatus: String? = nil,
+        priority: String? = nil,
+        category: String? = nil,
+        doneCriteria: [String] = [],
+        completedCriteria: [String] = [],
+        file: String? = nil,
+        isActive: Bool? = nil
+    ) {
+        self.taskID = taskID
+        self.project = project
+        self.subject = subject
+        self.status = status
+        self.rawStatus = rawStatus
+        self.priority = priority
+        self.category = category
+        self.doneCriteria = doneCriteria
+        self.completedCriteria = completedCriteria
+        self.file = file
+        self.isActive = isActive
+    }
+
     enum CodingKeys: String, CodingKey {
         case taskID = "task_id"
         case fallbackID = "id"

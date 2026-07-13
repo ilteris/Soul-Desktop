@@ -361,7 +361,7 @@ struct SoulTaskPayload: Decodable, Sendable {
         )
     }
 
-    private static func normalized(_ value: String?, fallback: String) -> String {
+    static func normalized(_ value: String?, fallback: String) -> String {
         let trimmed = (value ?? fallback).trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.isEmpty ? fallback : trimmed).lowercased()
     }
