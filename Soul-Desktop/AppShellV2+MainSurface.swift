@@ -131,7 +131,7 @@ extension AppShellV2 {
 
             VStack(alignment: .leading, spacing: 2) {
                 projectHeaderMenu
-                Text(project?.path ?? "Select a project to operate on")
+                Text(headerLocationDisplay(project: project, binding: runStore.projectBinding).subtitle)
                     .font(SoulFont.code(11))
                     .foregroundStyle(SoulColor.fgSubtle)
                     .lineLimit(1)
@@ -161,6 +161,38 @@ extension AppShellV2 {
         .overlay(alignment: .bottom) {
             Rectangle().fill(SoulColor.border.opacity(0.35)).frame(height: 0.5)
         }
+    }
+
+    struct HeaderLocationDisplay: Equatable {
+        var subtitle: String
+        var usesCentralBinding: Bool
+    }
+
+    func headerLocationDisplay(project: SoulProject?, binding: SoulProjectBinding?) -> HeaderLocationDisplay {
+        Self.headerLocationDisplay(project: project, binding: binding)
+    }
+
+    static func headerLocationDisplay(
+        project: SoulProject?,
+        binding: SoulProjectBinding?,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> HeaderLocationDisplay {
+        if SoulTaskQueueStore.shouldUseCentralAuthority(env: env) {
+            if let binding {
+                return HeaderLocationDisplay(
+                    subtitle: "Central binding: \(binding.locationSummary)",
+                    usesCentralBinding: true
+                )
+            }
+            return HeaderLocationDisplay(
+                subtitle: "Central binding unavailable",
+                usesCentralBinding: true
+            )
+        }
+        return HeaderLocationDisplay(
+            subtitle: project?.path ?? "Select a project to operate on",
+            usesCentralBinding: false
+        )
     }
 
     var projectHeaderMenu: some View {

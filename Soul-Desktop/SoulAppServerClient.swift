@@ -210,6 +210,22 @@ actor SoulAppServerClient {
         return try decode(SoulOrchestrationStatusResult.self, from: result)
     }
 
+    func taskList(
+        projectKey: String,
+        includeCompleted: Bool = false,
+        limit: Int = 100
+    ) async throws -> SoulTaskListResult {
+        let result = try await call(
+            method: "task.list",
+            params: .object([
+                "project_key": .string(projectKey),
+                "include_completed": .bool(includeCompleted),
+                "limit": .int(limit)
+            ])
+        )
+        return try decode(SoulTaskListResult.self, from: result)
+    }
+
     func workProjection(
         projectKey: String,
         sessionID: String? = nil,

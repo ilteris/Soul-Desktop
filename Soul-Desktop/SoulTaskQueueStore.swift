@@ -6,6 +6,7 @@ import Combine
 final class SoulTaskQueueStore: ObservableObject {
     @Published private(set) var openTasks: [SoulTaskRecord] = []
     @Published private(set) var activeTaskId: String? = nil
+    @Published private(set) var loadError: String? = nil
     @Published private(set) var isLoading: Bool = false
 
     private var boundProject: String? = nil
@@ -30,6 +31,7 @@ final class SoulTaskQueueStore: ObservableObject {
         boundProject = projectKey
         openTasks = []
         activeTaskId = nil
+        loadError = nil
         refresh()
     }
 
@@ -40,6 +42,7 @@ final class SoulTaskQueueStore: ObservableObject {
             let snapshot = await Self.load(projectKey: project)
             openTasks = snapshot.tasks
             activeTaskId = snapshot.activeTaskId
+            loadError = snapshot.error
             isLoading = false
         }
     }
@@ -47,10 +50,15 @@ final class SoulTaskQueueStore: ObservableObject {
     private struct Snapshot: Sendable {
         var tasks: [SoulTaskRecord]
         var activeTaskId: String?
+        var error: String? = nil
     }
 
     nonisolated private static func load(projectKey: String) async -> Snapshot {
-        await Task.detached(priority: .userInitiated) {
+        if shouldUseCentralAuthority() {
+            return await loadFromCentralAuthority(projectKey: projectKey)
+        }
+
+        return await Task.detached(priority: .userInitiated) {
             let root = URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("soul_registry")
                 .appendingPathComponent("tasks")
@@ -69,7 +77,36 @@ final class SoulTaskQueueStore: ObservableObject {
         }.value
     }
 
-    nonisolated static func loadOpenTasks(projectKey: String) -> [SoulTaskRecord] {
+    nonisolated static func shouldUseCentralAuthority(
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let mode = (env["SOUL_REGISTRY_AUTHORITY"] ?? "").lowercased()
+        return mode == "required"
+    }
+
+    nonisolated private static func loadFromCentralAuthority(projectKey: String) async -> Snapshot {
+        let client = SoulAppServerClient()
+        do {
+            try await client.connectAndInitialize()
+            let result = try await client.taskList(projectKey: projectKey, limit: 500)
+            return Snapshot(
+                tasks: sorted(result.taskRecords(defaultProject: projectKey)),
+                activeTaskId: result.activeTask
+            )
+        } catch {
+            return Snapshot(
+                tasks: [],
+                activeTaskId: nil,
+                error: "Required central task authority unavailable: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    nonisolated static func loadOpenTasks(
+        projectKey: String,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [SoulTaskRecord] {
+        guard !shouldUseCentralAuthority(env: env) else { return [] }
         let root = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("soul_registry")
             .appendingPathComponent("tasks")
@@ -92,14 +129,17 @@ final class SoulTaskQueueStore: ObservableObject {
             tasks.append(task)
         }
 
-        tasks.sort { lhs, rhs in
+        return sorted(tasks)
+    }
+
+    nonisolated static func sorted(_ tasks: [SoulTaskRecord]) -> [SoulTaskRecord] {
+        tasks.sorted { lhs, rhs in
             let rank: [String: Int] = ["in_progress": 0, "pending": 1, "freezer": 2]
             let lhsRank = rank[lhs.status] ?? 9
             let rhsRank = rank[rhs.status] ?? 9
             if lhsRank != rhsRank { return lhsRank < rhsRank }
             return lhs.id < rhs.id
         }
-        return tasks
     }
 
     nonisolated private static func readTask(_ url: URL, projectKey: String) -> SoulTaskRecord? {
