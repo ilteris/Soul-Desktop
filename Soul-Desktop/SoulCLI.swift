@@ -26,12 +26,17 @@ enum SoulCLI {
         case stderr(String)
     }
 
-    static func runMutation(_ args: [String], stdin: Data? = nil) async throws {
-        _ = try await run(args, stdin: stdin)
+    static func runMutation(_ args: [String], stdin: Data? = nil, environmentOverrides: [String: String] = [:]) async throws {
+        _ = try await run(args, stdin: stdin, environmentOverrides: environmentOverrides)
     }
 
-    static func runText(_ args: [String], stdin: Data? = nil, includeStderr: Bool = true) async throws -> String {
-        let result = try await runCapture(args, stdin: stdin)
+    static func runText(
+        _ args: [String],
+        stdin: Data? = nil,
+        includeStderr: Bool = true,
+        environmentOverrides: [String: String] = [:]
+    ) async throws -> String {
+        let result = try await runCapture(args, stdin: stdin, environmentOverrides: environmentOverrides)
         let outText = String(data: result.stdout, encoding: .utf8) ?? ""
         let errText = String(data: result.stderr, encoding: .utf8) ?? ""
         guard result.status == 0 else {
@@ -236,8 +241,8 @@ enum SoulCLI {
     }
 
     @discardableResult
-    private static func run(_ args: [String], stdin: Data?) async throws -> Data {
-        let result = try await runCapture(args, stdin: stdin)
+    private static func run(_ args: [String], stdin: Data?, environmentOverrides: [String: String] = [:]) async throws -> Data {
+        let result = try await runCapture(args, stdin: stdin, environmentOverrides: environmentOverrides)
         guard result.status == 0 else {
             let message = String(data: result.stderr, encoding: .utf8) ?? ""
             throw SoulCLIError.nonZeroExit(code: result.status, stderr: message)
@@ -267,14 +272,18 @@ enum SoulCLI {
         }
     }
 
-    private static func runCapture(_ args: [String], stdin: Data?) async throws -> Capture {
+    private static func runCapture(_ args: [String], stdin: Data?, environmentOverrides: [String: String] = [:]) async throws -> Capture {
         guard let executable = soulExecutablePath() else {
             throw SoulCLIError.executableNotFound
+        }
+        var env = cliEnvironment()
+        for (key, value) in environmentOverrides {
+            env[key] = value
         }
         return try await captureProcess(
             executable: executable,
             arguments: args,
-            environment: cliEnvironment(),
+            environment: SoulAuthorityEnvironment.applyingFinalizePromotion(env),
             stdin: stdin
         )
     }
