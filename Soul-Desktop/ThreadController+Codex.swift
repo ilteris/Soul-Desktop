@@ -16,8 +16,14 @@ import SoulRuntime
 extension ThreadController {
 
     func spawnAndInitializeCodex() async throws {
-        let startRequest = runtimeStartRequest(skipNewSession: false)
         if await runtimes.codex?.isStarted == true { return }
+        if sessionId == nil {
+            // Keep Codex aligned with the ACP spawn invariant: provider
+            // children need SOUL_SESSION_ID before their first kernel hook or
+            // `/finalize` can land under a fresh session directory.
+            sessionId = Self.looksLikeUUID(id) ? id : UUID().uuidString.lowercased()
+        }
+        let startRequest = runtimeStartRequest(skipNewSession: false)
         let runtime = runtimes.codex ?? CodexProviderRuntimeAdapter(
             projectKey: project.id,
             spawnResolver: runtimeSpawnResolver(),

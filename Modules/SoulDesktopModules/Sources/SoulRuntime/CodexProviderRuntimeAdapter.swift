@@ -64,7 +64,7 @@ public actor CodexProviderRuntimeAdapter: ProviderRuntime {
         if let sid = request.session.kernelSessionID {
             env["SOUL_SESSION_ID"] = sid
         }
-        spawn.environment = env
+        spawn.environment = SoulAuthorityEnvironment.applyingFinalizePromotion(env)
         spawn.cwd = request.session.projectPath
 
         let client = try CodexClient(spawn: spawn)

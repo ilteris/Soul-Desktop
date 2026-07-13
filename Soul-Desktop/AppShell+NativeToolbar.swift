@@ -50,7 +50,8 @@ extension AppShell {
                             branchFrom(thread, to: provider)
                         },
                         onReload: { reloadActiveSession() },
-                        onForkWorktree: { forkActiveSessionIntoWorktree() }
+                        onForkWorktree: { forkActiveSessionIntoWorktree() },
+                        onFinalize: { thread.runDesktopFinalize() }
                     )
                 }
                 .padding(.horizontal, 16)

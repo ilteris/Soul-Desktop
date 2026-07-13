@@ -250,7 +250,8 @@ private struct ChapterHeader: View {
     private var slashCommand: SlashCommandParse.Parsed? {
         guard case .userMessage(_, let text, _) = header else { return nil }
         let p = SlashCommandParse.parse(text)
-        return p.commandName == nil ? nil : p
+        guard let commandName = p.commandName else { return nil }
+        return commandName.lowercased() == "finalize" ? nil : p
     }
 
     private var preview: String {

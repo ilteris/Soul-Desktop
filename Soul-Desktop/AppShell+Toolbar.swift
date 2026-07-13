@@ -165,12 +165,16 @@ struct ThreadOverflowMenu: View {
     var onBranch: (Provider) -> Void = { _ in }
     var onReload: () -> Void = {}
     var onForkWorktree: () -> Void = {}
+    var onFinalize: () -> Void = {}
     @AppStorage("soul.debug.showSmoke") private var showSmoke: Bool = false
 
     var body: some View {
         Menu {
             Button("Rename chat") { controller.requestRename() }
             Button("Reload session") { onReload() }
+            Divider()
+            Button("Finalize chat") { onFinalize() }
+                .disabled(controller.isWorking)
             Divider()
             Button("Copy session ID") { controller.copySessionIdToPasteboard() }
             Button("Copy as Markdown") { controller.copyMarkdownToPasteboard() }
