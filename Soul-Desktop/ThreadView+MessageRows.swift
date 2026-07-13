@@ -358,9 +358,10 @@ struct UserMessageRow: View {
         // render as standalone bubbles with empty bodies — visually they read
         // like a user message that got cut off. Collapse those to a compact
         // inline event marker so they read as "this command fired" instead of
-        // "here is a message." Live and historical share the same treatment;
-        // the user just typing /finalize sees the chip as a receipt either way.
-        if let cmd = p.commandName, p.rest.isEmpty {
+        // "here is a message." `/finalize` is deliberately excluded: in
+        // required-authority mode the command is only success-renderable after
+        // the kernel appends an imported finalize record.
+        if let cmd = p.commandName, p.rest.isEmpty, cmd.lowercased() != "finalize" {
             HStack(spacing: 6) {
                 Spacer(minLength: 32)
                 SlashCommandChip(command: cmd, args: "", isHistorical: isHistorical)
@@ -429,7 +430,7 @@ struct UserMessageRow: View {
         )
         HStack(alignment: .top, spacing: 6) {
             Spacer(minLength: 32)
-            if let cmd = p.commandName {
+            if let cmd = p.commandName, cmd.lowercased() != "finalize" {
                 VStack(alignment: .trailing, spacing: 6) {
                     let lines = p.rest.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
                     let firstLine = lines.first.map(String.init) ?? ""

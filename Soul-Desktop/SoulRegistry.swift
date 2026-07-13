@@ -1186,10 +1186,22 @@ enum SoulRegistry {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   obj["event"] as? String == "Finalize"
             else { continue }
+            guard isRenderableFinalizeRecord(obj) else { continue }
             latest = obj
         }
         guard let obj = latest else { return nil }
         return finalizeRecord(from: obj, sessionId: sessionId, handoffPath: path)
+    }
+
+    private static func isRenderableFinalizeRecord(_ obj: [String: Any]) -> Bool {
+        let promotionStatus = (obj["authority_promotion_status"] as? String)?.lowercased()
+        if promotionStatus == "pending" {
+            return false
+        }
+        if SoulAuthorityEnvironment.shouldPromoteFinalize(ProcessInfo.processInfo.environment) {
+            return promotionStatus == "imported"
+        }
+        return true
     }
 
     private static func latestLegacyFinalize(projectKey: String, sessionId: String) -> FinalizeRecord? {
