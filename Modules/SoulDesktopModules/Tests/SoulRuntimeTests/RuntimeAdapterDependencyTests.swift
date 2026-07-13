@@ -116,6 +116,18 @@ struct RuntimeAdapterDependencyTests {
         #expect(env["PWD"] == workspace)
         #expect(env["SOUL_SESSION_ID"] == "kernel-123")
     }
+
+    @Test("required TCP authority runtime environment enables finalize promotion")
+    func requiredTCPAuthorityRuntimeEnvironmentPromotesFinalize() {
+        let env = SoulAuthorityEnvironment.applyingFinalizePromotion([
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720",
+            "SOUL_SESSION_ID": "kernel-123",
+        ])
+
+        #expect(env["SOUL_FINALIZE_PROMOTE_AUTHORITY"] == "1")
+        #expect(env["SOUL_SESSION_ID"] == "kernel-123")
+    }
 }
 
 private actor HydrationProbe {

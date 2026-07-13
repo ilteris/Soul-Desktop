@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SoulCore
 
 enum SoulCLIError: LocalizedError {
     case nonZeroExit(code: Int32, stderr: String)
@@ -357,11 +358,20 @@ enum SoulCLI {
         // ProcessInfo.environment is a launch-time snapshot. Tests and some
         // embedding paths swizzle these with setenv() before invoking the
         // kernel CLI, so read the live process environment explicitly.
-        for key in ["SOUL_HOME", "SOUL_REGISTRY", "SOUL_PATH"] {
+        for key in [
+            "SOUL_HOME",
+            "SOUL_REGISTRY",
+            "SOUL_PATH",
+            "SOUL_REGISTRY_AUTHORITY",
+            "SOUL_REGISTRY_AUTHORITY_URL",
+            "SOUL_API_KEY",
+            "SOUL_AUTHORITY_API_KEY",
+            "SOUL_FINALIZE_PROMOTE_AUTHORITY",
+        ] {
             if let value = getenv(key).map({ String(cString: $0) }), !value.isEmpty {
                 env[key] = value
             }
         }
-        return env
+        return SoulAuthorityEnvironment.applyingFinalizePromotion(env)
     }
 }

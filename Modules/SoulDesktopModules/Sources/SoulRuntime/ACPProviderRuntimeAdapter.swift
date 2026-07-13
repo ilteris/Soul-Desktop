@@ -84,7 +84,7 @@ public actor ACPProviderRuntimeAdapter: ProviderRuntime {
             workspacePath: workspacePath,
             kernelSessionID: request.session.kernelSessionID
         )
-        spawn.environment = env
+        spawn.environment = SoulAuthorityEnvironment.applyingFinalizePromotion(env)
         spawn.cwd = workspacePath
 
         let client = try ACPClient(spawn: spawn)

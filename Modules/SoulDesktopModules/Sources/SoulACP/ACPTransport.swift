@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SoulCore
 
 private let _wireTimeFormatter: DateFormatter = {
     let f = DateFormatter()
@@ -63,7 +64,7 @@ actor ACPTransport {
         if let environment {
             for (k, v) in environment { env[k] = v }
         }
-        process.environment = env
+        process.environment = SoulAuthorityEnvironment.applyingFinalizePromotion(env)
 
         // Capture self weakly inside the C-callback-style terminationHandler
         // so the actor doesn't keep the Process alive past its useful life.
