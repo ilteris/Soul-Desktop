@@ -576,7 +576,10 @@ private final class TCPJSONRPCFixture {
             case "project.orchestrationStatus":
                 return result(id: id, UnixJSONRPCFixture.orchestrationStatus)
             case "work_projection.get":
-                return result(id: id, centralWorkProjection)
+                return result(id: id, [
+                    "project_key": "soul-desktop",
+                    "work_projection": centralWorkProjection
+                ])
             default:
                 return error(id: id, code: -32601, message: "method not found")
             }

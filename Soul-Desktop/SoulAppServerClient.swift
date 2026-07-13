@@ -226,6 +226,9 @@ actor SoulAppServerClient {
             method: "work_projection.get",
             params: .object(params)
         )
+        if let projection = result["work_projection"], projection != .null {
+            return try decode(SoulWorkProjection.self, from: projection)
+        }
         return try decode(SoulWorkProjection.self, from: result)
     }
 
