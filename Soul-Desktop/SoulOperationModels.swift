@@ -305,6 +305,68 @@ struct SoulTaskRecord: Identifiable, Hashable, Sendable {
     }
 }
 
+struct SoulTaskListResult: Decodable, Sendable {
+    var projectKey: String
+    var activeTask: String?
+    var tasks: [SoulTaskPayload]
+
+    enum CodingKeys: String, CodingKey {
+        case projectKey = "project_key"
+        case activeTask = "active_task"
+        case tasks
+    }
+
+    func taskRecords(defaultProject: String? = nil) -> [SoulTaskRecord] {
+        tasks.map { $0.record(defaultProject: defaultProject ?? projectKey) }
+    }
+}
+
+struct SoulTaskPayload: Decodable, Sendable {
+    var id: String?
+    var taskID: String?
+    var project: String?
+    var subject: String?
+    var title: String?
+    var status: String?
+    var priority: String?
+    var updatedAt: String?
+    var doneCriteria: [String]?
+    var definitionOfDone: [String]?
+    var completedCriteria: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case taskID = "task_id"
+        case project
+        case subject
+        case title
+        case status
+        case priority
+        case updatedAt = "updated_at"
+        case doneCriteria = "done_criteria"
+        case definitionOfDone = "definition_of_done"
+        case completedCriteria = "completed_criteria"
+    }
+
+    func record(defaultProject: String) -> SoulTaskRecord {
+        SoulTaskRecord(
+            id: id ?? taskID ?? "unknown",
+            project: project ?? defaultProject,
+            subject: subject ?? title ?? "Untitled task",
+            status: Self.normalized(status, fallback: "pending"),
+            priority: Self.normalized(priority, fallback: "unknown"),
+            updatedAt: updatedAt,
+            doneCriteria: doneCriteria ?? definitionOfDone ?? [],
+            completedCriteriaCount: completedCriteria?.count ?? 0
+        )
+    }
+
+    private static func normalized(_ value: String?, fallback: String) -> String {
+        let trimmed = (value ?? fallback).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed.isEmpty ? fallback : trimmed).lowercased()
+    }
+}
+
 struct SoulAssistantMessage: Identifiable, Hashable {
     let id = UUID()
     var isUser: Bool

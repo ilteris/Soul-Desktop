@@ -66,6 +66,104 @@ struct SoulWorkProjectionTests {
         #expect(projection.authority?.readOnly == true)
     }
 
+    @Test func appServerClientReadsTCPAuthorityTaskListAfterHMACAuth() async throws {
+        let server = try TCPJSONRPCFixture(apiKey: "test-secret")
+        server.start()
+        defer { server.stop() }
+
+        let client = SoulAppServerClient(
+            endpoint: .tcp(host: "127.0.0.1", port: server.port),
+            apiKey: "test-secret",
+            allowsLocalFallback: false
+        )
+        try await client.connectAndInitialize()
+
+        let result = try await client.taskList(projectKey: "soul-desktop")
+        let records = result.taskRecords(defaultProject: "soul-desktop")
+
+        #expect(result.activeTask == "SOUL-SOUL_DESKTOP-441")
+        #expect(records.map(\.id) == ["SOUL-SOUL_DESKTOP-441", "SOUL-SOUL_DESKTOP-050"])
+        #expect(records[0].subject == "Make Desktop central authority surfaces authoritative")
+        #expect(records[0].doneCriteria == ["Header uses central binding"])
+        #expect(records[0].completedCriteriaCount == 1)
+    }
+
+    @Test func requiredTCPModeSuppressesLocalTaskReads() throws {
+        let requiredEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720"
+        ]
+        let autoEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "auto",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720"
+        ]
+        let requiredMissingURLEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required"
+        ]
+        let requiredInvalidURLEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "not-a-valid-authority-url"
+        ]
+
+        #expect(SoulTaskQueueStore.shouldUseCentralAuthority(env: requiredEnv))
+        #expect(SoulTaskQueueStore.shouldUseCentralAuthority(env: requiredMissingURLEnv))
+        #expect(SoulTaskQueueStore.shouldUseCentralAuthority(env: requiredInvalidURLEnv))
+        #expect(!SoulTaskQueueStore.shouldUseCentralAuthority(env: autoEnv))
+        #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredEnv).isEmpty)
+        #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredMissingURLEnv).isEmpty)
+        #expect(SoulTaskQueueStore.loadOpenTasks(projectKey: "soul-desktop", env: requiredInvalidURLEnv).isEmpty)
+    }
+
+    @Test func headerDisplayPrefersCentralProjectBindingInRequiredTCPMode() throws {
+        let project = SoulProject(
+            id: "soul",
+            name: "Soul OS",
+            path: "/Users/ilteris/soul-cli"
+        )
+        let binding = SoulProjectBinding(
+            schemaVersion: "project-binding/v1",
+            projectKey: "soul",
+            name: "Soul OS",
+            declaredPath: "~/soul-cli",
+            resolvedPath: "/Users/adele/soul-cli",
+            resolution: "tilde_home",
+            exists: true,
+            portable: true,
+            suggestedPath: nil,
+            companionPaths: [],
+            source: SoulProjectBindingSource(manifest: "~/soul-cli/soul/config/PROJECTS.json")
+        )
+        let requiredEnv = [
+            "SOUL_REGISTRY_AUTHORITY": "required",
+            "SOUL_REGISTRY_AUTHORITY_URL": "tcp://100.123.210.64:4720"
+        ]
+
+        let display = AppShellV2.headerLocationDisplay(
+            project: project,
+            binding: binding,
+            env: requiredEnv
+        )
+
+        #expect(display.usesCentralBinding)
+        #expect(display.subtitle == "Central binding: ~/soul-cli → /Users/adele/soul-cli")
+
+        let unavailableDisplay = AppShellV2.headerLocationDisplay(
+            project: project,
+            binding: nil,
+            env: ["SOUL_REGISTRY_AUTHORITY": "required"]
+        )
+        #expect(unavailableDisplay.usesCentralBinding)
+        #expect(unavailableDisplay.subtitle == "Central binding unavailable")
+
+        let localDisplay = AppShellV2.headerLocationDisplay(
+            project: project,
+            binding: binding,
+            env: [:]
+        )
+        #expect(!localDisplay.usesCentralBinding)
+        #expect(localDisplay.subtitle == "/Users/ilteris/soul-cli")
+    }
+
     @Test func appServerClientRejectsBadTCPAuthorityHMACWithoutFallback() async throws {
         let server = try TCPJSONRPCFixture(apiKey: "test-secret")
         server.start()
@@ -351,6 +449,8 @@ private final class UnixJSONRPCFixture {
             result = orchestrationStatus
         case "work_projection.get":
             result = workProjection
+        case "task.list":
+            result = taskList
         default:
             return try? JSONSerialization.data(withJSONObject: [
                 "id": id,
@@ -429,6 +529,32 @@ private final class UnixJSONRPCFixture {
         "trajectory": NSNull(),
         "semantic_timeline_tail": [],
         "next_step": "Compile semantic trajectory."
+    ]
+
+    fileprivate static let taskList: [String: Any] = [
+        "project_key": "soul-desktop",
+        "active_task": "SOUL-SOUL_DESKTOP-441",
+        "tasks": [
+            [
+                "id": "SOUL-SOUL_DESKTOP-441",
+                "project": "soul-desktop",
+                "subject": "Make Desktop central authority surfaces authoritative",
+                "status": "pending",
+                "priority": "high",
+                "updated_at": "2026-07-13T09:54:52Z",
+                "done_criteria": ["Header uses central binding"],
+                "completed_criteria": ["Header uses central binding"]
+            ],
+            [
+                "id": "SOUL-SOUL_DESKTOP-050",
+                "project": "soul-desktop",
+                "title": "Implement Mobile File Explorer",
+                "status": "freezer",
+                "priority": "medium",
+                "definition_of_done": [],
+                "completed_criteria": []
+            ]
+        ]
     ]
 }
 
@@ -580,6 +706,8 @@ private final class TCPJSONRPCFixture {
                     "project_key": "soul-desktop",
                     "work_projection": centralWorkProjection
                 ])
+            case "task.list":
+                return result(id: id, UnixJSONRPCFixture.taskList)
             default:
                 return error(id: id, code: -32601, message: "method not found")
             }

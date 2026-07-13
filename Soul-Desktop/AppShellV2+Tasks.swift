@@ -64,7 +64,9 @@ extension AppShellV2 {
 
         return controlCard(title: "Next Task", icon: "sparkles") {
             VStack(alignment: .leading, spacing: 14) {
-                if taskQueue.openTasks.isEmpty {
+                if let error = taskQueue.loadError {
+                    emptyLine(error)
+                } else if taskQueue.openTasks.isEmpty {
                     emptyLine(taskQueue.isLoading ? "Loading tasks..." : "No open tasks in this project.")
                 } else {
                     if let recommended {
