@@ -398,8 +398,10 @@ enum SoulRegistry {
     }
 
     static func invalidateCache(forProject key: String? = nil) {
-        cacheLock.lock(); defer { cacheLock.unlock() }
+        cacheLock.lock()
         if let key { cache.removeValue(forKey: key) } else { cache.removeAll() }
+        cacheLock.unlock()
+        invalidateSessionListPayloadCache(forProject: key)
     }
 
     // MARK: - Projects

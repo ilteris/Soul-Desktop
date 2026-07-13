@@ -358,6 +358,27 @@ extension SidebarView {
             Button("Open chat") { onSelectSession(session) }
             Button("Replay…") { onReplaySession(session) }
             Divider()
+            Menu("Associate with Task") {
+                let tasks = openTasks(for: session.project)
+                if tasks.isEmpty {
+                    Button("No open tasks") {}
+                        .disabled(true)
+                } else {
+                    ForEach(tasks) { task in
+                        Button {
+                            associateSession(session, with: task)
+                        } label: {
+                            HStack {
+                                Text(taskMenuLabel(task))
+                                if task.id == session.taskId {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Divider()
             if starStore.isStarred(session.id, project: session.project) {
                 Button("Unstar") {
                     starStore.unstar(session.id, project: session.project)
@@ -402,6 +423,45 @@ extension SidebarView {
                 }
                 .disabled(session.isWorking)
             }
+        }
+    }
+
+    func openTasks(for projectKey: String) -> [SoulTaskRecord] {
+        SoulTaskQueueStore.loadOpenTasks(projectKey: projectKey)
+    }
+
+    func taskMenuLabel(_ task: SoulTaskRecord) -> String {
+        let suffix = task.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty else { return task.id }
+        return "\(task.id) · \(suffix)"
+    }
+
+    func associateSession(_ session: SoulSession, with task: SoulTaskRecord) {
+        guard session.project == task.project else {
+            showRepairToast("Task belongs to \(task.project), not \(session.project)")
+            return
+        }
+        guard session.taskId != task.id else {
+            showRepairToast("Session already associated with \(task.id)")
+            return
+        }
+
+        registryStore.appendHook(
+            projectKey: session.project,
+            sessionId: session.id,
+            event: [
+                "event": "TaskAssociation",
+                "task_id": task.id,
+                "session_role": "implementation",
+                "source": "sidebar_context_menu"
+            ]
+        )
+        SoulRegistry.flushHooks()
+        showRepairToast("Associated session with \(task.id)")
+        registryStore.invalidateCache(forProject: session.project)
+        workspace.invalidateSessions(projectId: session.project)
+        Task {
+            await workspace.refreshSessions(projectId: session.project)
         }
     }
 
