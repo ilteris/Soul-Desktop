@@ -1194,7 +1194,9 @@ enum SoulRegistry {
     }
 
     private static func isRenderableFinalizeRecord(_ obj: [String: Any]) -> Bool {
-        let promotionStatus = (obj["authority_promotion_status"] as? String)?.lowercased()
+        guard let promotionStatus = (obj["authority_promotion_status"] as? String)?.lowercased() else {
+            return true
+        }
         if promotionStatus == "pending" {
             return false
         }
